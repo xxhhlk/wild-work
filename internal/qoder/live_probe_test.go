@@ -438,6 +438,7 @@ type probeCase struct {
 
 // probeResult 单组结果（重复多次时长度与耗时取平均）。
 type probeResult struct {
+	id        string
 	name      string
 	status    int
 	ttfb      time.Duration // 响应头到达耗时
@@ -630,6 +631,9 @@ func TestLiveProbeEffort(t *testing.T) {
 	t.Logf("探测 prompt（%d 字）：%s", len([]rune(prompt)), truncate(strings.ReplaceAll(prompt, "\n", " "), 90))
 
 	cases := filterCases(buildProbeCases(caps))
+	if len(cases) == 0 {
+		t.Fatalf("WILDWORK_PROBE_CASES=%q 没匹配到任何用例", os.Getenv("WILDWORK_PROBE_CASES"))
+	}
 	dumpDir := strings.TrimSpace(os.Getenv("WILDWORK_PROBE_DUMP"))
 	t.Logf("用例 %d 组 × 重复 %d 次 = %d 次对话；上次实测约 33s/次 → 预计 %.1f 分钟",
 		len(cases), repeat, len(cases)*repeat, float64(len(cases)*repeat)*33/60)
@@ -641,7 +645,7 @@ func TestLiveProbeEffort(t *testing.T) {
 			usePrompt = "1+1=?"
 		}
 		t.Logf("[用例 %s] %s | 注入: %s", tc.id, tc.name, tc.inject)
-		res := probeResult{name: tc.name}
+		res := probeResult{id: tc.id, name: tc.name}
 		var sumReason, sumContent int
 		var sumTTFB, sumTotal time.Duration
 		okCount := 0
@@ -716,7 +720,15 @@ func TestLiveProbeEffort(t *testing.T) {
 		results = append(results, res)
 	}
 
+	// 判读按用例 id 找，避免用 WILDWORK_PROBE_CASES 过滤后下标错位。
+	byID := map[string]probeResult{}
+	for _, r := range results {
+		byID[r.id] = r
+	}
 	base := results[0].reasoning
+	if on, ok := byID["2"]; ok {
+		base = on.reasoning // 倍数基线取「思考已开、未注入档位」的那组
+	}
 	t.Logf("%-34s %-5s %-8s %-9s %-10s %-10s %s", "用例", "状态", "TTFB", "总耗时", "思考(字)", "回答(字)", "备注")
 	for _, r := range results {
 		ratio := "-"
@@ -743,14 +755,20 @@ func TestLiveProbeEffort(t *testing.T) {
 		}
 	}
 
-	switch {
-	case base == 0:
-		t.Log("==> 基线（is_reasoning=false）思考长度为 0：正常。请看用例 2 是否 > 0。")
-	case base > 0:
-		t.Log("==> 基线（is_reasoning=false）竟然有思考：该模型可能默认就开思考，看用例 3/4 的梯度。")
-	}
-	if len(results) > 1 && results[1].reasoning == 0 {
-		t.Log("==> 用例 2（is_reasoning=true）也是 0：上游对本次请求没吐思考链 —— 换模型（用目录里 is_reasoning=true 且带 ladder 的）或换更难的题重试。")
+	// 判读按用例 id 找。
+	offCase, hasOff := byID["1"]
+	onCase, hasOn := byID["2"]
+	if hasOff && hasOn {
+		switch {
+		case offCase.reasoning == 0 && onCase.reasoning > 0:
+			t.Logf("==> 开关有效：is_reasoning=false 思考 0 字，=true 思考 %d 字（对照成立）。", onCase.reasoning)
+		case offCase.reasoning == 0 && onCase.reasoning == 0:
+			t.Log("==> 两组都是 0：上游对本次请求没吐思考链 —— 换模型（目录里 is_reasoning=true 且带 ladder 的）或换更难的题重试。")
+		case offCase.reasoning > 0:
+			t.Logf("==> 关闭态竟然也有思考（%d 字）：该模型可能默认开思考，is_reasoning 关不掉。", offCase.reasoning)
+		}
+	} else if hasOn && onCase.reasoning == 0 {
+		t.Log("==> 用例 2（is_reasoning=true）思考 0 字：上游没吐思考链，先看上面的原始流诊断。")
 	}
 	t.Log("==> 看「思考(字)」列：用例 2 明显大于 1 → 开关有效；3/4 之间有梯度 → 档位生效；7 归零 → 关闭语义成立。")
 	t.Log("==> 用例 8 非 200 → 上游严格校验（客户端必须白名单）；200 → 静默忽略，不能盲信参考实现。")
