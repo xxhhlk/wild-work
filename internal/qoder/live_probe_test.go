@@ -363,13 +363,22 @@ type streamStats struct {
 	// Other 记录 delta 里出现「非 content/role/reasoning_content」键的 chunk 原文
 	// （如 Qoder 的 extends）——思考可能藏在这些非标准字段里。
 	Other []string
-	First []string
+	// TopKeys chunk 顶层键的直方图 —— 思考若挂在 chunk 顶层（而非 choices[].delta）能在这里看到。
+	TopKeys map[string]int
+	// OtherLines 非 data: 行的前缀直方图（如 event:xxx）——思考若走独立事件类型能在这里看到。
+	OtherLines map[string]int
+	First      []string
 }
 
 // scanStream 用生产同款解析器扫一遍原始字节，统计各字段出现情况。
 // 若 Chunks==0 但 DataLines>0 → 上游 SSE 信封不是 data:{"body":"..."} 这个形状。
 func scanStream(raw []byte) streamStats {
-	st := streamStats{DeltaKeys: map[string]int{}, Bytes: len(raw)}
+	st := streamStats{
+		DeltaKeys:  map[string]int{},
+		TopKeys:    map[string]int{},
+		OtherLines: map[string]int{},
+		Bytes:      len(raw),
+	}
 	for _, line := range strings.Split(string(raw), "\n") {
 		line = strings.TrimRight(line, "\r")
 		if strings.HasPrefix(line, "data:") {
@@ -381,10 +390,23 @@ func scanStream(raw []byte) streamStats {
 			if len(st.First) < 3 {
 				st.First = append(st.First, truncate(line, 160))
 			}
+			continue
 		}
+		if line == "" {
+			continue
+		}
+		// 非 data 行：记前缀（event:xxx / id: / retry: …），排查思考是否走独立事件。
+		key := line
+		if i := strings.IndexByte(line, ':'); i > 0 {
+			key = line[:i+1]
+		}
+		st.OtherLines[truncate(key, 24)]++
 	}
 	_ = parseNestedSSE(bytes.NewReader(raw), func(chunk map[string]any) error {
 		st.Chunks++
+		for k := range chunk {
+			st.TopKeys[k]++
+		}
 		if choices, ok := chunk["choices"].([]any); ok {
 			for _, ci := range choices {
 				ch, _ := ci.(map[string]any)
@@ -432,14 +454,24 @@ func scanStream(raw []byte) streamStats {
 	return st
 }
 
-func (s streamStats) String() string {
-	keys := make([]string, 0, len(s.DeltaKeys))
-	for k, n := range s.DeltaKeys {
+// hist 把 map 直方图渲染成稳定顺序的 "k×n" 列表。
+func hist(m map[string]int) string {
+	keys := make([]string, 0, len(m))
+	for k, n := range m {
 		keys = append(keys, fmt.Sprintf("%s×%d", k, n))
 	}
 	sort.Strings(keys)
-	return fmt.Sprintf("原始%dB data行%d chunk%d 未解析%d content块%d reasoning块%d choice层思考%d 键=[%s]",
-		s.Bytes, s.DataLines, s.Chunks, s.BadLines, s.ContentIn, s.ReasonIn, s.ChoiceRsn, strings.Join(keys, " "))
+	return strings.Join(keys, " ")
+}
+
+func (s streamStats) String() string {
+	out := fmt.Sprintf("原始%dB data行%d chunk%d 未解析%d content块%d reasoning块%d choice层思考%d delta键=[%s] 顶层键=[%s]",
+		s.Bytes, s.DataLines, s.Chunks, s.BadLines, s.ContentIn, s.ReasonIn, s.ChoiceRsn,
+		hist(s.DeltaKeys), hist(s.TopKeys))
+	if len(s.OtherLines) > 0 {
+		out += " 非data行=[" + hist(s.OtherLines) + "]"
+	}
+	return out
 }
 
 // ---- 用例 ----
@@ -844,6 +876,14 @@ func TestLiveProbeEffort(t *testing.T) {
 			t.Logf(">> %s 的非标准 delta chunk%d：%s", r.name, i+1, o)
 		}
 	}
+	// 回答有内容、思考为 0：流是通的，只是没有思考链。把顶层键与非 data 行打全，
+	// 用于判断思考是否挂在 chunk 顶层或走独立事件类型。
+	for _, r := range results {
+		if r.status == 200 && r.reasoning == 0 && r.content > 0 && r.note == "" {
+			t.Logf("-- %s：回答 %d 字、思考 0 字 → chunk 顶层键=[%s]，非 data 行=[%s]",
+				r.name, r.content, hist(r.stats.TopKeys), hist(r.stats.OtherLines))
+		}
+	}
 
 	// 判读按用例 id 找。
 	offCase, hasOff := byID["1"]
@@ -853,7 +893,8 @@ func TestLiveProbeEffort(t *testing.T) {
 		case offCase.reasoning == 0 && onCase.reasoning > 0:
 			t.Logf("==> 开关有效：is_reasoning=false 思考 0 字，=true 思考 %d 字（对照成立）。", onCase.reasoning)
 		case offCase.reasoning == 0 && onCase.reasoning == 0:
-			t.Log("==> 两组都是 0：上游对本次请求没吐思考链 —— 换模型（目录里 is_reasoning=true 且带 ladder 的）或换更难的题重试。")
+			t.Log("==> 用例 1/2 都是 0：is_reasoning 开关不产生思考链。**但 1/2 都没注入 parameters.reasoning_effort**，")
+			t.Log("    档位路径还没测 —— 继续跑用例 3/4（WILDWORK_PROBE_CASES=3,4）。")
 		case offCase.reasoning > 0:
 			t.Logf("==> 关闭态竟然也有思考（%d 字）：该模型可能默认开思考，is_reasoning 关不掉。", offCase.reasoning)
 		}
@@ -862,4 +903,6 @@ func TestLiveProbeEffort(t *testing.T) {
 	}
 	t.Log("==> 看「思考(字)」列：用例 2 明显大于 1 → 开关有效；3/4 之间有梯度 → 档位生效；7 归零 → 关闭语义成立。")
 	t.Log("==> 用例 8 非 200 → 上游严格校验（客户端必须白名单）；200 → 静默忽略，不能盲信参考实现。")
+	t.Log("==> 若所有档位用例都是「回答有字、思考 0 字」，且顶层键/非 data 行都没有思考痕迹，")
+	t.Log("    则可判定该模型在 api3（agent_chat_generation）下不下发思考链 —— 换 is_reasoning=true 且带 ladder 的模型复测（如 deepseek-v4-pro）。")
 }
