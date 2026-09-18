@@ -14,12 +14,20 @@
 //
 // 运行方式（在 wild-work 仓库根目录）：
 //
-//	WILDWORK_AUTHDIR=./auths go test -tags live ./internal/qoder/ -run TestLiveProbe -v -timeout 600s
+//	WILDWORK_AUTHDIR=./auths go test -tags live ./internal/qoder/ -run TestLiveProbe -v -timeout 900s
 //
-// 账号来源：auths/qoder*.json（与面板登录 Qoder 产生的文件一致）；
-// 也可用 WILDWORK_AUTHDIR 指向别处的目录。
+// 可调环境变量：
 //
-// 成本：目录探测 0 次对话；档位探测 5 次极短对话（prompt 只有 "1+1"）。
+//	WILDWORK_AUTHDIR       账号目录（默认 ./auths），读取 qoder*.json
+//	WILDWORK_PROBE_MODEL   客户端模型名（默认 deepseek-v4-pro）
+//	WILDWORK_PROBE_PROMPT  探测用 prompt（默认见 defaultProbePrompt）
+//	WILDWORK_PROBE_REPEAT  每组重复次数（默认 1，可 1~5，取平均以降低方差）
+//
+// 关于 prompt（重要）：**必须用「需要多步推理」的题**。像 "1+1=?" 这种题，
+// 模型各档位几乎都不产生思考链，reasoning_content 全是空的，只能验证字段是否
+// 被接受（状态码），验证不了强度差异。默认题见 defaultProbePrompt。
+//
+// 成本：目录探测 0 次对话；档位探测 = 用例数 × 重复次数 次对话（默认 6 次）。
 package qoder
 
 import (
@@ -30,6 +38,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -139,24 +148,64 @@ func TestLiveProbeModelCatalog(t *testing.T) {
 	}
 }
 
-// probeCase 一组档位注入方式。
-type probeCase struct {
-	name   string
-	mutate func(obj map[string]any)
+// defaultProbePrompt 默认探测题：刻意选「需要多步推理、答案短」的题。
+// 这样 content 短、reasoning_content 长，档位差异最容易看出来。
+const defaultProbePrompt = `9 个外观完全相同的球中有 1 个重量异常（可能偏重也可能偏轻），其余 8 个等重。` +
+	`只用一个天平称 3 次，找出这个异常球并判断它是偏重还是偏轻。` +
+	`请逐步推理给出完整的称量方案，并说明为什么 3 次一定够。`
+
+// probePrompt 探测用 prompt，可用 WILDWORK_PROBE_PROMPT 覆盖。
+func probePrompt() string {
+	if p := strings.TrimSpace(os.Getenv("WILDWORK_PROBE_PROMPT")); p != "" {
+		return p
+	}
+	return defaultProbePrompt
 }
 
-// TestLiveProbeEffort 第 2 步：对比不同字段注入下上游的行为。
+// probeRepeat 每组重复次数（默认 1），可用 WILDWORK_PROBE_REPEAT 覆盖（1~5）。
+// 单次结果有方差，重复 2~3 次取平均更稳（成本线性增加）。
+func probeRepeat() int {
+	if v := strings.TrimSpace(os.Getenv("WILDWORK_PROBE_REPEAT")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 1 && n <= 5 {
+			return n
+		}
+	}
+	return 1
+}
+
+// probeCase 一组档位注入方式。
+type probeCase struct {
+	name string
+	// shortPrompt 为 true 时用最简 prompt：只关心状态码的用例（如非法值），
+	// 不必花长思考的钱。
+	shortPrompt bool
+	mutate      func(obj map[string]any)
+}
+
+// probeResult 单组结果（重复多次时长度与耗时取平均）。
+type probeResult struct {
+	name      string
+	status    int
+	elapsed   time.Duration
+	reasoning int // 平均思考长度（rune 数）
+	content   string
+	note      string
+}
+
+// TestLiveProbeEffort 第 2 步：同一 prompt 下横向对比不同字段注入的行为。
 //
 // 判读：
-//   - 200 且 reasoning_content 明显变长  → 字段生效
-//   - 200 但 reasoning_content 为空/不变 → 字段被静默忽略（不可依赖）
-//   - 非 200                            → 上游严格校验（字段名/取值需修正）
+//   - B/E/F 的思考长度显著大于 A（倍数列）→ 档位字段生效
+//   - C 归零或显著变小                     → 关闭语义成立
+//   - D 非 200 → 上游严格校验（客户端须白名单）；200 → 静默忽略（不能盲信）
+//
+// 若基线（A）思考长度就是 0，说明 prompt 没触发思考链，换更难的题重跑：
+//
+//	WILDWORK_PROBE_PROMPT='<更难的题>' go test ...
 func TestLiveProbeEffort(t *testing.T) {
 	a := liveAuth(t)
 	c := New()
 
-	// 模型：默认 dmodel（deepseek-v4-pro）；可用 WILDWORK_PROBE_MODEL 覆盖成
-	// 客户端名（如 qwen3.8-max），探针会自动映射成上游 key。
 	clientModel := os.Getenv("WILDWORK_PROBE_MODEL")
 	if clientModel == "" {
 		clientModel = "deepseek-v4-pro"
@@ -165,7 +214,10 @@ func TestLiveProbeEffort(t *testing.T) {
 	if modelKey == "" {
 		modelKey = clientModel
 	}
-	t.Logf("探测模型：客户端名=%s 上游 key=%s", clientModel, modelKey)
+	prompt := probePrompt()
+	repeat := probeRepeat()
+	t.Logf("探测模型：客户端名=%s 上游 key=%s；每组重复 %d 次", clientModel, modelKey, repeat)
+	t.Logf("探测 prompt（%d 字）：%s", len([]rune(prompt)), truncate(strings.ReplaceAll(prompt, "\n", " "), 90))
 
 	params := func(o map[string]any) map[string]any {
 		p, _ := o["parameters"].(map[string]any)
@@ -177,73 +229,103 @@ func TestLiveProbeEffort(t *testing.T) {
 	}
 
 	cases := []probeCase{
-		{"A 基线（无 parameters）", nil},
-		{"B parameters.reasoning_effort=high", func(o map[string]any) {
+		{name: "A 基线（无 parameters）"},
+		{name: "B parameters.reasoning_effort=high", mutate: func(o map[string]any) {
 			params(o)["reasoning_effort"] = "high"
 		}},
-		{"C none + max_thinking_tokens=0（关闭语义）", func(o map[string]any) {
+		{name: "C none + max_thinking_tokens=0（关闭语义）", mutate: func(o map[string]any) {
 			params(o)["reasoning_effort"] = "none"
 			params(o)["max_thinking_tokens"] = 0
 		}},
-		{"D 非法值 bogus（测严格性）", func(o map[string]any) {
+		{name: "D 非法值 bogus（只看状态码）", shortPrompt: true, mutate: func(o map[string]any) {
 			params(o)["reasoning_effort"] = "bogus"
 		}},
-		{"E 顶层 reasoningEffort=high（双写验证）", func(o map[string]any) {
+		{name: "E 顶层 reasoningEffort=high（单写）", mutate: func(o map[string]any) {
 			o["reasoningEffort"] = "high"
 		}},
-		{"F 顶层+parameters 双写 high", func(o map[string]any) {
+		{name: "F 顶层 + parameters 双写 high", mutate: func(o map[string]any) {
 			o["reasoningEffort"] = "high"
 			params(o)["reasoning_effort"] = "high"
 		}},
 	}
 
-	t.Logf("%-38s %-6s %-8s %-10s %s", "用例", "状态", "耗时", "思考长度", "正文摘要")
+	results := make([]probeResult, 0, len(cases))
 	for _, tc := range cases {
-		messages := []map[string]any{{"role": "user", "content": "1+1=?"}}
-		raw, err := buildAgentBody(messages, modelKey, nil, true)
-		if err != nil {
-			t.Fatalf("%s: 构造 body 失败: %v", tc.name, err)
+		usePrompt := prompt
+		if tc.shortPrompt {
+			usePrompt = "1+1=?"
 		}
-		var obj map[string]any
-		if err := json.Unmarshal(raw, &obj); err != nil {
-			t.Fatalf("%s: body 解析失败: %v", tc.name, err)
-		}
-		if tc.mutate != nil {
-			tc.mutate(obj)
-		}
-		body, _ := json.Marshal(obj)
+		res := probeResult{name: tc.name}
+		totalReasoning, okCount := 0, 0
+		for i := 0; i < repeat; i++ {
+			messages := []map[string]any{{"role": "user", "content": usePrompt}}
+			raw, err := buildAgentBody(messages, modelKey, nil, true)
+			if err != nil {
+				t.Fatalf("%s: 构造 body 失败: %v", tc.name, err)
+			}
+			var obj map[string]any
+			if err := json.Unmarshal(raw, &obj); err != nil {
+				t.Fatalf("%s: body 解析失败: %v", tc.name, err)
+			}
+			if tc.mutate != nil {
+				tc.mutate(obj)
+			}
+			body, _ := json.Marshal(obj)
 
-		start := time.Now()
-		rc, status, respBody, err := c.ChatStream(a, body)
-		elapsed := time.Since(start).Round(time.Millisecond)
-		if err != nil {
-			t.Errorf("%-38s 传输层失败: %v", tc.name, err)
-			continue
+			start := time.Now()
+			rc, status, respBody, err := c.ChatStream(a, body)
+			res.elapsed += time.Since(start)
+			if err != nil {
+				res.note = "传输层失败: " + err.Error()
+				break
+			}
+			res.status = status
+			if rc == nil {
+				// 非 2xx：上游拒绝，响应体是判读依据
+				res.note = truncate(string(respBody), 200)
+				break
+			}
+			msg, aggErr := aggregate(rc, clientModel)
+			_ = rc.Close()
+			if aggErr != nil {
+				res.note = "流解析失败: " + aggErr.Error()
+				break
+			}
+			if v, ok := msg["reasoning_content"].(string); ok {
+				totalReasoning += len([]rune(v))
+			}
+			if v, ok := msg["content"].(string); ok {
+				res.content = truncate(strings.ReplaceAll(v, "\n", " "), 48)
+			}
+			okCount++
 		}
-		if rc == nil {
-			// 非 2xx：上游拒绝，响应体是判读依据
-			t.Logf("%-38s %-6d %-8s %-10s %s", tc.name, status, elapsed, "-", truncate(string(respBody), 220))
-			continue
+		if okCount > 0 {
+			res.reasoning = totalReasoning / okCount
+			res.elapsed /= time.Duration(okCount)
 		}
-		msg, aggErr := aggregate(rc, clientModel)
-		_ = rc.Close()
-		if aggErr != nil {
-			t.Logf("%-38s %-6d %-8s 流解析失败: %v", tc.name, status, elapsed, aggErr)
-			continue
-		}
-		reasoning := ""
-		if v, ok := msg["reasoning_content"].(string); ok {
-			reasoning = v
-		}
-		content := ""
-		if v, ok := msg["content"].(string); ok {
-			content = v
-		}
-		t.Logf("%-38s %-6d %-8s %-10d %s", tc.name, status, elapsed, len(reasoning),
-			truncate(strings.ReplaceAll(content, "\n", " "), 60))
+		results = append(results, res)
 	}
 
-	t.Log("判读：B/E/F 的「思考长度」明显大于 A → 档位字段生效；")
-	t.Log("      C 的思考长度为 0 或明显变小 → 关闭语义成立；")
-	t.Log("      D 返回非 200 → 上游严格校验（客户端必须白名单）；D 返回 200 → 静默忽略（不能盲信）。")
+	base := results[0].reasoning
+	t.Logf("%-40s %-6s %-9s %-14s %s", "用例", "状态", "耗时", "思考长度", "备注")
+	for _, r := range results {
+		ratio := "-"
+		if base > 0 && r.reasoning > 0 {
+			ratio = fmt.Sprintf("%.2fx", float64(r.reasoning)/float64(base))
+		}
+		detail := r.content
+		if r.note != "" {
+			detail = r.note
+		}
+		t.Logf("%-40s %-6d %-9s %-14s %s", r.name, r.status, r.elapsed.Round(time.Millisecond),
+			fmt.Sprintf("%d (%s)", r.reasoning, ratio), detail)
+	}
+
+	if base == 0 {
+		t.Log("==> 基线思考长度为 0：当前 prompt 没触发思考链，比不出档位差异。")
+		t.Log("==> 换更难的题重跑，例如：WILDWORK_PROBE_PROMPT='用 1~9 九个数字各一次组成三个三位数，使第二个是第一个的 2 倍、第三个是 3 倍，求所有解，并逐步推理'")
+	} else {
+		t.Log("==> 看「思考长度」列的倍数：B/E/F 明显大于 A → 档位生效；C 归零 → 关闭语义成立。")
+	}
+	t.Log("==> D 非 200 → 上游严格校验（客户端必须白名单）；D 200 → 静默忽略，不能盲信参考实现。")
 }
