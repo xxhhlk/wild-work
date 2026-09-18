@@ -38,6 +38,14 @@
 // 旧版把 time.Since(start) 卡在 ChatStream 返回处，量到的是 TTFB（≈1s），于是
 // 「总耗时 395s / 12 次 = 33s 一次」却显示成「1.11s」。现在分别记录 TTFB 与总耗时。
 //
+// # 关于取值位置的坑（2026-09-19 修正）
+//
+// aggregate 返回的是**完整 chat.completion**：正文与思考在 `choices[0].message` 下，
+// 不在顶层。早期探针直接读 `msg["content"]` / `msg["reasoning_content"]` → 恒为空，
+// 于是「上游明明吐了 848 个 content 分片」也被记成「回答 0 字、思考 0 字」。
+// 现在统一走 msgField()（message → choice → 顶层三级兜底），并有零成本回归测试
+// TestLiveProbeAggregateExtract 锁住这个位置。
+//
 // # 关于模型 key 的坑（2026-09-19 修正）
 //
 // 静态表 staticModelKeys 只有老模型（无 qwen3.8-flash 等新名），客户端名要靠
@@ -352,7 +360,10 @@ type streamStats struct {
 	ReasonIn  int // 非空 delta.reasoning_content 块数
 	ChoiceRsn int // 非空 choice.reasoning_content（思考挂在 choice 层而非 delta 层）
 	MsgField  int // 出现 choice.message（非流式形态）
-	First     []string
+	// Other 记录 delta 里出现「非 content/role/reasoning_content」键的 chunk 原文
+	// （如 Qoder 的 extends）——思考可能藏在这些非标准字段里。
+	Other []string
+	First []string
 }
 
 // scanStream 用生产同款解析器扫一遍原始字节，统计各字段出现情况。
@@ -390,10 +401,20 @@ func scanStream(raw []byte) streamStats {
 				if delta == nil {
 					continue
 				}
+				odd := false
 				for k, v := range delta {
 					if s, ok := v.(string); !ok || s != "" {
 						st.DeltaKeys[k]++
 					}
+					switch k {
+					case "content", "role", "reasoning_content":
+					default:
+						odd = true
+					}
+				}
+				if odd && len(st.Other) < 3 {
+					b, _ := json.Marshal(chunk)
+					st.Other = append(st.Other, truncate(string(b), 400))
 				}
 				if v, ok := delta["content"].(string); ok && v != "" {
 					st.ContentIn++
@@ -577,6 +598,69 @@ func TestLiveProbeCaseTableDryRun(t *testing.T) {
 	}
 }
 
+// msgField 从聚合结果里取 message 级字段（content / reasoning_content）。
+//
+// 注意：aggregate 返回的是**完整 chat.completion**，正文在 choices[0].message 下，
+// 不在顶层。早期探针直接读 msg["content"] / msg["reasoning_content"] → 恒为空，
+// 把「有内容、有思考」一律误判成 0（真实流里 848 个 content 分片却报「回答 0 字」）。
+// 这里按 message → choice → 顶层 三级兜底取。
+func msgField(msg map[string]any, key string) string {
+	if v, ok := msg[key].(string); ok && v != "" {
+		return v
+	}
+	choices, _ := msg["choices"].([]any)
+	if len(choices) == 0 {
+		return ""
+	}
+	ch, _ := choices[0].(map[string]any)
+	if ch == nil {
+		return ""
+	}
+	if m, ok := ch["message"].(map[string]any); ok {
+		if v, ok := m[key].(string); ok {
+			return v
+		}
+	}
+	if v, ok := ch[key].(string); ok {
+		return v
+	}
+	return ""
+}
+
+// TestLiveProbeAggregateExtract 零成本回归：确认 msgField 能从 aggregate 结果里取到
+// 正文与思考（字段在 choices[0].message 下）。不联网。
+func TestLiveProbeAggregateExtract(t *testing.T) {
+	mk := func(chunk map[string]any) string {
+		body, _ := json.Marshal(chunk)
+		env, _ := json.Marshal(map[string]any{"headers": map[string]any{"Content-Type": []string{"application/json"}}, "body": string(body)})
+		return "data:" + string(env)
+	}
+	var b strings.Builder
+	b.WriteString(mk(map[string]any{
+		"choices": []any{map[string]any{"delta": map[string]any{"reasoning_content": "先称 123 对 456", "role": "assistant"}, "index": 0}},
+		"id":      "chatcmpl-t",
+	}) + "\n")
+	b.WriteString(mk(map[string]any{
+		"choices": []any{map[string]any{"delta": map[string]any{"content": "把 1、2、3 放左盘"}, "index": 0}},
+		"id":      "chatcmpl-t",
+	}) + "\n")
+	b.WriteString(`data:{"headers":{"Content-Type":["application/json"]},"body":"[DONE]"}` + "\n")
+
+	msg, err := aggregate(strings.NewReader(b.String()), "m")
+	if err != nil {
+		t.Fatalf("aggregate: %v", err)
+	}
+	gotContent := msgField(msg, "content")
+	gotReason := msgField(msg, "reasoning_content")
+	if gotContent != "把 1、2、3 放左盘" {
+		t.Errorf("msgField(content) = %q，期望 %q（字段在 choices[0].message 下）", gotContent, "把 1、2、3 放左盘")
+	}
+	if gotReason != "先称 123 对 456" {
+		t.Errorf("msgField(reasoning_content) = %q，期望 %q", gotReason, "先称 123 对 456")
+	}
+	t.Logf("提取正确：content=%q reasoning=%q", gotContent, gotReason)
+}
+
 // TestLiveProbeEffort 第 2 步：同一 prompt 下横向对比不同字段注入的行为。
 //
 // 判读：
@@ -701,10 +785,10 @@ func TestLiveProbeEffort(t *testing.T) {
 				res.note = "流解析失败: " + aggErr.Error()
 				break
 			}
-			if v, ok := msg["reasoning_content"].(string); ok {
+			if v := msgField(msg, "reasoning_content"); v != "" {
 				sumReason += len([]rune(v))
 			}
-			if v, ok := msg["content"].(string); ok {
+			if v := msgField(msg, "content"); v != "" {
 				sumContent += len([]rune(v))
 			}
 			sumTTFB += ttfb
@@ -752,6 +836,12 @@ func TestLiveProbeEffort(t *testing.T) {
 				t.Logf("     line%d: %s", i+1, l)
 			}
 			break
+		}
+	}
+	// 非标准 delta 键（如 extends）原文 —— 思考有可能藏在里面。
+	for _, r := range results {
+		for i, o := range r.stats.Other {
+			t.Logf(">> %s 的非标准 delta chunk%d：%s", r.name, i+1, o)
 		}
 	}
 
