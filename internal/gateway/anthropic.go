@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+
+	"wild-work/internal/reasoning"
 )
 
 // handleAnthropicMessages 处理 POST /v1/messages。
@@ -142,14 +144,18 @@ func anthropicToChat(in map[string]any, resolvedModel string, maxTokensCap int) 
 	if tc := anthropicToolChoice(in["tool_choice"]); tc != nil {
 		out["tool_choice"] = tc
 	}
-	// thinking 参数透传：渠道自行决定是否支持（Qoder 用 thinking.type=enabled）
+	// 思考控制：Anthropic 用 thinking.{type,budget_tokens} 表达，这里连同各种兼容写法
+	// （reasoning_effort / reasoning.effort / enable_thinking …）一起归一化为 reasoning_effort。
+	// 归一化后仍保留原始 thinking 对象，让渠道自行决定是否识别它（如 qoder 的 thinking.type）。
+	control, err := reasoning.Resolve(in, false)
+	if err != nil {
+		return nil, err
+	}
 	if v, has := in["thinking"]; has && !isEmptyValue(v) {
 		out["thinking"] = v
-		if tm, ok := v.(map[string]any); ok {
-			if strings.EqualFold(asString(tm["type"]), "enabled") {
-				out["reasoning_effort"] = "medium" // 渠道按 effort 启用思考时的兜底档位
-			}
-		}
+	}
+	if effort := reasoning.ChatEffort(control); effort != "" {
+		out["reasoning_effort"] = effort
 	}
 	if md := in["metadata"]; !isEmptyValue(md) {
 		if mm, ok := md.(map[string]any); ok {

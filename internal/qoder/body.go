@@ -13,10 +13,12 @@ import (
 //   - modelKey：上游模型 key（如 dmodel）
 //   - tools：客户端传来的 OpenAI tools 数组；为空则不注入 tools 字段
 //   - enableReasoning：是否启用思考模式
-//   - reasoningEffort：思考强度 low/medium/high，空串表示不传
+//
+// Qoder 协议（model_config）只有 is_reasoning 开关，没有强度档位：
+// 客户端给出的档位只能映射成「开 / 关」，无法区分多档强度。
 //
 // 注意：developer 角色必须改写为 system。
-func buildAgentBody(messages []map[string]any, modelKey string, tools []any, enableReasoning bool, reasoningEffort string) ([]byte, error) {
+func buildAgentBody(messages []map[string]any, modelKey string, tools []any, enableReasoning bool) ([]byte, error) {
 	// developer → system（浅拷贝消息避免污染调用方数据）
 	msgs := make([]map[string]any, len(messages))
 	for i, m := range messages {

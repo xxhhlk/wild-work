@@ -80,7 +80,7 @@ func TestBuildAgentBodyDeveloperToSystem(t *testing.T) {
 		{"role": "system", "content": "保持简洁"},
 		{"role": "user", "content": "你好"},
 	}
-	raw, err := buildAgentBody(msgs, "dmodel", nil, false, "")
+	raw, err := buildAgentBody(msgs, "dmodel", nil, false)
 	if err != nil {
 		t.Fatalf("buildAgentBody: %v", err)
 	}
@@ -117,5 +117,32 @@ func TestBuildAgentBodyDeveloperToSystem(t *testing.T) {
 	_ = json.Unmarshal(raw, &prompt)
 	if prompt.ChatContext.Text.Text != "你好" {
 		t.Errorf("prompt = %q, want 你好", prompt.ChatContext.Text.Text)
+	}
+}
+
+// reasoningEnabled 投影测试：Qoder 协议只有 is_reasoning 开关，没有强度档位。
+func TestReasoningEnabledProjection(t *testing.T) {
+	cases := []struct {
+		name     string
+		effort   string
+		thinking *thinkingParam
+		want     bool
+	}{
+		{"未表达", "", nil, false},
+		{"显式关闭 none", "none", nil, false},
+		{"显式关闭 off", "off", nil, false},
+		{"低档", "low", nil, true},
+		{"中档", "medium", nil, true},
+		{"高档", "high", nil, true},
+		{"最高档", "ultra", nil, true},
+		{"thinking enabled 兜底", "", &thinkingParam{Type: "enabled"}, true},
+		{"thinking adaptive 兜底", "", &thinkingParam{Type: "adaptive"}, true},
+		{"thinking disabled 兜底", "", &thinkingParam{Type: "disabled"}, false},
+		{"effort 优先于 thinking", "none", &thinkingParam{Type: "enabled"}, false},
+	}
+	for _, tc := range cases {
+		if got := reasoningEnabled(tc.effort, tc.thinking); got != tc.want {
+			t.Errorf("%s: reasoningEnabled(%q, %v) = %v, want %v", tc.name, tc.effort, tc.thinking, got, tc.want)
+		}
 	}
 }

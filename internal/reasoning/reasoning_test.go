@@ -1,0 +1,364 @@
+// 单测覆盖 Buddy2api/reasoning_controls.py 的行为契约（同一批用例移植 + Go 侧补充）。
+package reasoning
+
+import (
+	"encoding/json"
+	"reflect"
+	"testing"
+)
+
+func mustResolve(t *testing.T, payload map[string]any, preferNested bool) Control {
+	t.Helper()
+	c, err := Resolve(payload, preferNested)
+	if err != nil {
+		t.Fatalf("Resolve(%v) 意外报错: %v", payload, err)
+	}
+	return c
+}
+
+func mustNormalize(t *testing.T, payload map[string]any, preferNested bool) map[string]any {
+	t.Helper()
+	body, _, err := NormalizeChat(payload, preferNested)
+	if err != nil {
+		t.Fatalf("NormalizeChat(%v) 意外报错: %v", payload, err)
+	}
+	return body
+}
+
+// 顶层 reasoning_effort 与 thinking.type 冲突时，强度写法优先（Python: higher_priority_switch）。
+func TestEffortOverridesCrossObjectDisableSwitch(t *testing.T) {
+	body := mustNormalize(t, map[string]any{
+		"reasoning_effort": "high",
+		"thinking":         map[string]any{"type": "disabled"},
+	}, false)
+	if body["reasoning_effort"] != "high" {
+		t.Fatalf("reasoning_effort = %v, want high", body["reasoning_effort"])
+	}
+	if _, has := body["thinking"]; has {
+		t.Fatalf("thinking 应被移除，实际: %v", body["thinking"])
+	}
+}
+
+func TestOutputConfigEffortOverridesThinkingDisable(t *testing.T) {
+	body := mustNormalize(t, map[string]any{
+		"output_config": map[string]any{"effort": "high"},
+		"thinking":      map[string]any{"type": "disabled"},
+	}, false)
+	if body["reasoning_effort"] != "high" {
+		t.Fatalf("reasoning_effort = %v, want high", body["reasoning_effort"])
+	}
+	if _, has := body["output_config"]; has {
+		t.Fatalf("output_config 仅含 effort，应被整体移除，实际: %v", body["output_config"])
+	}
+}
+
+// thinking.type 属于原生对象写法，优先级高于 enable_thinking 这类跨方言开关。
+func TestNativeSwitchOverridesCrossDialectSwitch(t *testing.T) {
+	body := mustNormalize(t, map[string]any{
+		"thinking":        map[string]any{"type": "enabled"},
+		"enable_thinking": false,
+	}, false)
+	if body["reasoning_effort"] != "high" {
+		t.Fatalf("reasoning_effort = %v, want high", body["reasoning_effort"])
+	}
+	if _, has := body["enable_thinking"]; has {
+		t.Fatalf("enable_thinking 应被移除")
+	}
+}
+
+// 同一原生对象内既给强度又给反向开关 → 400。
+func TestRejectsConflictInsideNativeObject(t *testing.T) {
+	_, _, err := NormalizeChat(map[string]any{
+		"reasoning": map[string]any{"effort": "high", "enabled": false},
+	}, false)
+	if !IsInvalid(err) {
+		t.Fatalf("期望 InvalidError，实际: %v", err)
+	}
+}
+
+// thinking.type=enabled 与 thinking.budget_tokens=0 同组矛盾 → 400。
+func TestRejectsConflictInsideThinkingObject(t *testing.T) {
+	_, err := Resolve(map[string]any{
+		"thinking": map[string]any{"type": "enabled", "budget_tokens": float64(0)},
+	}, false)
+	if !IsInvalid(err) {
+		t.Fatalf("期望 InvalidError，实际: %v", err)
+	}
+}
+
+// reasoning_effort=default 视为「未表达」，让位给优先级更低的显式开关。
+func TestDefaultEffortDefersToExplicitSwitch(t *testing.T) {
+	body := mustNormalize(t, map[string]any{
+		"reasoning_effort": "default",
+		"thinking":         map[string]any{"type": "disabled"},
+	}, false)
+	if body["reasoning_effort"] != "none" {
+		t.Fatalf("reasoning_effort = %v, want none", body["reasoning_effort"])
+	}
+}
+
+// 扩展字段与预算保留，且归一化幂等。
+func TestNormalizationPreservesExtensionsAndBudgetIdempotently(t *testing.T) {
+	payload := map[string]any{
+		"thinking": map[string]any{
+			"type":          "enabled",
+			"budget_tokens": float64(4096),
+			"display":       "hidden",
+		},
+		"reasoning": map[string]any{
+			"exclude":    true,
+			"max_tokens": float64(8192),
+		},
+	}
+	body, control, err := NormalizeChat(payload, false)
+	if err != nil {
+		t.Fatalf("NormalizeChat: %v", err)
+	}
+	if body["reasoning_effort"] != "high" {
+		t.Fatalf("reasoning_effort = %v, want high", body["reasoning_effort"])
+	}
+	if !reflect.DeepEqual(body["thinking"], map[string]any{"budget_tokens": float64(4096), "display": "hidden"}) {
+		t.Fatalf("thinking = %v", body["thinking"])
+	}
+	if !reflect.DeepEqual(body["reasoning"], map[string]any{"exclude": true, "max_tokens": float64(8192)}) {
+		t.Fatalf("reasoning = %v", body["reasoning"])
+	}
+	if control.BudgetTokens == nil || *control.BudgetTokens != 4096 {
+		t.Fatalf("budget_tokens = %v, want 4096", control.BudgetTokens)
+	}
+	again := mustNormalize(t, body, false)
+	if !reflect.DeepEqual(again, body) {
+		t.Fatalf("二次归一化不幂等:\n first=%v\nsecond=%v", body, again)
+	}
+	// 归一化不得修改入参
+	if _, has := payload["reasoning_effort"]; has {
+		t.Fatalf("入参被修改: %v", payload)
+	}
+	if tm := payload["thinking"].(map[string]any); tm["type"] != "enabled" {
+		t.Fatalf("入参 thinking 被修改: %v", tm)
+	}
+}
+
+// WorkBuddy 方言投影：标准档位 → low/high/max。
+func TestWorkBuddyEffortProjection(t *testing.T) {
+	cases := []struct{ explicit, want string }{
+		{"minimal", "low"},
+		{"low", "low"},
+		{"medium", "high"},
+		{"high", "high"},
+		{"xhigh", "max"},
+		{"max", "max"},
+		{"ultra", "max"},
+	}
+	for _, tc := range cases {
+		body := mustNormalize(t, map[string]any{"reasoning_effort": tc.explicit}, false)
+		c, _ := Resolve(body, false)
+		if got := WorkBuddyEffort(c); got != tc.want {
+			t.Fatalf("WorkBuddyEffort(%s) = %s, want %s", tc.explicit, got, tc.want)
+		}
+	}
+}
+
+// 关闭思考时不回填默认档（WorkBuddy 方言下表现为「不传字段」）。
+func TestDisabledReasoningDropsField(t *testing.T) {
+	for _, explicit := range []string{"none", "off", "disable", "disabled"} {
+		body := mustNormalize(t, map[string]any{"reasoning_effort": explicit}, false)
+		c, _ := Resolve(body, false)
+		if c.Mode != ModeDisabled {
+			t.Fatalf("%s 应解析为 disabled，实际 %s", explicit, c.Mode)
+		}
+		if got := WorkBuddyEffort(c); got != "" {
+			t.Fatalf("WorkBuddyEffort(%s) = %q, want 空", explicit, got)
+		}
+	}
+}
+
+// 非 WorkBuddy 方言模型保留标准档位（ChatEffort 不做三档投影）。
+func TestChatEffortPreservesStandardLevels(t *testing.T) {
+	cases := map[string]string{
+		"none":    "none",
+		"minimal": "minimal",
+		"low":     "low",
+		"medium":  "medium",
+		"high":    "high",
+		"xhigh":   "xhigh",
+		"max":     "max",
+		"ultra":   "ultra",
+	}
+	for explicit, want := range cases {
+		body := mustNormalize(t, map[string]any{"reasoning_effort": explicit}, false)
+		c, _ := Resolve(body, false)
+		if got := ChatEffort(c); got != want {
+			t.Fatalf("ChatEffort(%s) = %s, want %s", explicit, got, want)
+		}
+	}
+}
+
+func TestEnabledThinkingMapsToHigh(t *testing.T) {
+	for _, typ := range []string{"enabled", "adaptive"} {
+		body := mustNormalize(t, map[string]any{"thinking": map[string]any{"type": typ}}, false)
+		if body["reasoning_effort"] != "high" {
+			t.Fatalf("thinking.type=%s → reasoning_effort=%v, want high", typ, body["reasoning_effort"])
+		}
+	}
+}
+
+// thinking.type=disabled 归一化为 reasoning_effort=none（标准 Chat 方言）；
+// WorkBuddy 侧再用「不传字段」表达关闭，见 TestDisabledReasoningDropsField。
+func TestDisabledThinkingNormalizesToNone(t *testing.T) {
+	body := mustNormalize(t, map[string]any{"thinking": map[string]any{"type": "disabled"}}, false)
+	if _, has := body["thinking"]; has {
+		t.Fatalf("thinking 应被移除: %v", body)
+	}
+	if body["reasoning_effort"] != "none" {
+		t.Fatalf("reasoning_effort = %v, want none", body["reasoning_effort"])
+	}
+}
+
+// 兼容字段全量：各写法都能命中同一控制量。
+func TestCompatibleFieldForms(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload map[string]any
+		want    string
+	}{
+		{"reasoning_effort", map[string]any{"reasoning_effort": "high"}, "high"},
+		{"reasoningEffort", map[string]any{"reasoningEffort": "high"}, "high"},
+		{"reasoning.effort", map[string]any{"reasoning": map[string]any{"effort": "high"}}, "high"},
+		{"output_config.effort", map[string]any{"output_config": map[string]any{"effort": "high"}}, "high"},
+		{"thinking.effort", map[string]any{"thinking": map[string]any{"effort": "high"}}, "high"},
+		{"thinking.type", map[string]any{"thinking": map[string]any{"type": "enabled"}}, "high"},
+		{"enable_thinking", map[string]any{"enable_thinking": true}, "high"},
+		{"think", map[string]any{"think": true}, "high"},
+		{"enable_thinking=1", map[string]any{"enable_thinking": float64(1)}, "high"},
+		{"reasoning.enabled", map[string]any{"reasoning": map[string]any{"enabled": true}}, "high"},
+		{"reasoning.budget_tokens", map[string]any{"reasoning": map[string]any{"budget_tokens": float64(2048)}}, "high"},
+		{"x-high", map[string]any{"reasoning_effort": "x-high"}, "xhigh"},
+		{"extra_high", map[string]any{"reasoning_effort": "extra_high"}, "xhigh"},
+		{"大写+空格", map[string]any{"reasoning_effort": "  HIGH  "}, "high"},
+		{"reasoning 标量", map[string]any{"reasoning": "low"}, "low"},
+		{"thinking 标量", map[string]any{"thinking": "low"}, "low"},
+	}
+	for _, tc := range cases {
+		body := mustNormalize(t, tc.payload, false)
+		if body["reasoning_effort"] != tc.want {
+			t.Fatalf("%s: reasoning_effort = %v, want %v", tc.name, body["reasoning_effort"], tc.want)
+		}
+	}
+}
+
+func TestDisableForms(t *testing.T) {
+	cases := []map[string]any{
+		{"disable_reasoning": true},
+		{"disable_reasoning": float64(1)},
+		{"enable_thinking": false},
+		{"enable_thinking": float64(0)},
+		{"thinking": map[string]any{"budget_tokens": float64(0)}},
+	}
+	for _, payload := range cases {
+		body := mustNormalize(t, payload, false)
+		if body["reasoning_effort"] != "none" {
+			t.Fatalf("%v → reasoning_effort = %v, want none", payload, body["reasoning_effort"])
+		}
+	}
+	// disable_reasoning=false / 0 属于「未表达」
+	for _, v := range []any{false, float64(0)} {
+		body := mustNormalize(t, map[string]any{"disable_reasoning": v}, false)
+		if _, has := body["reasoning_effort"]; has {
+			t.Fatalf("disable_reasoning=%v 不应产生控制: %v", v, body)
+		}
+	}
+}
+
+func TestInvalidValues(t *testing.T) {
+	cases := []map[string]any{
+		{"reasoning_effort": "very-high"},
+		{"reasoning_effort": ""},
+		{"reasoning_effort": float64(3)},
+		{"reasoning_effort": map[string]any{}},
+		{"thinking": map[string]any{"type": "maybe"}},
+		{"thinking": map[string]any{"type": float64(1)}},
+		{"thinking": map[string]any{"budget_tokens": -1.0}},
+		{"thinking": map[string]any{"budget_tokens": true}},
+		{"enable_thinking": "sometimes"},
+		{"disable_reasoning": "yes"},
+		{"reasoning": map[string]any{"enabled": "sometimes"}},
+	}
+	for _, payload := range cases {
+		if _, err := Resolve(payload, false); !IsInvalid(err) {
+			t.Fatalf("%v 期望 InvalidError，实际: %v", payload, err)
+		}
+	}
+}
+
+// preferNested：Responses 用嵌套 reasoning.effort，Chat 用顶层 reasoning_effort。
+func TestPreferNestedOrdering(t *testing.T) {
+	payload := map[string]any{
+		"reasoning_effort": "low",
+		"reasoning":        map[string]any{"effort": "max"},
+	}
+	if got := mustResolve(t, payload, false).Effort; got != "low" {
+		t.Fatalf("preferNested=false 应取顶层，实际 %s", got)
+	}
+	if got := mustResolve(t, payload, true).Effort; got != "max" {
+		t.Fatalf("preferNested=true 应取嵌套，实际 %s", got)
+	}
+}
+
+func TestEmptyPayloadIsDefault(t *testing.T) {
+	if c := mustResolve(t, nil, false); !c.IsDefault() {
+		t.Fatalf("nil payload 应为 default，实际 %s", c.Mode)
+	}
+	if c := mustResolve(t, map[string]any{"messages": []any{}}, false); !c.IsDefault() {
+		t.Fatalf("无控制字段应为 default，实际 %s", c.Mode)
+	}
+	if v, ok := Default.Enabled(); ok {
+		t.Fatalf("default 的 Enabled 应为未表达，实际 (%v,%v)", v, ok)
+	}
+}
+
+func TestParseDefault(t *testing.T) {
+	cases := map[string]string{
+		"":        "",
+		"off":     "",
+		"none":    "",
+		"default": "",
+		"low":     "low",
+		"HIGH":    "high",
+		"max":     "max",
+		"ultra":   "ultra",
+		"enabled": "high",
+		"xhigh":   "xhigh",
+	}
+	for in, want := range cases {
+		got, err := ParseDefault(in)
+		if err != nil {
+			t.Fatalf("ParseDefault(%q) 报错: %v", in, err)
+		}
+		if got != want {
+			t.Fatalf("ParseDefault(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if _, err := ParseDefault("very-high"); err == nil {
+		t.Fatalf("非法档位应报错")
+	}
+}
+
+// JSON 往返：确保从网络解出的 float64 数值形态与手写 map 行为一致。
+func TestJSONRoundTrip(t *testing.T) {
+	raw := []byte(`{"reasoning":{"effort":"high","summary":"auto"},"thinking":{"type":"enabled","budget_tokens":4096}}`)
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	body := mustNormalize(t, payload, true)
+	if body["reasoning_effort"] != "high" {
+		t.Fatalf("reasoning_effort = %v", body["reasoning_effort"])
+	}
+	if body["reasoning_summary"] != "auto" {
+		t.Fatalf("summary 应提升为顶层 reasoning_summary: %v", body["reasoning_summary"])
+	}
+	if _, has := body["reasoning"]; has {
+		t.Fatalf("reasoning 仅剩 effort/summary，应被移除: %v", body["reasoning"])
+	}
+}

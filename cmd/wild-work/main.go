@@ -182,14 +182,15 @@ func main() {
 		fatal("embed web: %v", err)
 	}
 	inner := server.NewHandler(server.Config{
-		Runtimes:     runtimes,
-		APIKey:       cfg.APIKey,
-		HardCooldown: cfg.HardCreditDur,
-		SoftCooldown: cfg.SoftRateDur,
-		ErrThreshold: cfg.Cooldown.ErrThresh,
-		ErrCooldown:  cfg.ErrCooldownDur,
-		WebUI:        sub,
-		AttachAPI:    appInst.HandleAPI,
+		Runtimes:        runtimes,
+		APIKey:          cfg.APIKey,
+		HardCooldown:    cfg.HardCreditDur,
+		SoftCooldown:    cfg.SoftRateDur,
+		ErrThreshold:    cfg.Cooldown.ErrThresh,
+		ErrCooldown:     cfg.ErrCooldownDur,
+		ReasoningEffort: cfg.Compat.ReasoningEffort,
+		WebUI:           sub,
+		AttachAPI:       appInst.HandleAPI,
 	})
 
 	// 两层结构：外层兼容层只接管三个新端点，其余（含 /v1/chat/completions、Web UI、
@@ -217,8 +218,8 @@ func main() {
 	compat.Routes(mux) // POST /v1/responses · /v1/messages · /v1/messages/count_tokens
 	mux.Handle("/", inner)
 	if compat != nil {
-		log.Printf("三接口兼容层已启用：default_channel=%q max_tokens_cap=%d model_map=%d 条",
-			cfg.Compat.DefaultChannel, cfg.Compat.MaxTokensCap, len(cfg.Compat.ModelMap))
+		log.Printf("三接口兼容层已启用：default_channel=%q max_tokens_cap=%d reasoning_effort=%q model_map=%d 条",
+			cfg.Compat.DefaultChannel, cfg.Compat.MaxTokensCap, cfg.Compat.ReasoningEffort, len(cfg.Compat.ModelMap))
 	}
 	appInst.SetHandler(inner)
 	appInst.SetRootHandler(mux)

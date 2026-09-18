@@ -41,6 +41,7 @@ Wild-Work 是 WorkBuddy（国内版+国际版）/TraeWork/Qoder 多渠道账号�
 | R13 | **三接口兼容采用两层结构：内层 handler 不动，新增 `internal/gateway` 边缘层**，经 **in-process 调用**（`io.Pipe` + ResponseWriter 形状）复用内层 | 代码量比内联重构多 20%，但改动面小一个数量级（主链路仅 2 处调用点 + 1 个访问器），回归风险低、可脱离 pool 单测。**不得用 HTTP 自环**（`0.0.0.0` 监听不可作目标、鉴权双份、启动竞态） |
 | R14 | **`Stream`/`Aggregate` 的 model 由调用方显式传入**，渠道不得用实例字段记忆「上次请求的模型名」 | 旧实现 qoder 用全局 `lastModel`，多账号并发会串号；traework 恒为空串。详见 `docs/三接口兼容改造备忘.md` §3 |
 | R15 | **Responses 的 `function_call` 必须是独立 output item**（带 `call_id`），Anthropic 的 tool_use 参数必须走 `input_json_delta` | 参考实现 `tokligence-gateway` 两处写法不合规范（塞进 `message.content`、start 里一次性给完整 input），Codex/Claude Code 会解析失败 |
+| R16 | **思考强度统一走 `internal/reasoning`**：客户端各写法（`reasoning_effort` / `reasoning.effort` / `thinking.*` / `output_config.effort` / `enable_thinking` / `disable_reasoning` / `think`）在**内层 handler**（`prepareChatBody`）归一化成顶层 `reasoning_effort`，非法/自相矛盾回 400 `invalid_reasoning_control`；**渠道层只做方言投影**（WorkBuddy 家族 → low/high/max；Qoder → `is_reasoning` 开关；TraeWork 协议无此字段），不重复做兼容字段解析 | 移植自 Buddy2api `reasoning_controls.py`。规则只应存在一处：渠道各自解析会让「同一客户端写法在不同渠道表现不同」。默认档 `compat.reasoning_effort` 只在**客户端未表达**时注入，且仅 WorkBuddy 渠道生效 |
 
 ## 2. 架构选型（依据）
 

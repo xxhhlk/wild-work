@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"wild-work/internal/reasoning"
 )
 
 // Listen 监听地址：Host 为空表示全部接口。
@@ -144,6 +146,11 @@ type Config struct {
 		// MaxTokensCap 转发上游前对 max_tokens 封顶（0 = 不限制）。
 		// Anthropic 客户端常发 64000，而多数上游上限更低，导致直接 400。
 		MaxTokensCap int `json:"max_tokens_cap"`
+		// ReasoningEffort 思考强度默认档：客户端未表达思考意图时注入的兜底值。
+		// 取值 none/minimal/low/medium/high/xhigh/max/ultra；空串或 off/none 表示不注入。
+		// 仅 WorkBuddy 国内版/国际版渠道生效（上游认 low/high/max 三档），
+		// 其余渠道协议没有可验证的档位字段。客户端显式指定时始终以客户端为准。
+		ReasoningEffort string `json:"reasoning_effort"`
 	} `json:"compat"`
 
 	// 解析后
@@ -306,6 +313,9 @@ func applyEnv(c *Config) {
 			c.Compat.MaxTokensCap = n
 		}
 	}
+	if v := os.Getenv("WILDWORK_REASONING_EFFORT"); v != "" {
+		c.Compat.ReasoningEffort = v
+	}
 }
 
 func (c *Config) normalize() error {
@@ -328,6 +338,12 @@ func (c *Config) normalize() error {
 	if c.Compat.MaxTokensCap < 0 {
 		c.Compat.MaxTokensCap = 0 // 负数视为「不限制」，避免误用导致 max_tokens 被置 0
 	}
+	// 思考强度默认档：归一化为标准档位（"" 表示不注入）；非法取值在加载阶段就报错
+	effort, err := reasoning.ParseDefault(c.Compat.ReasoningEffort)
+	if err != nil {
+		return fmt.Errorf("compat.reasoning_effort: %w", err)
+	}
+	c.Compat.ReasoningEffort = effort
 	if c.Listen.Port <= 0 {
 		c.Listen.Port = 7863
 	}

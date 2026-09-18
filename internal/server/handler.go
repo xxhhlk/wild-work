@@ -17,6 +17,7 @@ import (
 	"wild-work/internal/auth"
 	"wild-work/internal/pool"
 	"wild-work/internal/provider"
+	"wild-work/internal/reasoning"
 )
 
 // Runtime 是一个平台的一组运行时资源：pool + upstream + 静态模型兜底。
@@ -58,6 +59,11 @@ type Config struct {
 	ErrThreshold int
 	ErrCooldown  time.Duration
 	RefreshSkew  time.Duration
+
+	// ReasoningEffort 思考强度默认档：客户端未表达思考意图时注入的兜底值
+	// （标准档位 none/minimal/low/medium/high/xhigh/max/ultra；空串 = 不注入）。
+	// 来源 config.Compat.ReasoningEffort，面板保存后经 SetReasoningEffort 热更新。
+	ReasoningEffort string
 }
 
 // stickyEntry 粘性路由记录：记录上次路由账号及连续使用次数。
@@ -77,6 +83,9 @@ type Handler struct {
 	apiMu    sync.RWMutex // 保护 cfg.APIKey（面板可运行时修改）
 	stickyMu sync.RWMutex
 	sticky   map[string]*stickyEntry // runtimeKind → stickyEntry
+
+	reasoningMu     sync.RWMutex // 保护 reasoningEffort（面板可运行时修改）
+	reasoningEffort string       // 默认思考档，见 Config.ReasoningEffort
 }
 
 func NewHandler(cfg Config) *Handler {
@@ -194,6 +203,32 @@ func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
 
 // SetAPIKey 运行时修改内层 API Key（面板可调用）。
 func (h *Handler) SetAPIKey(key string) { h.apiMu.Lock(); defer h.apiMu.Unlock(); h.cfg.APIKey = key }
+
+// SetReasoningEffort 热更新默认思考档（面板保存 compat 后调用）。
+// 取值已由 config 层归一化：空串 = 不注入。
+func (h *Handler) SetReasoningEffort(v string) {
+	h.reasoningMu.Lock()
+	defer h.reasoningMu.Unlock()
+	h.reasoningEffort = v
+}
+
+func (h *Handler) currentReasoningEffort() string {
+	h.reasoningMu.RLock()
+	defer h.reasoningMu.RUnlock()
+	return h.reasoningEffort
+}
+
+// reasoningDefaultFor 返回该渠道可用的默认思考档。
+// 只有 WorkBuddy 国内版/国际版支持：上游认 low/high/max 三档（标准档位由渠道层投影）。
+// TraeWork 协议没有可验证的思考控制字段、Qoder 只有 is_reasoning 开关，
+// 注入默认档只会被上游忽略或报错，因此返回空串。
+func (h *Handler) reasoningDefaultFor(k provider.Kind) string {
+	switch k {
+	case provider.WorkBuddy, provider.WorkBuddyAI:
+		return h.currentReasoningEffort()
+	}
+	return ""
+}
 
 // CurrentAPIKey 读取当前生效的 API Key（供外层兼容层跟随面板修改）。
 func (h *Handler) CurrentAPIKey() string { return h.currentAPIKey() }
@@ -360,8 +395,14 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	clientModel := peek.Model // 客户端请求的原始模型名（含 channel/ 前缀），回填进响应
-	body, err = rewriteModel(body, model)
+	body, err = prepareChatBody(body, model, h.reasoningDefaultFor(rt.Kind))
 	if err != nil {
+		if reasoning.IsInvalid(err) {
+			// 客户端把思考强度写错（取值非法或自相矛盾）：明确回 400，
+			// 不要当上游故障去轮转账号、冷却账号。
+			writeOpenAIError(w, http.StatusBadRequest, "invalid_reasoning_control", err.Error())
+			return
+		}
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
@@ -512,13 +553,28 @@ func (h *Handler) runtimeForModel(model string) (*Runtime, string, error) {
 	return rt, parts[1], nil
 }
 
-func rewriteModel(body []byte, model string) ([]byte, error) {
+// prepareChatBody 改写发往上游的 Chat 请求体：
+//  1. 归一化客户端的思考控制为顶层 reasoning_effort（见 internal/reasoning）；
+//     取值非法或同一对象内自相矛盾时返回 reasoning.InvalidError；
+//  2. 客户端未表达思考意图时注入渠道默认档（defaultEffort 为空则跳过）；
+//  3. 覆盖 model 为路由后的真实模型名。
+//
+// 渠道层（internal/upstream 等）只负责把标准档位投影成自己协议的方言，
+// 不重复做归一化，避免同一套规则散落多处。
+func prepareChatBody(body []byte, model, defaultEffort string) ([]byte, error) {
 	var obj map[string]any
 	if err := json.Unmarshal(body, &obj); err != nil {
 		return nil, err
 	}
-	obj["model"] = model
-	return json.Marshal(obj)
+	normalized, control, err := reasoning.NormalizeChat(obj, false)
+	if err != nil {
+		return nil, err
+	}
+	if defaultEffort != "" && control.IsDefault() {
+		normalized["reasoning_effort"] = defaultEffort
+	}
+	normalized["model"] = model
+	return json.Marshal(normalized)
 }
 
 // ChannelModels 返回每个渠道当前生效的模型列表，与 /v1/models 同源

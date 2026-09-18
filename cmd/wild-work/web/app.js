@@ -598,6 +598,14 @@ function openApiConfig() {
   $("selCh").innerHTML = channels.map(c => `<option value="${c}">${c}</option>`).join("");
   $("selCh").value = cc.default_channel || (channels[0] || "");
   $("inMaxTok").value = cc.max_tokens_cap || 0;
+  // 思考强度：配置里可能是下拉未列出的档位（如 minimal/xhigh），补一个选项，
+  // 否则 select.value 赋值失败会退回空串，保存时把用户设置悄悄清掉。
+  const effSel = $("selEffort");
+  const effVal = cc.reasoning_effort || "";
+  if (effVal && ![...effSel.options].some(o => o.value === effVal)) {
+    effSel.add(new Option(effVal, effVal));
+  }
+  effSel.value = effVal;
   const map = cc.model_map || {};
   const entries = Object.entries(map);
   $("mapSummary").textContent = entries.length === 0 ? "（空）" : entries.map(([k,v]) => `${k} → ${v}`).join("\u00A0 \u00A0");
@@ -693,8 +701,9 @@ async function saveApiConfig() {
 
   const defaultChannel = $("selCh").value;
   const maxTokensCap = parseInt($("inMaxTok").value, 10) || 0;
+  const reasoningEffort = $("selEffort").value;
   try {
-    await api("/api/config/compat", { default_channel: defaultChannel, max_tokens_cap: maxTokensCap, model_map: modelMap });
+    await api("/api/config/compat", { default_channel: defaultChannel, max_tokens_cap: maxTokensCap, reasoning_effort: reasoningEffort, model_map: modelMap });
     toast("模型路由已更新");
     closeApiConfig();
     loadState();

@@ -17,6 +17,7 @@ import (
 
 	"wild-work/internal/auth"
 	"wild-work/internal/provider"
+	"wild-work/internal/reasoning"
 )
 
 // Client QoderWork 上游客户端。
@@ -189,6 +190,32 @@ func (c *Client) RefreshToken(a *auth.Auth) error {
 	return nil
 }
 
+// thinkingParam 客户端 thinking 参数：Qoder 只关心 type（enabled/adaptive/disabled）。
+type thinkingParam struct {
+	Type string `json:"type"`
+}
+
+// reasoningEnabled 把归一化后的思考控制投影成 Qoder 的 is_reasoning 开关。
+//
+// Qoder 的 model_config 只有 is_reasoning 布尔位，没有强度档位，因此：
+//   - 未表达（reasoning_effort 为空且无 thinking）→ false，与旧行为一致；
+//   - none/off/disabled → false（旧实现按「字段非空即开启」判断，会把显式关闭误判为开启）；
+//   - 其余任何档位（minimal…ultra）或 enabled/adaptive → true。
+//
+// thinking.type 作为兜底：未经 server 层归一化的直连调用仍可能只带该字段。
+func reasoningEnabled(reasoningEffort string, thinking *thinkingParam) bool {
+	probe := map[string]any{}
+	if reasoningEffort != "" {
+		probe["reasoning_effort"] = reasoningEffort
+	}
+	if thinking != nil && thinking.Type != "" {
+		probe["thinking"] = map[string]any{"type": thinking.Type}
+	}
+	control, _ := reasoning.Resolve(probe, false)
+	enabled, _ := control.Enabled()
+	return enabled
+}
+
 // ChatStream 发 chat 请求并返回原始嵌套 SSE body 流（调用方负责 Close）。
 // 非 2xx 时 rc 为 nil、respBody 为上游响应体、err 为 nil；只有传输层失败才返回 err。
 func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status int, respBody []byte, err error) {
@@ -198,9 +225,7 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 		Messages        []map[string]any `json:"messages"`
 		Tools           []any            `json:"tools"`
 		ReasoningEffort string           `json:"reasoning_effort"`
-		Thinking        *struct {
-			Type string `json:"type"`
-		} `json:"thinking"`
+		Thinking        *thinkingParam   `json:"thinking"`
 	}
 	if err := json.Unmarshal(body, &reqOpenAI); err != nil {
 		return nil, 0, nil, fmt.Errorf("parse chat body: %w", err)
@@ -210,17 +235,12 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 		modelKey = reqOpenAI.Model
 	}
 
-	// 思考开关：reasoning_effort 或 thinking:{type:"enabled"} → 启用推理
-	enableReasoning := false
-	reasoningEffort := ""
-	if reqOpenAI.ReasoningEffort != "" {
-		enableReasoning = true
-		reasoningEffort = reqOpenAI.ReasoningEffort
-	} else if reqOpenAI.Thinking != nil && reqOpenAI.Thinking.Type == "enabled" {
-		enableReasoning = true
-	}
+	// 思考开关：服务端（internal/server.prepareChatBody）已把 reasoning_effort /
+	// reasoning.effort / thinking.* / enable_thinking 等写法归一化为顶层 reasoning_effort，
+	// 这里只把它投影成 Qoder 的 is_reasoning 布尔开关（协议无档位）。
+	enableReasoning := reasoningEnabled(reqOpenAI.ReasoningEffort, reqOpenAI.Thinking)
 
-	rawBody, err := buildAgentBody(reqOpenAI.Messages, modelKey, reqOpenAI.Tools, enableReasoning, reasoningEffort)
+	rawBody, err := buildAgentBody(reqOpenAI.Messages, modelKey, reqOpenAI.Tools, enableReasoning)
 	if err != nil {
 		return nil, 0, nil, fmt.Errorf("build qoder body: %w", err)
 	}

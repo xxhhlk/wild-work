@@ -23,7 +23,10 @@ internal/
 ├── pool/pool.go               # 账号池：余额挑号 + 冷却/禁用状态机 + state.json 持久化
 ├── scheduler/scheduler.go     # 定时签到 + token 保活 + 冷却解冻
 ├── provider/provider.go       # Upstream 接口 + 共享类型（ModelInfo/ModelPricing/ResourceItem）
+├── gateway/                    # 三接口兼容层（Responses / Anthropic）→ 转 Chat 后 in-process 调内层
+├── reasoning/                  # 思考强度归一化：兼容字段 → 四态控制量 → 渠道方言投影
 ├── upstream/                   # WorkBuddy(CodeBuddy) 上游：chat/billing/auth/模型/定价/脱敏
+├── workbuddyai/                # WorkBuddy 国际版上游（www.workbuddy.ai，与国内版独立）
 ├── traework/                   # TraeWork 上游：chat(SOLO)/billing/checkin/模型/定价
 ├── qoder/                      # Qoder 上游：chat(COSY)/billing/模型/定价
 ├── login/                      # WorkBuddy OAuth 登录编排
@@ -99,7 +102,10 @@ Base: `openapi.qoder.com.cn`, Gateway: `gateway.qoder.com.cn`
 
 模型定价：`price_factor` 字段（数字）。
 
-思考开关：`buildAgentBody` 的 `is_reasoning` 参数由 `reasoning_effort`/`thinking` 请求参数动态控制。
+思考开关：`buildAgentBody` 的 `is_reasoning` 由 `reasoningEnabled()` 投影 —— 服务端
+（`internal/server.prepareChatBody`）先把各种客户端写法归一化成顶层 `reasoning_effort`，
+这里只判断「是否开启」（`none`/`off` 为关闭，其余档位为开启）。协议没有档位字段，
+多档强度无法区分。
 
 ## 4. 渠道扩展点
 

@@ -38,6 +38,8 @@ func prepareBodyInner(src []byte) []byte {
 	normalizeRoles(obj)
 	normalizeToolChoice(obj)
 	ensureLeadingSystemMessage(obj)
+	// 思考强度投影（low/high/max 方言）与国内版共用同一实现，避免两处规则漂移。
+	upstream.ProjectReasoning(obj)
 	out, err := json.Marshal(obj)
 	if err != nil {
 		return src

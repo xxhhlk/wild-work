@@ -27,6 +27,7 @@ import (
 	"wild-work/internal/pool"
 	"wild-work/internal/provider"
 	"wild-work/internal/qoder"
+	"wild-work/internal/reasoning"
 	"wild-work/internal/scheduler"
 	"wild-work/internal/server"
 )
@@ -1006,8 +1007,9 @@ func (a *App) ServerRunning() bool {
 	return a.httpSrv != nil
 }
 
-// SetCompat 保存模型名路由配置（compat 段）并写回 config.json。
-func (a *App) SetCompat(defaultChannel string, maxTokensCap int, modelMap map[string]string) error {
+// SetCompat 保存模型名路由与思考强度配置（compat 段）并写回 config.json。
+// reasoningEffort 为空表示不注入默认档；非法取值直接报错（不写盘）。
+func (a *App) SetCompat(defaultChannel string, maxTokensCap int, modelMap map[string]string, reasoningEffort string) error {
 	if modelMap == nil {
 		modelMap = map[string]string{}
 	}
@@ -1019,11 +1021,16 @@ func (a *App) SetCompat(defaultChannel string, maxTokensCap int, modelMap map[st
 			return fmt.Errorf("model_map 值 %q 需为 channel/model 形式", v)
 		}
 	}
+	effort, err := reasoning.ParseDefault(reasoningEffort)
+	if err != nil {
+		return fmt.Errorf("reasoning_effort %w", err)
+	}
 	a.mu.Lock()
 	a.cfg.Compat.DefaultChannel = defaultChannel
 	a.cfg.Compat.MaxTokensCap = maxTokensCap
 	a.cfg.Compat.ModelMap = modelMap
-	err := config.Save(a.cfg, a.cfgPath)
+	a.cfg.Compat.ReasoningEffort = effort
+	err = config.Save(a.cfg, a.cfgPath)
 	a.mu.Unlock()
 	if err != nil {
 		return err
@@ -1032,8 +1039,12 @@ func (a *App) SetCompat(defaultChannel string, maxTokensCap int, modelMap map[st
 	if a.compatSyncer != nil {
 		a.compatSyncer(defaultChannel, maxTokensCap, modelMap)
 	}
-	log.Printf("模型名路由配置已更新：default_channel=%q max_tokens_cap=%d model_map=%d 条",
-		defaultChannel, maxTokensCap, len(modelMap))
+	// 默认思考档由内层 handler 在转发前注入，同样需要热更新。
+	if a.handler != nil {
+		a.handler.SetReasoningEffort(effort)
+	}
+	log.Printf("模型名路由配置已更新：default_channel=%q max_tokens_cap=%d reasoning_effort=%q model_map=%d 条",
+		defaultChannel, maxTokensCap, effort, len(modelMap))
 	return nil
 }
 
@@ -1091,10 +1102,11 @@ type State struct {
 
 	// Compat 模型名路由配置（只读，保存走 POST /api/config/compat）
 	Compat struct {
-		DefaultChannel string            `json:"default_channel"`
-		MaxTokensCap   int               `json:"max_tokens_cap"`
-		ModelMap       map[string]string `json:"model_map"`
-		Channels       []string          `json:"channels"` // 可用渠道列表（供 UI 下拉）
+		DefaultChannel  string            `json:"default_channel"`
+		MaxTokensCap    int               `json:"max_tokens_cap"`
+		ModelMap        map[string]string `json:"model_map"`
+		ReasoningEffort string            `json:"reasoning_effort"` // 默认思考档，空 = 不注入
+		Channels        []string          `json:"channels"`         // 可用渠道列表（供 UI 下拉）
 	} `json:"compat"`
 }
 
@@ -1114,6 +1126,7 @@ func (a *App) GetState() State {
 	}
 	st.Compat.DefaultChannel = a.cfg.Compat.DefaultChannel
 	st.Compat.MaxTokensCap = a.cfg.Compat.MaxTokensCap
+	st.Compat.ReasoningEffort = a.cfg.Compat.ReasoningEffort
 	st.Compat.ModelMap = a.cfg.Compat.ModelMap
 	if st.Compat.ModelMap == nil {
 		st.Compat.ModelMap = map[string]string{}
@@ -1356,12 +1369,13 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 	})
 	mux.HandleFunc("POST /api/config/compat", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			DefaultChannel string            `json:"default_channel"`
-			MaxTokensCap   int               `json:"max_tokens_cap"`
-			ModelMap       map[string]string `json:"model_map"`
+			DefaultChannel  string            `json:"default_channel"`
+			MaxTokensCap    int               `json:"max_tokens_cap"`
+			ModelMap        map[string]string `json:"model_map"`
+			ReasoningEffort string            `json:"reasoning_effort"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
-		if err := a.SetCompat(req.DefaultChannel, req.MaxTokensCap, req.ModelMap); err != nil {
+		if err := a.SetCompat(req.DefaultChannel, req.MaxTokensCap, req.ModelMap, req.ReasoningEffort); err != nil {
 			apiError(w, http.StatusBadRequest, err.Error())
 			return
 		}

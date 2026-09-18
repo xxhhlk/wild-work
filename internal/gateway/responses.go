@@ -18,6 +18,8 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+
+	"wild-work/internal/reasoning"
 )
 
 // handleResponses 处理 POST /v1/responses。
@@ -37,6 +39,12 @@ func (g *Gateway) handleResponses(w http.ResponseWriter, r *http.Request) {
 		if v, has := body[k]; has && !isEmptyValue(v) {
 			logf("responses: 忽略不支持的参数 %s=%v（无状态实现，不影响对话内容）", k, v)
 		}
+	}
+	// 思考控制先校验再转换：非法/自相矛盾的写法要返回 invalid_reasoning_control，
+	// 而不是被当成上游故障。
+	if _, rerr := reasoning.Resolve(body, true); rerr != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_reasoning_control", rerr.Error())
+		return
 	}
 
 	model := asString(body["model"])
@@ -171,12 +179,18 @@ func responsesToChat(in map[string]any, resolvedModel string, maxTokensCap int) 
 		out["response_format"] = v
 	}
 
-	// reasoning.effort → reasoning_effort（渠道按该字段决定是否启用思考）
-	if effort := responsesReasoningEffort(in); effort != "" {
+	// 思考控制：Responses 的标准写法是嵌套 reasoning.effort，同时兼容 Chat 侧的
+	// reasoning_effort / thinking.* / enable_thinking 等写法，统一归一化为 reasoning_effort。
+	// preferNested=true：两种写法同时出现时以嵌套为准（Responses 协议语义）。
+	control, err := reasoning.Resolve(in, true)
+	if err != nil {
+		return nil, err
+	}
+	if effort := reasoning.ChatEffort(control); effort != "" {
 		out["reasoning_effort"] = effort
 	}
 	if v, has := in["thinking"]; has && !isEmptyValue(v) {
-		out["thinking"] = v
+		out["thinking"] = v // 渠道可能直接识别该对象（如 qoder 的 thinking.type），原样保留
 	}
 	if u := asString(in["user"]); u != "" {
 		out["user"] = u
@@ -383,16 +397,6 @@ func responsesTextFormat(in map[string]any) map[string]any {
 	default: // "text" 或未知 → 不设置
 		return nil
 	}
-}
-
-// responsesReasoningEffort 提取 reasoning.effort（新版）或 reasoning_effort（旧版）。
-func responsesReasoningEffort(in map[string]any) string {
-	if r, ok := in["reasoning"].(map[string]any); ok {
-		if e := strings.TrimSpace(asString(r["effort"])); e != "" {
-			return e
-		}
-	}
-	return strings.TrimSpace(asString(in["reasoning_effort"]))
 }
 
 // ---------------------------------------------------------------------------

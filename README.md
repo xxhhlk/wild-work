@@ -188,6 +188,32 @@ API Key:  WildWorkAPI
 - `max_tokens_cap` 用于封顶客户端的 `max_tokens`（Anthropic 客户端常发 64000，
   超出部分上游会直接 400）；设 `0` 表示不限制
 
+#### 思考强度（reasoning effort）
+
+客户端可用标准写法指定思考档位，网关归一化后按渠道投影到上游支持的形态：
+
+| 写法 | 来源 |
+|------|------|
+| `reasoning_effort: "high"` | Chat Completions 顶层（也接受 `reasoningEffort`） |
+| `reasoning: {"effort": "high"}` | Responses 标准写法（同时出现时嵌套优先于顶层） |
+| `thinking: {"type": "enabled", "budget_tokens": 4096}` | Anthropic / Claude 风格 |
+| `output_config: {"effort": "high"}` · `enable_thinking: true` · `disable_reasoning: true` · `think: true` | 其他常见客户端写法 |
+
+- 档位取值：`none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`、`ultra`；`off` 等同于 `none`。
+  取值非法或同一对象内自相矛盾（如 `reasoning:{effort:"high",enabled:false}`）返回 `400 invalid_reasoning_control`。
+- 渠道能力：WorkBuddy 国内版/国际版的 `deepseek-v4-pro`、`deepseek-v4-flash` 支持 `low`/`high`/`max` 三档
+  （标准档位投影到这三档），其余模型按标准档位透传；Qoder 协议只有开关（`is_reasoning`），
+  非「关闭」一律按开启处理，无法区分多档；TraeWork 协议没有该字段。
+- 默认档：`compat.reasoning_effort`（或环境变量 `WILDWORK_REASONING_EFFORT`，面板「思考强度」同款）
+  在客户端**未指定**时注入，仅 WorkBuddy 渠道生效；留空表示不注入。
+  客户端显式指定（含显式关闭）时一律以客户端为准，默认档不会把它复活。
+
+```json
+"compat": {
+  "reasoning_effort": "high"
+}
+```
+
 **Codex CLI 配置示例**（`~/.codex/config.toml`）：
 
 ```toml
