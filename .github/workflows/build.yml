@@ -1,12 +1,9 @@
 name: Build Release
 
 on:
-  # 手动触发：Actions 页面选 dev 分支 → Run workflow → 构建 + 发布 dev pre-release
+  # 仅手动触发：Actions 页面 → Run workflow → 构建 + 发布 dev pre-release
+  # （原 push tags v* 自动触发已移除，避免推 tag 时自动跑构建）
   workflow_dispatch:
-  # 推送 tag（v*）自动触发正式发版
-  push:
-    tags:
-      - 'v*'
 
 jobs:
   build:
