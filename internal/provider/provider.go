@@ -96,6 +96,11 @@ type ModelInfo struct {
 	SupportsImages    bool // 支持图像输入（多模态视觉）
 	SupportsReasoning bool // 支持思考/推理模式
 	SupportsTools     bool // 支持函数/工具调用
+	// SupportedEfforts 上游声明的可选思考档位（远端权威值；空表示未声明，
+	// 由 internal/reasoning 的静态兜底表补齐，见该包 catalog.go）。
+	SupportedEfforts []string
+	// DefaultEffort 上游声明的默认思考档（空表示未声明）。
+	DefaultEffort string
 }
 
 // InputModalities 按 OpenAI 生态惯例给出输入模态列表（OpenRouter/llama.cpp 的

@@ -224,6 +224,10 @@ func main() {
 			cfg.Compat.DefaultChannel, cfg.Compat.MaxTokensCap, cfg.Compat.ReasoningEffort,
 			cfg.Compat.ResponsesReasoningSummary, len(cfg.Compat.ModelMap))
 	}
+	// DeepSeek 思考改写开关（渠道层包级开关；面板保存 compat 时会热更新）
+	upstream.SetDeepseekThinking(cfg.DeepseekThinkingEnabled())
+	log.Printf("思考控制：deepseek_thinking=%v（thinking 开关字段 + reasoning_content 回填）",
+		cfg.DeepseekThinkingEnabled())
 	appInst.SetHandler(inner)
 	appInst.SetRootHandler(mux)
 	compat.SetAPIKeySource(inner.CurrentAPIKey) // 面板改 API-Key 后，兼容层立即跟随

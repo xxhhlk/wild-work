@@ -299,6 +299,17 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 // ModelInfo 动态模型信息（含 maxInputTokens/maxOutputTokens）。
 type ModelInfo = provider.ModelInfo
 
+// modelReasoningMeta 目录接口返回的思考能力元数据（reasoning 子对象）。
+// 远端下发时是档位能力的权威来源（见 internal/reasoning/catalog.go 的三级查找）；
+// 未下发（零值）时回落静态兜底表。注意 supportedEfforts 为空 ≠ 不支持思考，
+// 而是「该模型没有可选档位」，因此不能据此判定能力。
+type modelReasoningMeta struct {
+	Effort           string   `json:"effort"`
+	Summary          string   `json:"summary"`
+	DefaultEffort    string   `json:"defaultEffort"`
+	SupportedEfforts []string `json:"supportedEfforts"`
+}
+
 // catalogModel 目录接口的原始模型条目（含能力字段）。
 type catalogModel struct {
 	ID              string `json:"id"`
@@ -307,10 +318,11 @@ type catalogModel struct {
 	MaxOutputTokens int64  `json:"maxOutputTokens"`
 	Disabled        bool   `json:"disabled"`
 	// 能力字段（上游目录返回）
-	SupportsImages     bool `json:"supportsImages"`
-	SupportsReasoning  bool `json:"supportsReasoning"`
-	SupportsToolCall   bool `json:"supportsToolCall"`
-	DisabledMultimodal bool `json:"disabledMultimodal"`
+	SupportsImages     bool               `json:"supportsImages"`
+	SupportsReasoning  bool               `json:"supportsReasoning"`
+	SupportsToolCall   bool               `json:"supportsToolCall"`
+	DisabledMultimodal bool               `json:"disabledMultimodal"`
+	Reasoning          modelReasoningMeta `json:"reasoning"`
 }
 
 // FetchModels 调上游动态模型接口。
@@ -346,10 +358,11 @@ func (c *Client) FetchModels(a *auth.Auth) ([]ModelInfo, error) {
 				MaxOutputTokens int64  `json:"maxOutputTokens"`
 				Disabled        bool   `json:"disabled"`
 				// 能力字段（国内版目录同样返回，实测可用）
-				SupportsImages     bool `json:"supportsImages"`
-				SupportsReasoning  bool `json:"supportsReasoning"`
-				SupportsToolCall   bool `json:"supportsToolCall"`
-				DisabledMultimodal bool `json:"disabledMultimodal"`
+				SupportsImages     bool               `json:"supportsImages"`
+				SupportsReasoning  bool               `json:"supportsReasoning"`
+				SupportsToolCall   bool               `json:"supportsToolCall"`
+				DisabledMultimodal bool               `json:"disabledMultimodal"`
+				Reasoning          modelReasoningMeta `json:"reasoning"`
 			} `json:"models"`
 			Agents []struct {
 				Name   string   `json:"name"`
@@ -393,6 +406,9 @@ func (c *Client) FetchModels(a *auth.Auth) ([]ModelInfo, error) {
 			SupportsImages:    m.SupportsImages && !m.DisabledMultimodal,
 			SupportsReasoning: m.SupportsReasoning,
 			SupportsTools:     m.SupportsToolCall,
+			// 档位能力（远端权威，缺失时由 internal/reasoning 静态表兜底）
+			SupportedEfforts: m.Reasoning.SupportedEfforts,
+			DefaultEffort:    m.Reasoning.DefaultEffort,
 		})
 	}
 	if len(out) == 0 {

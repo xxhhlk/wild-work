@@ -158,12 +158,23 @@ type Config struct {
 		//   - on  ：只要上游给了 reasoning_content 就下发
 		//   - off ：从不下发（保持旧行为，丢弃思考链）
 		ResponsesReasoningSummary string `json:"responses_reasoning_summary"`
+		// DeepseekThinking WorkBuddy（CodeBuddy）上游 DeepSeek 系的思考改写开关。
+		// true / 未设置（默认）：客户端要开思考时，除 reasoning_effort 外同时下发
+		// thinking:{type:"enabled"}，并给 assistant 消息回填 reasoning_content
+		// （对齐官方客户端行为，见 internal/upstream/thinking.go）；
+		// false：完全不碰这两个字段（回退旧行为，排障用）。
+		DeepseekThinking *bool `json:"deepseek_thinking"`
 	} `json:"compat"`
 
 	// 解析后
 	HardCreditDur  time.Duration `json:"-"`
 	SoftRateDur    time.Duration `json:"-"`
 	ErrCooldownDur time.Duration `json:"-"`
+}
+
+// DeepseekThinkingEnabled DeepSeek 思考改写是否启用（字段未设置视为启用）。
+func (c *Config) DeepseekThinkingEnabled() bool {
+	return c.Compat.DeepseekThinking == nil || *c.Compat.DeepseekThinking
 }
 
 // Default 默认配置。
@@ -326,6 +337,23 @@ func applyEnv(c *Config) {
 	if v := os.Getenv("WILDWORK_RESPONSES_REASONING_SUMMARY"); v != "" {
 		c.Compat.ResponsesReasoningSummary = v
 	}
+	if v := os.Getenv("WILDWORK_DEEPSEEK_THINKING"); v != "" {
+		if b, ok := parseBoolLoose(v); ok {
+			c.Compat.DeepseekThinking = &b
+		}
+	}
+}
+
+// parseBoolLoose 宽松布尔解析（环境变量用）：1/true/yes/on 与 0/false/no/off。
+// 无法识别时返回 ok=false，调用方保持原值（不因拼错而静默改语义）。
+func parseBoolLoose(v string) (bool, bool) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on", "enable", "enabled":
+		return true, true
+	case "0", "false", "no", "off", "disable", "disabled":
+		return false, true
+	}
+	return false, false
 }
 
 func (c *Config) normalize() error {

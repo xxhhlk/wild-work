@@ -30,6 +30,7 @@ import (
 	"wild-work/internal/reasoning"
 	"wild-work/internal/scheduler"
 	"wild-work/internal/server"
+	"wild-work/internal/upstream"
 )
 
 // Version 版本号。
@@ -1009,8 +1010,9 @@ func (a *App) ServerRunning() bool {
 
 // SetCompat 保存模型名路由与思考强度配置（compat 段）并写回 config.json。
 // reasoningEffort 为空表示不注入默认档；reasoningSummary 为空按 auto 处理；
+// deepseekThinking 控制 WorkBuddy 上游 DeepSeek 系的 thinking 开关字段与回填；
 // 非法取值直接报错（不写盘）。
-func (a *App) SetCompat(defaultChannel string, maxTokensCap int, modelMap map[string]string, reasoningEffort, reasoningSummary string) error {
+func (a *App) SetCompat(defaultChannel string, maxTokensCap int, modelMap map[string]string, reasoningEffort, reasoningSummary string, deepseekThinking bool) error {
 	if modelMap == nil {
 		modelMap = map[string]string{}
 	}
@@ -1036,6 +1038,7 @@ func (a *App) SetCompat(defaultChannel string, maxTokensCap int, modelMap map[st
 	a.cfg.Compat.ModelMap = modelMap
 	a.cfg.Compat.ReasoningEffort = effort
 	a.cfg.Compat.ResponsesReasoningSummary = summary
+	a.cfg.Compat.DeepseekThinking = &deepseekThinking
 	err = config.Save(a.cfg, a.cfgPath)
 	a.mu.Unlock()
 	if err != nil {
@@ -1049,8 +1052,10 @@ func (a *App) SetCompat(defaultChannel string, maxTokensCap int, modelMap map[st
 	if a.handler != nil {
 		a.handler.SetReasoningEffort(effort)
 	}
-	log.Printf("模型名路由配置已更新：default_channel=%q max_tokens_cap=%d reasoning_effort=%q responses_reasoning_summary=%q model_map=%d 条",
-		defaultChannel, maxTokensCap, effort, summary, len(modelMap))
+	// DeepSeek 思考改写开关作用于渠道层（包级开关），立即生效。
+	upstream.SetDeepseekThinking(deepseekThinking)
+	log.Printf("模型名路由配置已更新：default_channel=%q max_tokens_cap=%d reasoning_effort=%q responses_reasoning_summary=%q deepseek_thinking=%v model_map=%d 条",
+		defaultChannel, maxTokensCap, effort, summary, deepseekThinking, len(modelMap))
 	return nil
 }
 
@@ -1113,8 +1118,10 @@ type State struct {
 		ModelMap        map[string]string `json:"model_map"`
 		ReasoningEffort string            `json:"reasoning_effort"` // 默认思考档，空 = 不注入
 		// ResponsesReasoningSummary Responses 思考摘要策略：auto / on / off
-		ResponsesReasoningSummary string   `json:"responses_reasoning_summary"`
-		Channels                  []string `json:"channels"` // 可用渠道列表（供 UI 下拉）
+		ResponsesReasoningSummary string `json:"responses_reasoning_summary"`
+		// DeepseekThinking WorkBuddy 上游 DeepSeek 系思考改写开关（默认 true）
+		DeepseekThinking bool     `json:"deepseek_thinking"`
+		Channels         []string `json:"channels"` // 可用渠道列表（供 UI 下拉）
 	} `json:"compat"`
 }
 
@@ -1136,6 +1143,7 @@ func (a *App) GetState() State {
 	st.Compat.MaxTokensCap = a.cfg.Compat.MaxTokensCap
 	st.Compat.ReasoningEffort = a.cfg.Compat.ReasoningEffort
 	st.Compat.ResponsesReasoningSummary = a.cfg.Compat.ResponsesReasoningSummary
+	st.Compat.DeepseekThinking = a.cfg.DeepseekThinkingEnabled()
 	st.Compat.ModelMap = a.cfg.Compat.ModelMap
 	if st.Compat.ModelMap == nil {
 		st.Compat.ModelMap = map[string]string{}
@@ -1383,9 +1391,15 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 			ModelMap                  map[string]string `json:"model_map"`
 			ReasoningEffort           string            `json:"reasoning_effort"`
 			ResponsesReasoningSummary string            `json:"responses_reasoning_summary"`
+			DeepseekThinking          *bool             `json:"deepseek_thinking"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
-		if err := a.SetCompat(req.DefaultChannel, req.MaxTokensCap, req.ModelMap, req.ReasoningEffort, req.ResponsesReasoningSummary); err != nil {
+		// 字段缺失（旧版前端/第三方调用）按启用处理，避免静默关掉该能力。
+		deepseekThinking := true
+		if req.DeepseekThinking != nil {
+			deepseekThinking = *req.DeepseekThinking
+		}
+		if err := a.SetCompat(req.DefaultChannel, req.MaxTokensCap, req.ModelMap, req.ReasoningEffort, req.ResponsesReasoningSummary, deepseekThinking); err != nil {
 			apiError(w, http.StatusBadRequest, err.Error())
 			return
 		}

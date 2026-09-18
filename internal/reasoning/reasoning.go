@@ -2,7 +2,7 @@
 //
 // 移植自 Buddy2api 的 reasoning_controls.py：客户端（Claude Code / Codex / OpenCode /
 // Cherry Studio / DSH …）各用不同字段表达思考强度，本包把它们统一成一个四态控制量，
-// 再由调用方投影成目标渠道协议支持的形态（见 ChatEffort / WorkBuddyEffort）。
+// 再由调用方投影成目标渠道协议支持的形态（见 ChatEffort / Catalog.Clamp）。
 //
 // 四态：
 //   - default   客户端未表达意图 → 由调用方决定是否注入默认档
@@ -472,6 +472,8 @@ func budgetInGroup(candidates []Control, group string) (*float64, bool) {
 
 // ChatEffort 投影到标准 Chat Completions 的 reasoning_effort。
 // 返回空串表示不下发该字段（default 交给调用方的默认档，disabled 由渠道决定如何表达）。
+// 「只说开思考、没给档位」时：给了预算就按预算换算档位，否则给中性档 high
+// （渠道层可用该模型声明的默认档覆盖，见 Catalog.DefaultEffort）。
 func ChatEffort(c Control) string {
 	switch c.Mode {
 	case ModeDefault:
@@ -479,29 +481,28 @@ func ChatEffort(c Control) string {
 	case ModeDisabled:
 		return "none"
 	case ModeEnabled:
+		if c.BudgetTokens != nil {
+			return BudgetEffort(*c.BudgetTokens)
+		}
 		return "high"
 	}
 	return c.Effort
 }
 
-// WorkBuddyEffort 投影到 WorkBuddy 的 low/high/max 三档方言。
-// disabled 返回空串：WorkBuddy 用「不传字段」表达关闭（与 Buddy2api 一致）。
-func WorkBuddyEffort(c Control) string {
-	switch c.Mode {
-	case ModeDefault, ModeDisabled:
-		return ""
-	case ModeEnabled:
+// BudgetEffort 把思考预算换算成档位（上游协议没有预算字段，预算只能折算成档位才有意义）。
+// 分桶规则移植自 lingma-proxy/internal/httpapi/server.go:2169：
+//   - >= 4096 → high
+//   - > 0 且 < 1024 → low
+//   - 其余（含 1024~4095）→ medium
+func BudgetEffort(budget float64) string {
+	switch {
+	case budget >= 4096:
 		return "high"
-	}
-	switch c.Effort {
-	case "minimal", "low":
+	case budget > 0 && budget < 1024:
 		return "low"
-	case "medium", "high":
-		return "high"
-	case "xhigh", "max", "ultra":
-		return "max"
+	default:
+		return "medium"
 	}
-	return c.Effort
 }
 
 // ParseDefault 解析配置项里的默认思考档，返回可直接下发的标准档位值。

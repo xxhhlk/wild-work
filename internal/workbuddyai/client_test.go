@@ -247,3 +247,25 @@ func TestStaticModelsSane(t *testing.T) {
 		}
 	}
 }
+
+// 国际版档位能力与国内版刻意不同：deepseek-v4.1-flash 在国际版只认 high，
+// 客户端发 low/max 必须降级（发过去是非法参数）。
+func TestPrepareBodyClampsEffortByGlobalRealm(t *testing.T) {
+	cases := []struct{ model, in, want string }{
+		{"deepseek-v4.1-flash", "low", "high"},
+		{"deepseek-v4.1-flash", "max", "high"},
+		{"gpt-5.6-luna", "xhigh", "xhigh"},
+		{"gpt-5.3-codex", "high", "medium"},
+		{"deepseek-v4.1-flash", "ultra", "high"},
+	}
+	for _, tc := range cases {
+		out := PrepareBody([]byte(`{"model":"` + tc.model + `","messages":[],"reasoning_effort":"` + tc.in + `"}`))
+		var obj map[string]any
+		if err := json.Unmarshal(out, &obj); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if got := obj["reasoning_effort"]; got != tc.want {
+			t.Errorf("%s + %s → %v, want %s（国际版档位表）", tc.model, tc.in, got, tc.want)
+		}
+	}
+}

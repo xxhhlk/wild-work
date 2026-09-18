@@ -288,6 +288,9 @@ func (c *Client) FetchModels(a *auth.Auth) ([]provider.ModelInfo, error) {
 			SupportsImages:    m.imageOK(),
 			SupportsReasoning: m.SupportsReasoning,
 			SupportsTools:     m.SupportsToolCall,
+			// 档位能力（远端权威，缺失时由 internal/reasoning 静态表兜底）
+			SupportedEfforts: m.Reasoning.SupportedEfforts,
+			DefaultEffort:    m.Reasoning.DefaultEffort,
 		})
 	}
 	// 硬编码补入目录外可用模型

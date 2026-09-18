@@ -317,7 +317,38 @@ func buildModelEntry(k provider.Kind, mi provider.ModelInfo) map[string]any {
 		"input_modalities": mi.InputModalities(),
 		"modality":         mi.Modality(),
 	}
+	// 思考能力与可选档位：仅两个 WorkBuddy 渠道有可验证的档位能力，
+	// 远端声明优先、静态兜底表补齐、皆无则省略字段（不输出空数组）。
+	if mi.SupportsReasoning {
+		entry["supports_reasoning"] = true
+	}
+	if k == provider.WorkBuddy || k == provider.WorkBuddyAI {
+		realm := reasoning.RealmForKind(k.String())
+		if efforts, def := reasoning.Caps.Listing(realm, mi.ID, mi.SupportedEfforts, mi.DefaultEffort); len(efforts) > 0 {
+			entry["reasoning_supported_efforts"] = efforts
+			if def != "" {
+				entry["reasoning_default_effort"] = def
+			}
+		}
+	}
 	return entry
+}
+
+// publishEffortCaps 把目录接口返回的档位能力写入 internal/reasoning 的能力表。
+// 远端值为权威（投影与 /v1/models 共用同一份表）；空结果不覆盖既有能力。
+// 只处理 WorkBuddy 国内版/国际版：其余渠道协议没有可验证的思考档位字段。
+func publishEffortCaps(kind provider.Kind, infos []provider.ModelInfo) {
+	if kind != provider.WorkBuddy && kind != provider.WorkBuddyAI {
+		return
+	}
+	caps := make(map[string]reasoning.Cap, len(infos))
+	for _, mi := range infos {
+		if len(mi.SupportedEfforts) == 0 && mi.DefaultEffort == "" {
+			continue
+		}
+		caps[mi.ID] = reasoning.Cap{Efforts: mi.SupportedEfforts, DefaultEffort: mi.DefaultEffort}
+	}
+	reasoning.Caps.SetRemote(reasoning.RealmForKind(kind.String()), caps)
 }
 
 func (h *Handler) fetchRuntimeModels(rt *Runtime) []provider.ModelInfo {
@@ -368,6 +399,7 @@ func (h *Handler) fetchRuntimeModels(rt *Runtime) []provider.ModelInfo {
 	rt.fetched = now
 	rt.lastFail = time.Time{}
 	rt.mu.Unlock()
+	publishEffortCaps(rt.Kind, infos)
 	if rt.Kind == provider.WorkBuddy { // 兼容旧测试观察点
 		dynamicModelsCache.Lock()
 		dynamicModelsCache.ids = infos

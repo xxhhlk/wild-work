@@ -32,6 +32,16 @@ type catalogModel struct {
 	SupportsReasoning  bool `json:"supportsReasoning"`
 	SupportsToolCall   bool `json:"supportsToolCall"`
 	DisabledMultimodal bool `json:"disabledMultimodal"`
+	// Reasoning 档位能力元数据（远端权威；缺失时由 internal/reasoning 静态表兜底）。
+	Reasoning modelReasoningMeta `json:"reasoning"`
+}
+
+// modelReasoningMeta 与国内版同形（字段名以国际版目录实测返回为准）。
+type modelReasoningMeta struct {
+	Effort           string   `json:"effort"`
+	Summary          string   `json:"summary"`
+	DefaultEffort    string   `json:"defaultEffort"`
+	SupportedEfforts []string `json:"supportedEfforts"`
 }
 
 // imageOK 判定该模型可否接收图像输入：

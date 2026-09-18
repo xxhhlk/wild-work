@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 
+	"wild-work/internal/reasoning"
 	"wild-work/internal/sanitize"
 	"wild-work/internal/upstream"
 )
@@ -38,8 +39,9 @@ func prepareBodyInner(src []byte) []byte {
 	normalizeRoles(obj)
 	normalizeToolChoice(obj)
 	ensureLeadingSystemMessage(obj)
-	// 思考强度投影（low/high/max 方言）与国内版共用同一实现，避免两处规则漂移。
-	upstream.ProjectReasoning(obj)
+	// 思考强度投影（按国际版档位能力表降级 + DeepSeek 开关/回填）与国内版共用同一实现，
+	// 只是产品面（realm）不同，避免两处规则漂移。
+	upstream.ProjectReasoning(obj, reasoning.RealmGlobal)
 	out, err := json.Marshal(obj)
 	if err != nil {
 		return src

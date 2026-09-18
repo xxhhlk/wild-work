@@ -139,27 +139,109 @@ func TestNormalizationPreservesExtensionsAndBudgetIdempotently(t *testing.T) {
 	}
 }
 
-// WorkBuddy 方言投影：标准档位 → low/high/max。
-func TestWorkBuddyEffortProjection(t *testing.T) {
-	cases := []struct{ explicit, want string }{
-		{"minimal", "low"},
-		{"low", "low"},
-		{"medium", "high"},
-		{"high", "high"},
-		{"xhigh", "max"},
-		{"max", "max"},
-		{"ultra", "max"},
+// 档位降级：按模型能力表把请求档位压到该模型支持的档位（Catalog.Clamp）。
+func TestCatalogClamp(t *testing.T) {
+	cases := []struct {
+		name   string
+		realm  string
+		model  string
+		effort string
+		want   string
+	}{
+		{"国内版 deepseek-v4-pro 支持 xhigh（无 max）", RealmCN, "deepseek-v4-pro", "max", "xhigh"},
+		{"国内版 deepseek-v4-pro 支持 high", RealmCN, "deepseek-v4-pro", "high", "high"},
+		{"国内版 deepseek-v4-pro medium 降级到 low", RealmCN, "deepseek-v4-pro", "medium", "low"},
+		{"国内版 deepseek-v4-flash 支持 max", RealmCN, "deepseek-v4-flash", "max", "max"},
+		{"国内版 deepseek-v4-flash minimal 降级到 low", RealmCN, "deepseek-v4-flash", "minimal", "low"},
+		{"国内版 hy3 只认 low/high", RealmCN, "hy3", "ultra", "high"},
+		{"国内版 glm-5.1 只认 medium（低于请求档时取最低支持档）", RealmCN, "glm-5.1", "low", "medium"},
+		{"国内版 glm-5.2 只认 high/xhigh", RealmCN, "glm-5.2", "low", "high"},
+		{"国际版 deepseek-v4.1-flash 只认 high", RealmGlobal, "deepseek-v4.1-flash", "low", "high"},
+		{"国际版 deepseek-v4.1-flash 请求 max 也压到 high", RealmGlobal, "deepseek-v4.1-flash", "max", "high"},
+		{"国际版 gpt-5.6-luna 支持五档", RealmGlobal, "gpt-5.6-luna", "xhigh", "xhigh"},
+		{"大小写与空白不影响命中", RealmCN, " DeepSeek-V4-Pro ", "max", "xhigh"},
+		{"未知模型不改档位", RealmCN, "unknown-model", "ultra", "ultra"},
+		{"未知档位不改写", RealmCN, "deepseek-v4-pro", "very-high", "very-high"},
+		{"关闭类档位不被降级", RealmCN, "deepseek-v4-pro", "none", "none"},
+		{"空档位原样返回", RealmCN, "deepseek-v4-pro", "", ""},
 	}
 	for _, tc := range cases {
-		body := mustNormalize(t, map[string]any{"reasoning_effort": tc.explicit}, false)
-		c, _ := Resolve(body, false)
-		if got := WorkBuddyEffort(c); got != tc.want {
-			t.Fatalf("WorkBuddyEffort(%s) = %s, want %s", tc.explicit, got, tc.want)
+		if got := Caps.Clamp(tc.realm, tc.model, tc.effort); got != tc.want {
+			t.Errorf("%s: Clamp(%s, %s, %s) = %s, want %s", tc.name, tc.realm, tc.model, tc.effort, got, tc.want)
 		}
 	}
 }
 
-// 关闭思考时不回填默认档（WorkBuddy 方言下表现为「不传字段」）。
+// 远端能力权威：覆盖静态兜底表。
+func TestCatalogRemoteOverridesStatic(t *testing.T) {
+	defer Caps.SetRemote(RealmCN, map[string]Cap{"deepseek-v4-pro": {Efforts: []string{"low", "high", "xhigh"}, DefaultEffort: "high"}})
+	Caps.SetRemote(RealmCN, map[string]Cap{"deepseek-v4-pro": {Efforts: []string{"high", "max"}, DefaultEffort: "max"}})
+	if got := Caps.Clamp(RealmCN, "deepseek-v4-pro", "max"); got != "max" {
+		t.Fatalf("远端声明支持 max 时应原样保留，实际 %s", got)
+	}
+	if got := Caps.DefaultEffort(RealmCN, "deepseek-v4-pro"); got != "max" {
+		t.Fatalf("远端默认档应生效，实际 %s", got)
+	}
+	// 空 map 不覆盖（防失败探测清空）
+	Caps.SetRemote(RealmCN, nil)
+	if got := Caps.Clamp(RealmCN, "deepseek-v4-pro", "max"); got != "max" {
+		t.Fatalf("空 map 不应清空既有能力，实际 %s", got)
+	}
+}
+
+// 默认档：仅「开思考但没给档位」时按模型能力补，不硬编码 high。
+func TestCatalogDefaultEffort(t *testing.T) {
+	if got := Caps.DefaultEffort(RealmCN, "deepseek-v4-pro"); got != "high" {
+		t.Errorf("deepseek-v4-pro 默认档应为 high，实际 %q", got)
+	}
+	if got := Caps.DefaultEffort(RealmCN, "unknown-model"); got != "" {
+		t.Errorf("未知模型不应有默认档，实际 %q", got)
+	}
+}
+
+// /v1/models 暴露的档位能力：远端优先、静态兜底、皆无则省略。
+func TestCatalogListing(t *testing.T) {
+	efforts, def := Caps.Listing(RealmCN, "deepseek-v4-flash", nil, "")
+	if len(efforts) != 3 || efforts[0] != "low" || def != "" {
+		t.Errorf("静态兜底：得到 %v / %q", efforts, def)
+	}
+	efforts, def = Caps.Listing(RealmCN, "deepseek-v4-flash", []string{"low", "high"}, "high")
+	if len(efforts) != 2 || def != "high" {
+		t.Errorf("远端优先：得到 %v / %q", efforts, def)
+	}
+	// 默认档不在档位集合内时不得宣称
+	if _, def := Caps.Listing(RealmCN, "deepseek-v4-flash", []string{"low", "high"}, "max"); def != "" {
+		t.Errorf("默认档越界应省略，实际 %q", def)
+	}
+	if efforts, def := Caps.Listing(RealmCN, "unknown-model", nil, ""); efforts != nil || def != "" {
+		t.Errorf("未知模型应省略字段，实际 %v / %q", efforts, def)
+	}
+}
+
+// 预算换算档位（移植 lingma-proxy 分桶）。
+func TestBudgetEffort(t *testing.T) {
+	cases := map[float64]string{
+		4096: "high", 8000: "high",
+		512: "low", 1: "low",
+		1024: "medium", 2000: "medium", 4095: "medium", 0: "medium",
+	}
+	for budget, want := range cases {
+		if got := BudgetEffort(budget); got != want {
+			t.Errorf("BudgetEffort(%v) = %s, want %s", budget, got, want)
+		}
+	}
+	// 只说开思考 + 给预算：ChatEffort 应走预算分桶而不是中性档
+	body := mustNormalize(t, map[string]any{"thinking": map[string]any{"type": "enabled", "budget_tokens": 512}}, false)
+	c, err := Resolve(body, false)
+	if err != nil {
+		t.Fatalf("Resolve 失败: %v", err)
+	}
+	if got := ChatEffort(c); got != "low" {
+		t.Fatalf("thinking.type=enabled + budget 512 应投影为 low，实际 %s", got)
+	}
+}
+
+// 关闭思考时不回填默认档（渠道层据此删除 reasoning_effort / thinking 字段）。
 func TestDisabledReasoningDropsField(t *testing.T) {
 	for _, explicit := range []string{"none", "off", "disable", "disabled"} {
 		body := mustNormalize(t, map[string]any{"reasoning_effort": explicit}, false)
@@ -167,8 +249,8 @@ func TestDisabledReasoningDropsField(t *testing.T) {
 		if c.Mode != ModeDisabled {
 			t.Fatalf("%s 应解析为 disabled，实际 %s", explicit, c.Mode)
 		}
-		if got := WorkBuddyEffort(c); got != "" {
-			t.Fatalf("WorkBuddyEffort(%s) = %q, want 空", explicit, got)
+		if got := ChatEffort(c); got != "none" {
+			t.Fatalf("ChatEffort(%s) = %q, want none", explicit, got)
 		}
 	}
 }
@@ -232,7 +314,7 @@ func TestCompatibleFieldForms(t *testing.T) {
 		{"think", map[string]any{"think": true}, "high"},
 		{"enable_thinking=1", map[string]any{"enable_thinking": float64(1)}, "high"},
 		{"reasoning.enabled", map[string]any{"reasoning": map[string]any{"enabled": true}}, "high"},
-		{"reasoning.budget_tokens", map[string]any{"reasoning": map[string]any{"budget_tokens": float64(2048)}}, "high"},
+		{"reasoning.budget_tokens 2048 → medium（预算分桶）", map[string]any{"reasoning": map[string]any{"budget_tokens": float64(2048)}}, "medium"},
 		{"x-high", map[string]any{"reasoning_effort": "x-high"}, "xhigh"},
 		{"extra_high", map[string]any{"reasoning_effort": "extra_high"}, "xhigh"},
 		{"大写+空格", map[string]any{"reasoning_effort": "  HIGH  "}, "high"},

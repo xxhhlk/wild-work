@@ -24,7 +24,7 @@ internal/
 ├── scheduler/scheduler.go     # 定时签到 + token 保活 + 冷却解冻
 ├── provider/provider.go       # Upstream 接口 + 共享类型（ModelInfo/ModelPricing/ResourceItem）
 ├── gateway/                    # 三接口兼容层（Responses / Anthropic）→ 转 Chat 后 in-process 调内层
-├── reasoning/                  # 思考强度归一化：兼容字段 → 四态控制量 → 渠道方言投影
+├── reasoning/                  # 思考强度归一化（reasoning.go）+ 档位能力表/就近降级（catalog.go）
 ├── upstream/                   # WorkBuddy(CodeBuddy) 上游：chat/billing/auth/模型/定价/脱敏
 ├── workbuddyai/                # WorkBuddy 国际版上游（www.workbuddy.ai，与国内版独立）
 ├── traework/                   # TraeWork 上游：chat(SOLO)/billing/checkin/模型/定价
@@ -112,6 +112,20 @@ Anthropic 转 `thinking` 内容块（`anthropic_stream.go`）；Responses 转 `r
 与 `response.reasoning_summary_text.*` 事件族（`responses_stream.go`，受
 `compat.responses_reasoning_summary` 控制）。Responses 侧的 `output_index` 按
 「思考 → 文本 → 工具」实际顺序动态分配，思考增量只在文本开始前接受。
+
+档位投影链（WorkBuddy 国内版/国际版）：
+
+1. 内层 `prepareChatBody`：兼容字段 → 四态控制量，客户端未表达时注入 `compat.reasoning_effort`；
+2. 渠道 `upstream.ProjectReasoning(obj, realm)`：按 `reasoning.Caps` 就近降级
+   （`Clamp`：不超过请求强度的最高支持档）+ 「只说开思考」时补该模型 `DefaultEffort`；
+3. DeepSeek 系（`internal/upstream/thinking.go`，受 `compat.deepseek_thinking` 控制）：
+   补 `thinking:{type:"enabled"}` + 回填 assistant 的 `reasoning_content`；
+4. 关闭/未表达：删 `reasoning_effort`（camel 一并删），DeepSeek 系连 `thinking` 一起删。
+
+能力表来源：`internal/server.publishEffortCaps` 在每次拉取目录后把
+`reasoning.supportedEfforts`/`defaultEffort` 写进 `reasoning.Caps`（远端权威），
+缺失时回落 `catalog.go` 的 realm 静态表；`/v1/models` 用同一份表透出
+`reasoning_supported_efforts` / `reasoning_default_effort` / `supports_reasoning`。
 
 ## 4. 渠道扩展点
 

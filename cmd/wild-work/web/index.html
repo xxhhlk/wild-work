@@ -160,7 +160,15 @@
         </select>
         <span class="hint" style="margin-left:6px">仅 WorkBuddy 生效</span>
       </div>
-      <div class="hint" style="margin:-2px 0 6px">客户端未指定思考强度时的兜底档；客户端显式指定（含关闭）时一律以客户端为准。</div>
+      <div class="hint" style="margin:-2px 0 6px">客户端未指定思考强度时的兜底档；客户端显式指定（含关闭）时一律以客户端为准。档位会按模型能力自动降级（如国内版 deepseek-v4-pro 只认 low/high/xhigh）。</div>
+      <div class="row" style="align-items:center">
+        <label class="lbl">DeepSeek 开关</label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px">
+          <input type="checkbox" id="chkDsThink">
+          <span>补 thinking 字段 + 回填 reasoning_content</span>
+        </label>
+      </div>
+      <div class="hint" style="margin:-2px 0 6px">仅 WorkBuddy 国内版/国际版的 deepseek 系模型：官方客户端开思考需同时带 <code>thinking.type=enabled</code>，缺该字段上游按「不思考」应答；assistant 消息也需回填 reasoning_content 以保持多轮一致。上游若对该字段报错可关闭。</div>
       <div class="row"><label class="lbl">思考摘要</label>
         <select id="selSummary" class="select">
           <option value="auto">auto（客户端索要时下发）</option>
