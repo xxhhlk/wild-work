@@ -66,8 +66,12 @@ func (g *Gateway) handleResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 思考摘要是否下发：按原始请求体判定（reasoning.summary / include 等字段
+	// 在转换后的 Chat 请求体里已被收敛掉），auto 策略下与客户端行为对齐。
+	withReasoning := g.summaryEnabled(body)
+
 	if stream {
-		g.streamResponses(w, r, res, model, req)
+		g.streamResponses(w, r, res, model, req, withReasoning)
 		return
 	}
 
@@ -85,7 +89,7 @@ func (g *Gateway) handleResponses(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusBadGateway, "upstream_parse", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, buildResponsesResponse(chatResp, model))
+	writeJSON(w, http.StatusOK, buildResponsesResponse(chatResp, model, withReasoning))
 }
 
 // ---------------------------------------------------------------------------
@@ -439,14 +443,19 @@ func decodeChatResponse(raw []byte) (*chatResponse, error) {
 
 // buildResponsesResponse 把 Chat 响应组装为 Responses 对象。
 // model 参数为客户端请求的模型名（回填，便于客户端会话追踪）。
-func buildResponsesResponse(resp *chatResponse, model string) map[string]any {
+// withReasoning=true 且上游给了思考链时，在 output 首位插入 reasoning item
+// （思考先于回答，与官方顺序一致）。
+func buildResponsesResponse(resp *chatResponse, model string, withReasoning bool) map[string]any {
 	choice := resp.Choices[0]
 	text := flattenText(choice.Message.Content)
 	if text == "" {
 		text = asString(choice.Message.Content)
 	}
 
-	output := make([]any, 0, 2)
+	output := make([]any, 0, 3)
+	if think := strings.TrimSpace(choice.Message.ReasoningContent); withReasoning && think != "" {
+		output = append(output, reasoningItem("rs_"+randSuffix(), think, false))
+	}
 	if strings.TrimSpace(text) != "" {
 		output = append(output, messageItem(text))
 	}
@@ -474,6 +483,29 @@ func buildResponsesResponse(resp *chatResponse, model string) map[string]any {
 		out["incomplete_details"] = map[string]any{"reason": "max_output_tokens"}
 	}
 	return out
+}
+
+// reasoningItem 构造思考 output item。
+//
+// 官方形状：summary 为摘要文本数组（type=summary_text），content 为原始思考
+// （需 encrypted_content，本项目无状态不做加密，固定给空数组）；
+// inProgress=true 时用于 response.output_item.added，summary 留空。
+func reasoningItem(id, text string, inProgress bool) map[string]any {
+	status := "completed"
+	summary := []any{}
+	if inProgress {
+		status = "in_progress"
+	} else {
+		summary = append(summary, map[string]any{"type": "summary_text", "text": text})
+	}
+	return map[string]any{
+		"id":                id,
+		"type":              "reasoning",
+		"status":            status,
+		"summary":           summary,
+		"content":           []any{},
+		"encrypted_content": nil,
+	}
 }
 
 // messageItem 构造 assistant 文本消息 output item。

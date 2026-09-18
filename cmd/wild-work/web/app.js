@@ -606,6 +606,10 @@ function openApiConfig() {
     effSel.add(new Option(effVal, effVal));
   }
   effSel.value = effVal;
+  // 思考摘要策略：auto（默认）/ on / off；配置里的未知值回落 auto（后端同样兜底）
+  const sumSel = $("selSummary");
+  const sumVal = cc.responses_reasoning_summary || "auto";
+  sumSel.value = [...sumSel.options].some(o => o.value === sumVal) ? sumVal : "auto";
   const map = cc.model_map || {};
   const entries = Object.entries(map);
   $("mapSummary").textContent = entries.length === 0 ? "（空）" : entries.map(([k,v]) => `${k} → ${v}`).join("\u00A0 \u00A0");
@@ -702,8 +706,9 @@ async function saveApiConfig() {
   const defaultChannel = $("selCh").value;
   const maxTokensCap = parseInt($("inMaxTok").value, 10) || 0;
   const reasoningEffort = $("selEffort").value;
+  const responsesReasoningSummary = $("selSummary").value || "auto";
   try {
-    await api("/api/config/compat", { default_channel: defaultChannel, max_tokens_cap: maxTokensCap, reasoning_effort: reasoningEffort, model_map: modelMap });
+    await api("/api/config/compat", { default_channel: defaultChannel, max_tokens_cap: maxTokensCap, reasoning_effort: reasoningEffort, responses_reasoning_summary: responsesReasoningSummary, model_map: modelMap });
     toast("模型路由已更新");
     closeApiConfig();
     loadState();

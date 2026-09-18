@@ -525,6 +525,89 @@ func ParseDefault(value string) (string, error) {
 	return c.Effort, nil
 }
 
+// Reasoning summary 下发策略（配置项 compat.responses_reasoning_summary）。
+const (
+	// SummaryAuto 仅在客户端显式索要思考摘要时下发（默认）。
+	SummaryAuto = "auto"
+	// SummaryOn 只要上游给了思考链就下发。
+	SummaryOn = "on"
+	// SummaryOff 从不下发，丢弃思考链。
+	SummaryOff = "off"
+)
+
+// ParseSummaryMode 归一化 reasoning summary 下发策略。
+// 空串按 auto 处理（默认值），无法识别时报错，便于配置加载阶段暴露问题。
+func ParseSummaryMode(value string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "":
+		return SummaryAuto, nil
+	case SummaryAuto, "true", "1", "yes":
+		return SummaryAuto, nil
+	case SummaryOn, "always", "force":
+		return SummaryOn, nil
+	case SummaryOff, "false", "0", "no", "never":
+		return SummaryOff, nil
+	default:
+		return "", errors.New("compat.responses_reasoning_summary: 取值需为 auto / on / off")
+	}
+}
+
+// WantsSummary 判断客户端是否显式索要思考摘要（用于 SummaryAuto 策略）。
+//
+// 识别依据（任一命中即视为索要）：
+//   - reasoning.summary 存在且不为 none / off / false（Codex 发 "auto"）
+//   - reasoning_summary 顶层写法（已被 NormalizeChat 提升的形态）
+//   - include 数组含 reasoning.encrypted_content
+//   - thinking 对象存在（Anthropic 风格混用，语义上等价于要思考过程）
+func WantsSummary(payload map[string]any) bool {
+	if rm, ok := payload["reasoning"].(map[string]any); ok {
+		if v, has := rm["summary"]; has && !summaryDisabled(v) {
+			return true
+		}
+	}
+	if v, has := payload["reasoning_summary"]; has && !summaryDisabled(v) {
+		return true
+	}
+	if list, ok := payload["include"].([]any); ok {
+		for _, item := range list {
+			if strings.Contains(strings.ToLower(asStringAny(item)), "reasoning") {
+				return true
+			}
+		}
+	}
+	if tm, ok := payload["thinking"].(map[string]any); ok && len(tm) > 0 {
+		return true
+	}
+	return false
+}
+
+// summaryDisabled 判断 summary 取值是否表示「不要摘要」。
+// 字符串按取值判断（none/off/false/disabled/no/空）；布尔按真假；null 视为不要。
+func summaryDisabled(v any) bool {
+	switch t := v.(type) {
+	case nil:
+		return true
+	case bool:
+		return !t
+	case string:
+		switch strings.ToLower(strings.TrimSpace(t)) {
+		case "", "none", "off", "false", "disabled", "no":
+			return true
+		}
+		return false
+	default:
+		return false
+	}
+}
+
+// asStringAny 宽松取字符串（本包内避免依赖 encoding/json 之外的辅助函数）。
+func asStringAny(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
+}
+
 // NormalizeChat 返回归一化后的请求体副本（不修改入参），并把兼容写法收敛为
 // 顶层 reasoning_effort。同时返回解析出的控制量，避免调用方二次解析。
 //

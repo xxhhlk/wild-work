@@ -209,17 +209,20 @@ func main() {
 			Channels: gateway.SortChannels(channels),
 		},
 		MaxTokensCap: cfg.Compat.MaxTokensCap,
+		// Responses 思考摘要下发策略（auto / on / off）
+		ResponsesReasoningSummary: cfg.Compat.ResponsesReasoningSummary,
 	})
 	// 面板保存 compat 时热更新兼容层路由表（不然新映射要重启才生效）
-	appInst.SetCompatSyncer(func(defaultChannel string, maxTokensCap int, modelMap map[string]string) {
-		compat.SetCompat(defaultChannel, maxTokensCap, modelMap, channels)
+	appInst.SetCompatSyncer(func(defaultChannel string, maxTokensCap int, modelMap map[string]string, reasoningSummary string) {
+		compat.SetCompat(defaultChannel, maxTokensCap, modelMap, channels, reasoningSummary)
 	})
 	mux := http.NewServeMux()
 	compat.Routes(mux) // POST /v1/responses · /v1/messages · /v1/messages/count_tokens
 	mux.Handle("/", inner)
 	if compat != nil {
-		log.Printf("三接口兼容层已启用：default_channel=%q max_tokens_cap=%d reasoning_effort=%q model_map=%d 条",
-			cfg.Compat.DefaultChannel, cfg.Compat.MaxTokensCap, cfg.Compat.ReasoningEffort, len(cfg.Compat.ModelMap))
+		log.Printf("三接口兼容层已启用：default_channel=%q max_tokens_cap=%d reasoning_effort=%q responses_reasoning_summary=%q model_map=%d 条",
+			cfg.Compat.DefaultChannel, cfg.Compat.MaxTokensCap, cfg.Compat.ReasoningEffort,
+			cfg.Compat.ResponsesReasoningSummary, len(cfg.Compat.ModelMap))
 	}
 	appInst.SetHandler(inner)
 	appInst.SetRootHandler(mux)

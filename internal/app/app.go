@@ -79,9 +79,9 @@ type App struct {
 
 	logFile *os.File
 
-	// compatSyncer 面板保存 compat 后同步给外层兼容层（热更新路由表）。
+	// compatSyncer 面板保存 compat 后同步给外层兼容层（热更新路由表 + 思考摘要策略）。
 	// 由 main.go 注入；nil 时仅写配置不热更（下次启动生效）。
-	compatSyncer func(defaultChannel string, maxTokensCap int, modelMap map[string]string)
+	compatSyncer func(defaultChannel string, maxTokensCap int, modelMap map[string]string, reasoningSummary string)
 
 	refreshMu  sync.Mutex // 防并发刷新积分
 	refreshing bool
@@ -1008,8 +1008,9 @@ func (a *App) ServerRunning() bool {
 }
 
 // SetCompat 保存模型名路由与思考强度配置（compat 段）并写回 config.json。
-// reasoningEffort 为空表示不注入默认档；非法取值直接报错（不写盘）。
-func (a *App) SetCompat(defaultChannel string, maxTokensCap int, modelMap map[string]string, reasoningEffort string) error {
+// reasoningEffort 为空表示不注入默认档；reasoningSummary 为空按 auto 处理；
+// 非法取值直接报错（不写盘）。
+func (a *App) SetCompat(defaultChannel string, maxTokensCap int, modelMap map[string]string, reasoningEffort, reasoningSummary string) error {
 	if modelMap == nil {
 		modelMap = map[string]string{}
 	}
@@ -1025,11 +1026,16 @@ func (a *App) SetCompat(defaultChannel string, maxTokensCap int, modelMap map[st
 	if err != nil {
 		return fmt.Errorf("reasoning_effort %w", err)
 	}
+	summary, err := reasoning.ParseSummaryMode(reasoningSummary)
+	if err != nil {
+		return err
+	}
 	a.mu.Lock()
 	a.cfg.Compat.DefaultChannel = defaultChannel
 	a.cfg.Compat.MaxTokensCap = maxTokensCap
 	a.cfg.Compat.ModelMap = modelMap
 	a.cfg.Compat.ReasoningEffort = effort
+	a.cfg.Compat.ResponsesReasoningSummary = summary
 	err = config.Save(a.cfg, a.cfgPath)
 	a.mu.Unlock()
 	if err != nil {
@@ -1037,19 +1043,19 @@ func (a *App) SetCompat(defaultChannel string, maxTokensCap int, modelMap map[st
 	}
 	// 热更新外层兼容层的路由表：不同步的话新映射要重启才生效。
 	if a.compatSyncer != nil {
-		a.compatSyncer(defaultChannel, maxTokensCap, modelMap)
+		a.compatSyncer(defaultChannel, maxTokensCap, modelMap, summary)
 	}
 	// 默认思考档由内层 handler 在转发前注入，同样需要热更新。
 	if a.handler != nil {
 		a.handler.SetReasoningEffort(effort)
 	}
-	log.Printf("模型名路由配置已更新：default_channel=%q max_tokens_cap=%d reasoning_effort=%q model_map=%d 条",
-		defaultChannel, maxTokensCap, effort, len(modelMap))
+	log.Printf("模型名路由配置已更新：default_channel=%q max_tokens_cap=%d reasoning_effort=%q responses_reasoning_summary=%q model_map=%d 条",
+		defaultChannel, maxTokensCap, effort, summary, len(modelMap))
 	return nil
 }
 
 // SetCompatSyncer 注入 compat 热更新回调（由 main.go 注入，指向 gateway.SetCompat）。
-func (a *App) SetCompatSyncer(fn func(defaultChannel string, maxTokensCap int, modelMap map[string]string)) {
+func (a *App) SetCompatSyncer(fn func(defaultChannel string, maxTokensCap int, modelMap map[string]string, reasoningSummary string)) {
 	a.compatSyncer = fn
 }
 
@@ -1106,7 +1112,9 @@ type State struct {
 		MaxTokensCap    int               `json:"max_tokens_cap"`
 		ModelMap        map[string]string `json:"model_map"`
 		ReasoningEffort string            `json:"reasoning_effort"` // 默认思考档，空 = 不注入
-		Channels        []string          `json:"channels"`         // 可用渠道列表（供 UI 下拉）
+		// ResponsesReasoningSummary Responses 思考摘要策略：auto / on / off
+		ResponsesReasoningSummary string   `json:"responses_reasoning_summary"`
+		Channels                  []string `json:"channels"` // 可用渠道列表（供 UI 下拉）
 	} `json:"compat"`
 }
 
@@ -1127,6 +1135,7 @@ func (a *App) GetState() State {
 	st.Compat.DefaultChannel = a.cfg.Compat.DefaultChannel
 	st.Compat.MaxTokensCap = a.cfg.Compat.MaxTokensCap
 	st.Compat.ReasoningEffort = a.cfg.Compat.ReasoningEffort
+	st.Compat.ResponsesReasoningSummary = a.cfg.Compat.ResponsesReasoningSummary
 	st.Compat.ModelMap = a.cfg.Compat.ModelMap
 	if st.Compat.ModelMap == nil {
 		st.Compat.ModelMap = map[string]string{}
@@ -1369,13 +1378,14 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 	})
 	mux.HandleFunc("POST /api/config/compat", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			DefaultChannel  string            `json:"default_channel"`
-			MaxTokensCap    int               `json:"max_tokens_cap"`
-			ModelMap        map[string]string `json:"model_map"`
-			ReasoningEffort string            `json:"reasoning_effort"`
+			DefaultChannel            string            `json:"default_channel"`
+			MaxTokensCap              int               `json:"max_tokens_cap"`
+			ModelMap                  map[string]string `json:"model_map"`
+			ReasoningEffort           string            `json:"reasoning_effort"`
+			ResponsesReasoningSummary string            `json:"responses_reasoning_summary"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
-		if err := a.SetCompat(req.DefaultChannel, req.MaxTokensCap, req.ModelMap, req.ReasoningEffort); err != nil {
+		if err := a.SetCompat(req.DefaultChannel, req.MaxTokensCap, req.ModelMap, req.ReasoningEffort, req.ResponsesReasoningSummary); err != nil {
 			apiError(w, http.StatusBadRequest, err.Error())
 			return
 		}

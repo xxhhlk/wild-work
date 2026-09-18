@@ -151,6 +151,13 @@ type Config struct {
 		// 仅 WorkBuddy 国内版/国际版渠道生效（上游认 low/high/max 三档），
 		// 其余渠道协议没有可验证的档位字段。客户端显式指定时始终以客户端为准。
 		ReasoningEffort string `json:"reasoning_effort"`
+		// ResponsesReasoningSummary 是否把上游思考链转成 Responses 的 reasoning item。
+		// 取值 auto（默认）/ on / off：
+		//   - auto：仅当客户端显式索要摘要（reasoning.summary 非 none，或 include 含
+		//     reasoning.encrypted_content）时才下发，避免给不关心思考的客户端多发事件
+		//   - on  ：只要上游给了 reasoning_content 就下发
+		//   - off ：从不下发（保持旧行为，丢弃思考链）
+		ResponsesReasoningSummary string `json:"responses_reasoning_summary"`
 	} `json:"compat"`
 
 	// 解析后
@@ -316,6 +323,9 @@ func applyEnv(c *Config) {
 	if v := os.Getenv("WILDWORK_REASONING_EFFORT"); v != "" {
 		c.Compat.ReasoningEffort = v
 	}
+	if v := os.Getenv("WILDWORK_RESPONSES_REASONING_SUMMARY"); v != "" {
+		c.Compat.ResponsesReasoningSummary = v
+	}
 }
 
 func (c *Config) normalize() error {
@@ -344,6 +354,12 @@ func (c *Config) normalize() error {
 		return fmt.Errorf("compat.reasoning_effort: %w", err)
 	}
 	c.Compat.ReasoningEffort = effort
+	// Responses 思考摘要下发策略：空串按 auto 归一，非法取值在加载阶段报错
+	mode, err := reasoning.ParseSummaryMode(c.Compat.ResponsesReasoningSummary)
+	if err != nil {
+		return err
+	}
+	c.Compat.ResponsesReasoningSummary = mode
 	if c.Listen.Port <= 0 {
 		c.Listen.Port = 7863
 	}

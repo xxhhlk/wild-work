@@ -16,6 +16,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"wild-work/internal/reasoning"
 )
 
 // Config 兼容层配置。
@@ -29,6 +31,9 @@ type Config struct {
 	// MaxTokensCap 上游 max_tokens 上限（0 = 不限制）。
 	// Anthropic 客户端的 max_tokens 常远大于上游接受值，需在转发前 clamp。
 	MaxTokensCap int
+	// ResponsesReasoningSummary Responses 思考摘要下发策略（auto / on / off）。
+	// 空串等价于 auto。见 reasoning.ParseSummaryMode。
+	ResponsesReasoningSummary string
 }
 
 // Gateway 三接口兼容层。零值不可用，须经 New 构造。
@@ -38,7 +43,9 @@ type Gateway struct {
 	apiKeySource func() string // 非 nil 时优先于 apiKey（面板热改 Key 后立即跟随）
 	router       Router
 	maxTokensCap int
-	mu           sync.RWMutex // 保护 router/maxTokensCap 热更新
+	// summaryMode 见 Config.ResponsesReasoningSummary。
+	summaryMode string
+	mu          sync.RWMutex // 保护 router/maxTokensCap/summaryMode 热更新
 }
 
 // New 构造兼容层。inner 为 nil 时返回 nil（调用方据此跳过兼容层，保持旧行为）。
@@ -51,7 +58,18 @@ func New(cfg Config) *Gateway {
 		apiKey:       cfg.APIKey,
 		router:       cfg.Router,
 		maxTokensCap: cfg.MaxTokensCap,
+		summaryMode:  normalizeSummaryMode(cfg.ResponsesReasoningSummary),
 	}
+}
+
+// normalizeSummaryMode 把策略字符串收敛为合法取值，未知值按 auto 处理
+// （配置加载阶段已校验，此处只兜底运行时热更新传入的脏值）。
+func normalizeSummaryMode(mode string) string {
+	normalized, err := reasoning.ParseSummaryMode(mode)
+	if err != nil {
+		return reasoning.SummaryAuto
+	}
+	return normalized
 }
 
 // SetAPIKeySource 注入 API Key 实时读取函数（通常为 server.Handler.CurrentAPIKey）。
@@ -69,10 +87,10 @@ func (g *Gateway) withRouter(fn func(rt *Router)) {
 	fn(&g.router)
 }
 
-// SetCompat 热更新路由配置（default_channel / max_tokens_cap / model_map）。
-// 面板保存 compat 时调用；不刷新的话新映射要到下次重启才生效。
-// channels 用于校验映射目标的渠道前缀，调用方应传入当前已接入渠道。
-func (g *Gateway) SetCompat(defaultChannel string, maxTokensCap int, modelMap map[string]string, channels []string) {
+// SetCompat 热更新路由配置（default_channel / max_tokens_cap / model_map /
+// responses_reasoning_summary）。面板保存 compat 时调用；不刷新的话新映射要到
+// 下次重启才生效。channels 用于校验映射目标的渠道前缀，调用方应传入当前已接入渠道。
+func (g *Gateway) SetCompat(defaultChannel string, maxTokensCap int, modelMap map[string]string, channels []string, reasoningSummary string) {
 	if g == nil {
 		return
 	}
@@ -83,7 +101,25 @@ func (g *Gateway) SetCompat(defaultChannel string, maxTokensCap int, modelMap ma
 		Channels: SortChannels(channels),
 	}
 	g.maxTokensCap = maxTokensCap
+	g.summaryMode = normalizeSummaryMode(reasoningSummary)
 	g.mu.Unlock()
+}
+
+// summaryEnabled 判断本次请求是否下发思考摘要事件。
+// payload 必须是客户端原始请求体（含 reasoning.summary / include 等字段）；
+// 转换后的 Chat 请求体已把这些字段收敛掉，不可用于判定。
+func (g *Gateway) summaryEnabled(payload map[string]any) bool {
+	g.mu.RLock()
+	mode := g.summaryMode
+	g.mu.RUnlock()
+	switch mode {
+	case reasoning.SummaryOff:
+		return false
+	case reasoning.SummaryOn:
+		return true
+	default: // auto：客户端显式索要摘要才下发
+		return reasoning.WantsSummary(payload)
+	}
 }
 
 // key 返回当前生效的 API Key。

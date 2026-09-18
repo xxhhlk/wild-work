@@ -107,6 +107,12 @@ Base: `openapi.qoder.com.cn`, Gateway: `gateway.qoder.com.cn`
 这里只判断「是否开启」（`none`/`off` 为关闭，其余档位为开启）。协议没有档位字段，
 多档强度无法区分。
 
+思考链下发：上游的 `reasoning_content` 在三个接口上分别落地 —— Chat 原样透传；
+Anthropic 转 `thinking` 内容块（`anthropic_stream.go`）；Responses 转 `reasoning` output item
+与 `response.reasoning_summary_text.*` 事件族（`responses_stream.go`，受
+`compat.responses_reasoning_summary` 控制）。Responses 侧的 `output_index` 按
+「思考 → 文本 → 工具」实际顺序动态分配，思考增量只在文本开始前接受。
+
 ## 4. 渠道扩展点
 
 新增渠道只需三步：

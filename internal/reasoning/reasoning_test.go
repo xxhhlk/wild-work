@@ -362,3 +362,73 @@ func TestJSONRoundTrip(t *testing.T) {
 		t.Fatalf("reasoning 仅剩 effort/summary，应被移除: %v", body["reasoning"])
 	}
 }
+
+// ---------------------------------------------------------------------------
+// 思考摘要下发策略（compat.responses_reasoning_summary）
+// ---------------------------------------------------------------------------
+
+func TestParseSummaryMode(t *testing.T) {
+	cases := []struct {
+		in      string
+		want    string
+		wantErr bool
+	}{
+		{"", SummaryAuto, false},
+		{"auto", SummaryAuto, false},
+		{"AUTO", SummaryAuto, false},
+		{" auto ", SummaryAuto, false},
+		{"on", SummaryOn, false},
+		{"always", SummaryOn, false},
+		{"off", SummaryOff, false},
+		{"OFF", SummaryOff, false},
+		{"never", SummaryOff, false},
+		{"bogus", "", true},
+	}
+	for _, tc := range cases {
+		got, err := ParseSummaryMode(tc.in)
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("ParseSummaryMode(%q) 应报错，实际 %q", tc.in, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("ParseSummaryMode(%q) 意外报错: %v", tc.in, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("ParseSummaryMode(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestWantsSummary(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload string
+		want    bool
+	}{
+		{"未表达", `{"model":"gpt-5","input":"hi"}`, false},
+		{"Codex 风格 summary=auto", `{"reasoning":{"effort":"high","summary":"auto"}}`, true},
+		{"summary=concise", `{"reasoning":{"summary":"concise"}}`, true},
+		{"summary=none", `{"reasoning":{"effort":"high","summary":"none"}}`, false},
+		{"summary=off", `{"reasoning":{"summary":"off"}}`, false},
+		{"summary=false", `{"reasoning":{"summary":false}}`, false},
+		{"summary=null", `{"reasoning":{"summary":null}}`, false},
+		{"仅 effort 无 summary", `{"reasoning":{"effort":"high"}}`, false},
+		{"顶层 reasoning_summary", `{"reasoning_summary":"auto"}`, true},
+		{"include 索要加密思考", `{"include":["reasoning.encrypted_content"]}`, true},
+		{"include 其他项", `{"include":["message.output_text.logprobs"]}`, false},
+		{"thinking 对象（Anthropic 混用）", `{"thinking":{"type":"enabled"}}`, true},
+		{"thinking 空对象", `{"thinking":{}}`, false},
+	}
+	for _, tc := range cases {
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(tc.payload), &payload); err != nil {
+			t.Fatalf("%s: 解析测试载荷失败: %v", tc.name, err)
+		}
+		if got := WantsSummary(payload); got != tc.want {
+			t.Errorf("%s: WantsSummary(%s) = %v, want %v", tc.name, tc.payload, got, tc.want)
+		}
+	}
+}

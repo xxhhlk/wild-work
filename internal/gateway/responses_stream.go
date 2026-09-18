@@ -1,9 +1,16 @@
 // responses_stream.go OpenAI Responses API 流式（SSE）转换：Chat chunk → Responses 事件。
 //
-// 官方事件序列（简化版，覆盖 message 与 function_call 两种 output）：
+// 官方事件序列（简化版，覆盖 reasoning / message / function_call 三种 output）：
 //
 //	response.created
 //	response.in_progress
+//	[思考路径]（仅在文本开始前接受；由 compat.responses_reasoning_summary 控制）
+//	  response.output_item.added              (item.type=reasoning)
+//	  response.reasoning_summary_part.added   (part.type=summary_text)
+//	  response.reasoning_summary_text.delta   ×N
+//	  response.reasoning_summary_text.done
+//	  response.reasoning_summary_part.done
+//	  response.output_item.done
 //	[文本路径]
 //	  response.output_item.added        (item.type=message)
 //	  response.content_part.added       (part.type=output_text)
@@ -19,6 +26,9 @@
 //	response.completed                  （status=completed | incomplete）
 //	data: [DONE]
 //
+// output_index 按「实际输出顺序」动态分配：思考先于回答，故 reasoning item 占 0、
+// message 顺延、工具调用再顺延；三者的收尾事件也按同一顺序发出，避免客户端看到倒序 item。
+//
 // 关键设计：不存在服务端会话。工具调用在本次响应内一次性输出完成后即结束流，
 // 客户端下一轮把 function_call_output 放进 input 重新请求（无状态，可水平扩展）。
 package gateway
@@ -31,7 +41,8 @@ import (
 )
 
 // streamResponses 把内层 Chat SSE 转成 Responses SSE 写回客户端。
-func (g *Gateway) streamResponses(w http.ResponseWriter, r *http.Request, res *innerResult, clientModel string, req chatRequest) {
+// withReasoning=true 时把上游 reasoning_content 转成 reasoning item（summary 事件族）。
+func (g *Gateway) streamResponses(w http.ResponseWriter, r *http.Request, res *innerResult, clientModel string, req chatRequest, withReasoning bool) {
 	defer res.Close()
 
 	// 内层已回错误状态：按 JSON 错误体返回，而非 SSE（客户端无需处理流内错误）
@@ -53,12 +64,23 @@ func (g *Gateway) streamResponses(w http.ResponseWriter, r *http.Request, res *i
 	var (
 		seq        int
 		text       strings.Builder
+		think      strings.Builder
 		tools      = newToolCallAccumulator()
 		finish     string
 		usage      map[string]any
 		msgItemID  string
 		partOpen   bool
 		msgEmitted bool
+		// textStarted 文本已开始输出：此后的思考增量丢弃（思考必须先于回答），
+		// 与 Anthropic 侧 thinking 块的处理保持一致。
+		textStarted bool
+		// output_index 分配：思考 → 文本 → 工具，按实际出现顺序递增。
+		nextIndex int
+		rsItemID  string
+		rsOpen    bool
+		rsPart    bool
+		rsIndex   int
+		msgIndex  int
 	)
 	emit := func(event string, payload map[string]any) error {
 		payload["sequence_number"] = seq
@@ -73,14 +95,49 @@ func (g *Gateway) streamResponses(w http.ResponseWriter, r *http.Request, res *i
 		return
 	}
 
+	// ensureReasoningItem 惰性开启思考 output item（没有思考就不发，避免空 item）。
+	ensureReasoningItem := func() error {
+		if rsOpen {
+			return nil
+		}
+		rsItemID = "rs_" + randSuffix()
+		rsIndex = nextIndex
+		nextIndex++
+		if err := emit("response.output_item.added", map[string]any{
+			"type": "response.output_item.added", "output_index": rsIndex,
+			"item": reasoningItem(rsItemID, "", true),
+		}); err != nil {
+			return err
+		}
+		rsOpen = true
+		return nil
+	}
+	// ensureReasoningPart 开启摘要分段（官方把 summary 拆成 summary_index 分段）。
+	ensureReasoningPart := func() error {
+		if rsPart || !rsOpen {
+			return nil
+		}
+		if err := emit("response.reasoning_summary_part.added", map[string]any{
+			"type": "response.reasoning_summary_part.added", "item_id": rsItemID,
+			"output_index": rsIndex, "summary_index": 0,
+			"part": map[string]any{"type": "summary_text", "text": ""},
+		}); err != nil {
+			return err
+		}
+		rsPart = true
+		return nil
+	}
+
 	// ensureMessageItem 惰性开启文本 output item：只有真正来文本才发，避免空 message item。
 	ensureMessageItem := func() error {
 		if msgEmitted {
 			return nil
 		}
 		msgItemID = "msg_" + randSuffix()
+		msgIndex = nextIndex
+		nextIndex++
 		if err := emit("response.output_item.added", map[string]any{
-			"type": "response.output_item.added", "output_index": 0,
+			"type": "response.output_item.added", "output_index": msgIndex,
 			"item": map[string]any{
 				"id": msgItemID, "type": "message", "status": "in_progress",
 				"role": "assistant", "content": []any{},
@@ -97,7 +154,7 @@ func (g *Gateway) streamResponses(w http.ResponseWriter, r *http.Request, res *i
 		}
 		if err := emit("response.content_part.added", map[string]any{
 			"type": "response.content_part.added", "item_id": msgItemID,
-			"output_index": 0, "content_index": 0,
+			"output_index": msgIndex, "content_index": 0,
 			"part": map[string]any{"type": "output_text", "text": "", "annotations": []any{}, "logprobs": []any{}},
 		}); err != nil {
 			return err
@@ -113,7 +170,23 @@ func (g *Gateway) streamResponses(w http.ResponseWriter, r *http.Request, res *i
 		if c.FinishReason != "" {
 			finish = c.FinishReason
 		}
+		if withReasoning && c.Reasoning != "" && !textStarted {
+			if err := ensureReasoningItem(); err != nil {
+				return err
+			}
+			if err := ensureReasoningPart(); err != nil {
+				return err
+			}
+			if err := emit("response.reasoning_summary_text.delta", map[string]any{
+				"type": "response.reasoning_summary_text.delta", "item_id": rsItemID,
+				"output_index": rsIndex, "summary_index": 0, "delta": c.Reasoning,
+			}); err != nil {
+				return err
+			}
+			think.WriteString(c.Reasoning)
+		}
 		if c.Content != "" {
+			textStarted = true
 			if err := ensureMessageItem(); err != nil {
 				return err
 			}
@@ -122,7 +195,7 @@ func (g *Gateway) streamResponses(w http.ResponseWriter, r *http.Request, res *i
 			}
 			if err := emit("response.output_text.delta", map[string]any{
 				"type": "response.output_text.delta", "item_id": msgItemID,
-				"output_index": 0, "content_index": 0, "delta": c.Content, "logprobs": []any{},
+				"output_index": msgIndex, "content_index": 0, "delta": c.Content, "logprobs": []any{},
 			}); err != nil {
 				return err
 			}
@@ -143,22 +216,48 @@ func (g *Gateway) streamResponses(w http.ResponseWriter, r *http.Request, res *i
 		}
 	}
 
-	// ---- 收尾：按官方顺序关闭已开启的文本块，再输出工具调用 ----
-	output := make([]any, 0, 2)
+	// ---- 收尾：按官方顺序关闭已开启的 output item（思考 → 文本 → 工具）----
+	output := make([]any, 0, 3)
 	toolCalls := tools.List()
+
+	if rsOpen {
+		full := think.String()
+		if err := emit("response.reasoning_summary_text.done", map[string]any{
+			"type": "response.reasoning_summary_text.done", "item_id": rsItemID,
+			"output_index": rsIndex, "summary_index": 0, "text": full,
+		}); err != nil {
+			return
+		}
+		if rsPart {
+			if err := emit("response.reasoning_summary_part.done", map[string]any{
+				"type": "response.reasoning_summary_part.done", "item_id": rsItemID,
+				"output_index": rsIndex, "summary_index": 0,
+				"part": map[string]any{"type": "summary_text", "text": full},
+			}); err != nil {
+				return
+			}
+		}
+		item := reasoningItem(rsItemID, full, false)
+		if err := emit("response.output_item.done", map[string]any{
+			"type": "response.output_item.done", "output_index": rsIndex, "item": item,
+		}); err != nil {
+			return
+		}
+		output = append(output, item)
+	}
 
 	if msgEmitted {
 		full := text.String()
 		if err := emit("response.output_text.done", map[string]any{
 			"type": "response.output_text.done", "item_id": msgItemID,
-			"output_index": 0, "content_index": 0, "text": full, "logprobs": []any{},
+			"output_index": msgIndex, "content_index": 0, "text": full, "logprobs": []any{},
 		}); err != nil {
 			return
 		}
 		if partOpen {
 			if err := emit("response.content_part.done", map[string]any{
 				"type": "response.content_part.done", "item_id": msgItemID,
-				"output_index": 0, "content_index": 0,
+				"output_index": msgIndex, "content_index": 0,
 				"part": map[string]any{"type": "output_text", "text": full, "annotations": []any{}, "logprobs": []any{}},
 			}); err != nil {
 				return
@@ -167,7 +266,7 @@ func (g *Gateway) streamResponses(w http.ResponseWriter, r *http.Request, res *i
 		item := messageItem(full)
 		item["id"] = msgItemID
 		if err := emit("response.output_item.done", map[string]any{
-			"type": "response.output_item.done", "output_index": 0, "item": item,
+			"type": "response.output_item.done", "output_index": msgIndex, "item": item,
 		}); err != nil {
 			return
 		}
@@ -176,7 +275,8 @@ func (g *Gateway) streamResponses(w http.ResponseWriter, r *http.Request, res *i
 
 	// 工具调用：每个调用是独立 output item（index 从文本 item 之后开始）
 	for _, tc := range toolCalls {
-		idx := len(output)
+		idx := nextIndex
+		nextIndex++
 		args := tc.Arguments
 		if strings.TrimSpace(args) == "" {
 			args = "{}"

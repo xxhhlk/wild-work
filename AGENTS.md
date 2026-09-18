@@ -42,6 +42,7 @@ Wild-Work 是 WorkBuddy（国内版+国际版）/TraeWork/Qoder 多渠道账号�
 | R14 | **`Stream`/`Aggregate` 的 model 由调用方显式传入**，渠道不得用实例字段记忆「上次请求的模型名」 | 旧实现 qoder 用全局 `lastModel`，多账号并发会串号；traework 恒为空串。详见 `docs/三接口兼容改造备忘.md` §3 |
 | R15 | **Responses 的 `function_call` 必须是独立 output item**（带 `call_id`），Anthropic 的 tool_use 参数必须走 `input_json_delta` | 参考实现 `tokligence-gateway` 两处写法不合规范（塞进 `message.content`、start 里一次性给完整 input），Codex/Claude Code 会解析失败 |
 | R16 | **思考强度统一走 `internal/reasoning`**：客户端各写法（`reasoning_effort` / `reasoning.effort` / `thinking.*` / `output_config.effort` / `enable_thinking` / `disable_reasoning` / `think`）在**内层 handler**（`prepareChatBody`）归一化成顶层 `reasoning_effort`，非法/自相矛盾回 400 `invalid_reasoning_control`；**渠道层只做方言投影**（WorkBuddy 家族 → low/high/max；Qoder → `is_reasoning` 开关；TraeWork 协议无此字段），不重复做兼容字段解析 | 移植自 Buddy2api `reasoning_controls.py`。规则只应存在一处：渠道各自解析会让「同一客户端写法在不同渠道表现不同」。默认档 `compat.reasoning_effort` 只在**客户端未表达**时注入，且仅 WorkBuddy 渠道生效 |
+| R17 | **Responses 的思考链是独立 `reasoning` output item，且必须排在 `output_index=0`**；`output_index` 按实际输出顺序动态分配（思考 → 文本 → 工具），不得硬编码 | 官方顺序要求思考先于回答；硬编码 message=0 会让带思考的响应出现倒序 item。思考增量只在文本开始前接受，文本开始后到达的片段丢弃 |
 
 ## 2. 架构选型（依据）
 

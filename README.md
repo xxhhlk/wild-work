@@ -214,6 +214,29 @@ API Key:  WildWorkAPI
 }
 ```
 
+#### 思考摘要（Responses 接口）
+
+`/v1/responses` 会把上游的 `reasoning_content` 转成 Responses 的 `reasoning` output item
+（`response.reasoning_summary_part.added` / `reasoning_summary_text.delta|done` 事件族），
+Codex 据此显示思考摘要。由 `compat.responses_reasoning_summary`（或环境变量
+`WILDWORK_RESPONSES_REASONING_SUMMARY`，面板「思考摘要」同款）控制：
+
+| 取值 | 行为 |
+|------|------|
+| `auto`（默认） | 仅当客户端显式索要摘要时才下发（`reasoning.summary` 非 `none`，或 `include` 含 `reasoning.encrypted_content`，或带 `thinking` 对象）。Codex 发 `reasoning:{summary:"auto"}`，故默认即可看到思考 |
+| `on` | 只要上游给了思考链就下发（客户端没要也发） |
+| `off` | 从不下发，丢弃思考链（旧版行为） |
+
+- 思考 item 排在 output 首位（`output_index=0`），message / function_call 顺延，与官方顺序一致。
+- 思考增量只在文本开始前接受；文本开始后到达的思考片段会被丢弃，避免 item 顺序倒序。
+- Anthropic（`thinking` 块）与 Chat（`reasoning_content`）两个接口一直都会下发，不受该配置影响。
+
+```json
+"compat": {
+  "responses_reasoning_summary": "auto"
+}
+```
+
 **Codex CLI 配置示例**（`~/.codex/config.toml`）：
 
 ```toml

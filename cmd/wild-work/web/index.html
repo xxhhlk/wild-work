@@ -161,6 +161,15 @@
         <span class="hint" style="margin-left:6px">仅 WorkBuddy 生效</span>
       </div>
       <div class="hint" style="margin:-2px 0 6px">客户端未指定思考强度时的兜底档；客户端显式指定（含关闭）时一律以客户端为准。</div>
+      <div class="row"><label class="lbl">思考摘要</label>
+        <select id="selSummary" class="select">
+          <option value="auto">auto（客户端索要时下发）</option>
+          <option value="on">on（总是下发）</option>
+          <option value="off">off（不下发）</option>
+        </select>
+        <span class="hint" style="margin-left:6px">仅 Responses 接口</span>
+      </div>
+      <div class="hint" style="margin:-2px 0 6px">是否把上游思考链转成 Responses 的 reasoning item（Codex 据此显示思考摘要）。</div>
       <div class="row" style="align-items:center">
         <label class="lbl">映射表</label>
         <span class="btn small" id="btnCompatMap">编辑</span>
