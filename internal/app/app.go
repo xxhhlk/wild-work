@@ -241,7 +241,10 @@ func (a *App) StartServer() error {
 func (a *App) serveLocked(addr string) error {
 	// 地址未变时直接复用现有 listener：否则「先 Listen 再 Shutdown 旧」在同端口上
 	// 会撞自身（Only one usage of each socket address），导致面板保存映射/密钥时报 400。
-	if a.httpSrv != nil && a.listenAddr == addr {
+	// 注意必须用等价比较而非字符串比较：host 为空（旧版配置 ":7863"、或
+	// WILDWORK_LISTEN=":7777"）与面板回显后回传的 "0.0.0.0:7863" 是同一个监听地址，
+	// 字符串不等会让「不改端口只保存」也走重绑分支，Windows 上就报「端口已被占用」。
+	if a.httpSrv != nil && config.SameAddr(a.listenAddr, addr) {
 		return nil
 	}
 	// 先停旧服务再绑新地址：避免同端口切换时新旧 listener 短暂重叠报「端口被占用」。
