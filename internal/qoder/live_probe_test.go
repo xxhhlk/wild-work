@@ -364,23 +364,58 @@ type streamStats struct {
 	Other      []string       // delta 里出现「非 content/role/reasoning_content」键的 chunk 原文
 	TopKeys    map[string]int // chunk 顶层键直方图
 	OtherLines map[string]int // 非 data: 行前缀直方图
+	// 以下为「穷举取证」字段：思考可能挂在别处（choice 层别名键、外层信封、独立事件），
+	// 只盯 delta.reasoning_content 一个名字容易漏判。
+	ChoiceKeys map[string]int // choice 层键直方图（穷举 thinking/reasoning/… 等别名）
+	EnvKeys    map[string]int // 外层信封键直方图（headers/body/…）
+	Models     map[string]int // chunk.model 值（上游恒为 auto，可用于证伪「key 生效」）
+	FinishRsn  map[string]int // finish_reason 值直方图
+	Done       bool           // 流里是否出现 data: [DONE]
+	Tail       string         // 流尾部 200 字节（判断是被截断还是正常收尾）
 	First      []string
+}
+
+// Detail 输出「思考到底藏在哪」的穷举证据：外层信封键、choice 层键、上游 model、
+// finish_reason、是否见到 [DONE]、流尾部字节。回答有字但思考为 0 时必须看这些 ——
+// 只检查 delta.reasoning_content 一个字段，漏判概率不低。
+func (s streamStats) Detail() string {
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("\n     · 外层信封键=[%s]", hist(s.EnvKeys)))
+	b.WriteString(fmt.Sprintf("\n     · choice 层键=[%s] finish_reason=[%s]", hist(s.ChoiceKeys), hist(s.FinishRsn)))
+	b.WriteString(fmt.Sprintf("\n     · 上游返回 model=[%s] 见到[DONE]=%v", hist(s.Models), s.Done))
+	if s.Tail != "" {
+		b.WriteString(fmt.Sprintf("\n     · 流尾部 200B：%s", s.Tail))
+	}
+	return b.String()
 }
 
 // scanStream 用生产同款解析器扫一遍原始字节，统计各字段出现情况。
 // 若 Chunks==0 但 DataLines>0 → 上游 SSE 信封不是 data:{"body":"..."} 这个形状。
 func scanStream(raw []byte) streamStats {
-	st := streamStats{DeltaKeys: map[string]int{}, TopKeys: map[string]int{}, OtherLines: map[string]int{}, Bytes: len(raw)}
+	st := streamStats{
+		DeltaKeys: map[string]int{}, TopKeys: map[string]int{}, OtherLines: map[string]int{},
+		ChoiceKeys: map[string]int{}, EnvKeys: map[string]int{}, Models: map[string]int{},
+		FinishRsn: map[string]int{}, Bytes: len(raw),
+	}
 	for _, line := range strings.Split(string(raw), "\n") {
 		line = strings.TrimRight(line, "\r")
 		if strings.HasPrefix(line, "data:") {
 			payload := strings.TrimPrefix(line, "data:")
 			if strings.Contains(payload, "[DONE]") {
+				st.Done = true
 				continue
 			}
 			st.DataLines++
 			if len(st.First) < 3 {
 				st.First = append(st.First, truncate(line, 160))
+			}
+			// 外层信封键：正常是 {headers, body}。多出别的键（如 reasoning/thinking）
+			// 就说明思考挂在信封层而不是内层 chunk 里。
+			var env map[string]any
+			if json.Unmarshal([]byte(payload), &env) == nil {
+				for k := range env {
+					st.EnvKeys[k]++
+				}
 			}
 		} else if line != "" {
 			prefix := line
@@ -395,11 +430,20 @@ func scanStream(raw []byte) streamStats {
 		for k := range chunk {
 			st.TopKeys[k]++
 		}
+		if v, ok := chunk["model"].(string); ok && v != "" {
+			st.Models[v]++
+		}
 		if choices, ok := chunk["choices"].([]any); ok {
 			for _, ci := range choices {
 				ch, _ := ci.(map[string]any)
 				if ch == nil {
 					continue
+				}
+				for k := range ch {
+					st.ChoiceKeys[k]++
+				}
+				if v, ok := ch["finish_reason"].(string); ok && v != "" {
+					st.FinishRsn[v]++
 				}
 				if _, ok := ch["message"]; ok {
 					st.MsgField++
@@ -437,6 +481,12 @@ func scanStream(raw []byte) streamStats {
 	if st.DataLines > st.Chunks {
 		st.BadLines = st.DataLines - st.Chunks
 	}
+	// 流尾部：被截断（unexpected EOF）时能看出是「生成中途断」还是「正常收尾」。
+	tail := strings.TrimSpace(string(raw))
+	if len(tail) > 200 {
+		tail = tail[len(tail)-200:]
+	}
+	st.Tail = strings.ReplaceAll(tail, "\n", "⏎")
 	return st
 }
 
@@ -489,6 +539,24 @@ type probeResult struct {
 	usage     string        // 流末尾 usage 块（含 reasoning_tokens 时能判断「想了但不下发」）
 	stats     streamStats
 	note      string
+}
+
+// setNestedModelConfig 把键写进 chat_context.extra.modelConfig（协议里 is_reasoning
+// 与 key 都在这层重复出现，档位很可能也在这里）。
+func setNestedModelConfig(o map[string]any, k string, v any) {
+	cc, _ := o["chat_context"].(map[string]any)
+	if cc == nil {
+		return
+	}
+	ex, _ := cc["extra"].(map[string]any)
+	if ex == nil {
+		return
+	}
+	mc, _ := ex["modelConfig"].(map[string]any)
+	if mc == nil {
+		return
+	}
+	mc[k] = v
 }
 
 // buildProbeCases 按模型能力生成用例表。
@@ -548,6 +616,22 @@ func buildProbeCases(caps thinkCaps) []probeCase {
 		{id: "8", name: "非法值 bogus（只看状态码）", inject: "parameters.reasoning_effort=bogus",
 			shortPrompt: true, reasoning: true,
 			mutate: setParam(nil, "reasoning_effort", "bogus")},
+		// 用例 9/10 针对「CLI 的 --reasoning-effort 到底写在哪」这个未解问题。
+		// 依据：wild-work 自己就把 is_reasoning 同时写在 model_config 与
+		// chat_context.extra.modelConfig 两处（body.go:61/67），档位很可能同样双写；
+		// 而 chat_context 内部是 camelCase 容器 + snake_case 字段名（chatPrompt/modelConfig/is_reasoning）。
+		{id: "9", name: fmt.Sprintf("chat_context.extra.modelConfig.reasoning_effort=%s", def),
+			inject: "is_reasoning=true + chat_context.extra.modelConfig.reasoning_effort=" + def, reasoning: true,
+			mutate: func(o map[string]any) { setNestedModelConfig(o, "reasoning_effort", def) }},
+		{id: "10", name: fmt.Sprintf("两处 modelConfig 双写 %s（最接近 CLI 形态）", def),
+			inject:    "is_reasoning=true + model_config.reasoning_effort + chat_context.extra.modelConfig.reasoning_effort=" + def,
+			reasoning: true,
+			mutate: func(o map[string]any) {
+				if mc, ok := o["model_config"].(map[string]any); ok {
+					mc["reasoning_effort"] = def
+				}
+				setNestedModelConfig(o, "reasoning_effort", def)
+			}},
 	}
 	if maxEff != def {
 		cases = append(cases[:3], append([]probeCase{{
@@ -922,9 +1006,12 @@ func TestLiveProbeEffort(t *testing.T) {
 		if base > 0 && r.reasoning > 0 {
 			ratio = fmt.Sprintf("%.2fx", float64(r.reasoning)/float64(base))
 		}
-		note := r.note
-		if note == "" && r.status == 200 {
-			note = r.stats.String()
+		note := r.stats.String()
+		switch {
+		case r.note != "" && r.stats.Bytes > 0:
+			note = r.note + " | " + note
+		case r.note != "":
+			note = r.note
 		}
 		t.Logf("%-34s %-5d %-8s %-9s %-10s %-10s %s", r.name, r.status,
 			r.ttfb.Round(time.Millisecond), r.total.Round(time.Millisecond),
@@ -947,13 +1034,18 @@ func TestLiveProbeEffort(t *testing.T) {
 			t.Logf(">> %s 的非标准 delta chunk%d：%s", r.name, i+1, o)
 		}
 	}
-	// 回答有内容、思考为 0：流是通的，只是没有思考链。把顶层键与非 data 行打全，
-	// 用于判断思考是否挂在 chunk 顶层或走独立事件类型。
+	// 穷举取证：只要「回答有字但思考 0」或「流异常」，就把所有可能藏思考的位置打全
+	// —— 顶层键 / 非 data 行 / 外层信封键 / choice 层键 / 上游 model / finish_reason /
+	// [DONE] / 流尾部。只盯 delta.reasoning_content 一个名字，漏判概率不低。
 	for _, r := range results {
-		if r.status == 200 && r.reasoning == 0 && r.content > 0 && r.note == "" {
-			t.Logf("-- %s：回答 %d 字、思考 0 字 → chunk 顶层键=[%s]，非 data 行=[%s]",
-				r.name, r.content, hist(r.stats.TopKeys), hist(r.stats.OtherLines))
+		if r.stats.Bytes == 0 {
+			continue
 		}
+		if r.reasoning > 0 && r.note == "" {
+			continue // 已经拿到思考，不需要取证
+		}
+		t.Logf("-- %s：回答 %d 字、思考 %d 字 → chunk 顶层键=[%s]，非 data 行=[%s]%s",
+			r.name, r.content, r.reasoning, hist(r.stats.TopKeys), hist(r.stats.OtherLines), r.stats.Detail())
 	}
 
 	// 判读按用例 id 找。
@@ -974,8 +1066,22 @@ func TestLiveProbeEffort(t *testing.T) {
 	}
 	t.Log("==> 看「思考 (字)」列：用例 2 明显大于 1 → 开关有效；3/4 之间有梯度 → 档位生效；7 归零 → 关闭语义成立。")
 	t.Log("==> 用例 8 非 200 → 上游严格校验（客户端必须白名单）；200 → 静默忽略，不能盲信参考实现。")
-	t.Log("==> 若所有档位用例都是「回答有字、思考 0 字」，且顶层键/非 data 行都没有思考痕迹，")
-	t.Log("    则可判定该模型在 api3（agent_chat_generation）下不下发思考链 —— 换 is_reasoning=true 且带 ladder 的模型复测（如 deepseek-v4-pro）。")
+
+	// 档位的另一种可能效果：不产生思考链，但改变生成量/耗时。把回答字数与耗时横向比一下。
+	if len(results) > 1 {
+		t.Log("==> 档位是否改变了生成量（思考链之外的可能效果）：")
+		for _, r := range results {
+			if r.status == 200 && r.note == "" {
+				t.Logf("     %-40s 回答 %d 字 / %s", r.name, r.content, r.total.Round(time.Second))
+			}
+		}
+		t.Log("     同 prompt 下单次采样噪声可达 ±40%，要下结论必须 WILDWORK_PROBE_REPEAT=3 取平均。")
+	}
+	t.Log("==> 若所有用例都是「回答有字、思考 0 字」，且上面穷举的位置（顶层键/非 data 行/")
+	t.Log("    外层信封键/choice 层键）都没有思考痕迹 → 该模型在 api3（agent_chat_generation）下不下发思考链。")
+	t.Log("    换模型复测时优先 qwen3.8-max：官方 Qoder CLI 只对 Max 系暴露 --reasoning-effort 别名")
+	t.Log("    （avaritiachaos/qoder-proxy 的模型表：qwen3.8-max-effort-{low,medium,high,max}），")
+	t.Log("    说明档位在这两个模型上才是官方支持的能力。")
 	// 抓 usage 块（含 reasoning_tokens）——用于判断「模型想了但不下发」vs「根本没想」。
 	for _, r := range results {
 		if r.usage != "" {
