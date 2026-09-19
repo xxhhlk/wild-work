@@ -42,7 +42,7 @@ func TestModelEntryReasoningEffortsStaticFallback(t *testing.T) {
 	}
 }
 
-// 未收录模型 / 非 WorkBuddy 渠道：省略档位字段（不输出空数组）。
+// 未收录模型 / 无档位能力渠道：省略档位字段（不输出空数组）。
 func TestModelEntryReasoningEffortsOmitted(t *testing.T) {
 	entry := buildModelEntry(provider.WorkBuddy, provider.ModelInfo{ID: "unknown-model"})
 	if _, has := entry["reasoning_supported_efforts"]; has {
@@ -51,6 +51,35 @@ func TestModelEntryReasoningEffortsOmitted(t *testing.T) {
 	entry = buildModelEntry(provider.TraeWork, provider.ModelInfo{ID: "glm-5.2"})
 	if _, has := entry["reasoning_supported_efforts"]; has {
 		t.Errorf("TraeWork 无思考档位能力，不应透出，实际 %v", entry["reasoning_supported_efforts"])
+	}
+}
+
+// Qoder 的档位来自上游目录的 thinking_config：透出远端值，
+// 且不与 WorkBuddy 的同名模型互相污染（realm 独立）。
+func TestModelEntryReasoningEffortsQoder(t *testing.T) {
+	mi := provider.ModelInfo{
+		ID: "qwen3.8-flash", SupportsReasoning: true,
+		SupportedEfforts: []string{"low", "medium", "xhigh"}, DefaultEffort: "medium",
+	}
+	entry := buildModelEntry(provider.Qoder, mi)
+	efforts, ok := entry["reasoning_supported_efforts"].([]string)
+	if !ok || len(efforts) != 3 || efforts[1] != "medium" {
+		t.Fatalf("Qoder 档位应透出远端值，实际 %v", entry["reasoning_supported_efforts"])
+	}
+	if entry["reasoning_default_effort"] != "medium" {
+		t.Errorf("Qoder 默认档应透出，实际 %v", entry["reasoning_default_effort"])
+	}
+	// 目录拉取后能力表应写入 Qoder 面（投影与 /v1/models 共用同一份表）。
+	publishEffortCaps(provider.Qoder, []provider.ModelInfo{mi})
+	if got := reasoning.Caps.Clamp(reasoning.RealmQoder, "qwen3.8-flash", "ultra"); got != "xhigh" {
+		t.Errorf("Qoder 面降级应为 xhigh，实际 %s", got)
+	}
+	if got := reasoning.Caps.DefaultEffort(reasoning.RealmQoder, "qwen3.8-flash"); got != "medium" {
+		t.Errorf("Qoder 默认档应为 medium，实际 %s", got)
+	}
+	// 同名模型在 WorkBuddy 面走自己的表，不受 Qoder 目录影响。
+	if got := reasoning.Caps.Clamp(reasoning.RealmCN, "qwen3.8-flash", "ultra"); got != "ultra" {
+		t.Errorf("国内面未被 Qoder 目录污染时应原样透传，实际 %s", got)
 	}
 }
 

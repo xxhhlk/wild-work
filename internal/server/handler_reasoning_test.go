@@ -81,15 +81,17 @@ func TestPrepareChatBodyRejectsInvalidControl(t *testing.T) {
 	}
 }
 
-// 默认档只对 WorkBuddy 国内版/国际版生效：其余渠道协议没有可用字段。
+// 默认档对 WorkBuddy 双面与 Qoder 生效：这三条渠道都有可验证的档位字段。
+// Qoder 的档位来自模型目录的 thinking_config，能不能用由渠道层按模型能力
+// 就近降级（Clamp）决定，所以这里照常注入。TraeWork 协议没有该字段。
 func TestReasoningDefaultFor(t *testing.T) {
 	h := NewHandler(Config{Runtimes: map[provider.Kind]*Runtime{}})
 	h.SetReasoningEffort("high")
 	cases := map[provider.Kind]string{
 		provider.WorkBuddy:   "high",
 		provider.WorkBuddyAI: "high",
+		provider.Qoder:       "high",
 		provider.TraeWork:    "",
-		provider.Qoder:       "",
 	}
 	for kind, want := range cases {
 		if got := h.reasoningDefaultFor(kind); got != want {
@@ -99,5 +101,8 @@ func TestReasoningDefaultFor(t *testing.T) {
 	h.SetReasoningEffort("")
 	if got := h.reasoningDefaultFor(provider.WorkBuddy); got != "" {
 		t.Errorf("清空后应返回空串，实际 %q", got)
+	}
+	if got := h.reasoningDefaultFor(provider.Qoder); got != "" {
+		t.Errorf("清空后 Qoder 也应返回空串，实际 %q", got)
 	}
 }

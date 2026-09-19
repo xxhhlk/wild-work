@@ -101,6 +101,10 @@ type ModelInfo struct {
 	SupportedEfforts []string
 	// DefaultEffort 上游声明的默认思考档（空表示未声明）。
 	DefaultEffort string
+	// ReasoningCanDisable 上游声明该模型可显式关闭思考（Qoder 的
+	// thinking_config.disabled 节点）。false 表示未知或不可关闭：
+	// 投影时「客户端要求关闭」不能当成可满足的请求（见 internal/qoder）。
+	ReasoningCanDisable bool
 }
 
 // InputModalities 按 OpenAI 生态惯例给出输入模态列表（OpenRouter/llama.cpp 的

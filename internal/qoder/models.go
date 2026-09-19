@@ -15,6 +15,7 @@ import (
 
 	"wild-work/internal/auth"
 	"wild-work/internal/provider"
+	"wild-work/internal/reasoning"
 )
 
 // DynamicModel 上游 chat scene 单个模型。
@@ -26,6 +27,77 @@ type DynamicModel struct {
 	IsVL           bool    `json:"is_vl"`
 	MaxInputTokens int64   `json:"max_input_tokens"`
 	PriceFactor    float64 `json:"price_factor"`
+	// ThinkingConfig 上游声明的思考能力（档位 ladder / 是否可关闭）。
+	// 实测形状（2026-09-19，qwen3.8-max / deepseek-v4-pro / glm-5.3 等）：
+	//   {"disabled":{"description":"Disable thinking"},
+	//    "enabled":{"description":"...","is_default":true,
+	//               "efforts":{"low":{},"medium":{"is_default":true},"xhigh":{}}}}
+	// 注意 efforts 是**对象**（键即档位名，值里可能带 is_default/description），
+	// 不是数组；且部分模型只有 enabled 没有 disabled（不可显式关闭），
+	// 也有 is_reasoning=false 却带 ladder 的（开关与档位能力不绑定）。
+	ThinkingConfig json.RawMessage `json:"thinking_config"`
+}
+
+// thinkCaps 从 thinking_config 提取出的思考能力。
+type thinkCaps struct {
+	// Efforts 支持的档位（按强度升序）。
+	Efforts []string
+	// DefaultEffort 上游标了 is_default 的档位（可能为空）。
+	DefaultEffort string
+	// SupportsDisable 存在 disabled 节点 → 支持显式关闭思考。
+	SupportsDisable bool
+}
+
+// parseThinkingConfig 解析 thinking_config。缺失/非法一律返回零值（未知），
+// 调用方据此「不暴露档位、不降级」，而不是猜一条 ladder。
+func parseThinkingConfig(raw json.RawMessage) thinkCaps {
+	if len(raw) == 0 || string(raw) == "null" {
+		return thinkCaps{}
+	}
+	var tc struct {
+		Disabled json.RawMessage `json:"disabled"`
+		Enabled  struct {
+			IsDefault bool                       `json:"is_default"`
+			Efforts   map[string]json.RawMessage `json:"efforts"`
+		} `json:"enabled"`
+	}
+	if err := json.Unmarshal(raw, &tc); err != nil {
+		return thinkCaps{}
+	}
+	caps := thinkCaps{
+		SupportsDisable: len(tc.Disabled) > 0 && string(tc.Disabled) != "null",
+	}
+	for name, meta := range tc.Enabled.Efforts {
+		caps.Efforts = append(caps.Efforts, name)
+		if caps.DefaultEffort != "" {
+			continue
+		}
+		var m struct {
+			IsDefault bool `json:"is_default"`
+		}
+		if err := json.Unmarshal(meta, &m); err == nil && m.IsDefault {
+			caps.DefaultEffort = name
+		}
+	}
+	caps.Efforts = reasoning.SortEfforts(caps.Efforts)
+	if !containsEffort(caps.Efforts, caps.DefaultEffort) {
+		caps.DefaultEffort = "" // 默认档必须落在支持的档位里
+	}
+	return caps
+}
+
+// containsEffort 档位成员判定。
+func containsEffort(efforts []string, want string) bool {
+	want = strings.ToLower(strings.TrimSpace(want))
+	if want == "" {
+		return false
+	}
+	for _, e := range efforts {
+		if strings.ToLower(strings.TrimSpace(e)) == want {
+			return true
+		}
+	}
+	return false
 }
 
 // fetchModels 调上游动态模型接口。
@@ -98,6 +170,7 @@ func (c *Client) FetchModels(a *auth.Auth) ([]provider.ModelInfo, error) {
 			name = m.Key
 		}
 		mm[name] = m.Key
+		caps := parseThinkingConfig(m.ThinkingConfig)
 		mi := provider.ModelInfo{
 			ID:            name,
 			Name:          m.DisplayName,
@@ -106,6 +179,13 @@ func (c *Client) FetchModels(a *auth.Auth) ([]provider.ModelInfo, error) {
 			SupportsImages:    m.IsVL,
 			SupportsReasoning: m.IsReasoning,
 		}
+		// 档位能力只在上游明确声明时透出：本地不猜 Qoder 的 ladder
+		// （各模型 ladder 不同，猜错会发非法档位）。
+		if len(caps.Efforts) > 0 {
+			mi.SupportedEfforts = caps.Efforts
+			mi.DefaultEffort = caps.DefaultEffort
+		}
+		mi.ReasoningCanDisable = caps.SupportsDisable
 		if m.MaxInputTokens > 0 {
 			mi.ContextWindow = m.MaxInputTokens
 			mi.ContextFromAPI = true // 接口真实返回

@@ -75,6 +75,7 @@ import (
 	"time"
 
 	"wild-work/internal/auth"
+	"wild-work/internal/reasoning"
 )
 
 // liveAuth 从 WILDWORK_AUTHDIR（默认 ./auths）取第一个 Qoder 账号。
@@ -206,8 +207,8 @@ func TestLiveProbeModelCatalog(t *testing.T) {
 			continue
 		}
 		withTC++
-		t.Logf("  %-16s client=%-16s is_reasoning=%-5v max_in=%-7d ladder=%v default_on=%v disabled=%v",
-			e.Key, e.ClientName, e.IsReasoning, e.MaxInput, e.Caps.Efforts, e.Caps.EnabledDefault, e.Caps.HasDisabled)
+		t.Logf("  %-16s client=%-16s is_reasoning=%-5v max_in=%-7d ladder=%v default=%q 可关闭=%v",
+			e.Key, e.ClientName, e.IsReasoning, e.MaxInput, e.Caps.Efforts, e.Caps.DefaultEffort, e.Caps.SupportsDisable)
 		t.Logf("      raw=%s", truncate(string(e.TC), 220))
 	}
 	t.Logf("==> %d 个模型带 thinking_config", withTC)
@@ -244,61 +245,10 @@ func probeRepeat() int {
 }
 
 // ---- 思考能力解析 ----
-
-// thinkCaps 从 thinking_config 提取的能力。
-type thinkCaps struct {
-	HasDisabled    bool     // 带 disabled 节点 → 支持显式关闭
-	EnabledDefault bool     // enabled.is_default → 默认就开思考
-	Efforts        []string // enabled.efforts 的键（真实支持的档位集合）
-}
-
-// effortRank 档位强度排序（与 internal/reasoning 的档位表对齐）。
-var effortRank = map[string]int{
-	"none": 0, "minimal": 1, "low": 2, "medium": 3,
-	"high": 4, "xhigh": 5, "max": 6, "ultra": 7,
-}
-
-// parseThinkingConfig 解析 thinking_config：
 //
-//	{"disabled":{...},"enabled":{"is_default":true,"efforts":{"low":{},"medium":{"is_default":true},"xhigh":{}}}}
-//
-// efforts 是对象（键=档位名，值里可能带 is_default/description），不是数组。
-func parseThinkingConfig(raw json.RawMessage) thinkCaps {
-	var tc struct {
-		Disabled json.RawMessage `json:"disabled"`
-		Enabled  struct {
-			IsDefault bool                       `json:"is_default"`
-			Efforts   map[string]json.RawMessage `json:"efforts"`
-		} `json:"enabled"`
-	}
-	if err := json.Unmarshal(raw, &tc); err != nil {
-		return thinkCaps{}
-	}
-	caps := thinkCaps{
-		HasDisabled:    len(tc.Disabled) > 0 && string(tc.Disabled) != "null",
-		EnabledDefault: tc.Enabled.IsDefault,
-	}
-	for k := range tc.Enabled.Efforts {
-		caps.Efforts = append(caps.Efforts, k)
-	}
-	sort.SliceStable(caps.Efforts, func(i, j int) bool {
-		ri, oki := effortRank[caps.Efforts[i]]
-		rj, okj := effortRank[caps.Efforts[j]]
-		if oki && okj {
-			return ri < rj
-		}
-		if oki != okj {
-			return oki // 已知档位排前面
-		}
-		return caps.Efforts[i] < caps.Efforts[j]
-	})
-	return caps
-}
-
-// DefaultEffort 返回 ladder 里标了 is_default 的档位；没有就用最接近中间的档。
-func (c thinkCaps) DefaultEffort() string {
-	return ""
-}
+// 直接复用生产实现 models.go 的 parseThinkingConfig / thinkCaps：
+// 探针若另写一份解析，两边会各自漂移，反而掩盖「生产解析读错字段」这类问题。
+// 探针只负责把解析结果打到日志，供人工核对上游真实形状。
 
 // ---- 原始流抓取与诊断 ----
 
@@ -764,10 +714,10 @@ func TestLiveProbeAggregateExtract(t *testing.T) {
 // 不联网，仅确认 probeCase 构造正确。
 func TestLiveProbeCaseTableDryRun(t *testing.T) {
 	testLadder := func(name string, ladder []string) {
-		caps := thinkCaps{Efforts: ladder, EnabledDefault: true, HasDisabled: true}
+		caps := thinkCaps{Efforts: ladder, DefaultEffort: "high", SupportsDisable: true}
 		cases := buildProbeCases(caps)
 		t.Logf("== %s（%v）", name, ladder)
-		t.Logf("   ladder=%v default_on=%v disabled=%v", caps.Efforts, caps.EnabledDefault, caps.HasDisabled)
+		t.Logf("   ladder=%v default=%q 可关闭=%v", caps.Efforts, caps.DefaultEffort, caps.SupportsDisable)
 		for _, c := range cases {
 			t.Logf("   [%s] %-40s 注入：%s", c.id, c.name, c.inject)
 		}
@@ -781,7 +731,7 @@ func TestLiveProbeCaseTableDryRun(t *testing.T) {
 	for _, c := range cases {
 		if c.id == "3" {
 			var obj map[string]any
-			raw, _ := buildAgentBody([]map[string]any{{"role": "user", "content": "test"}}, "qfmodel", nil, true)
+			raw, _ := buildAgentBody([]map[string]any{{"role": "user", "content": "test"}}, "qfmodel", nil, reasoningSpec{Enabled: true, Effort: "medium"})
 			json.Unmarshal(raw, &obj)
 			c.mutate(obj)
 			jb, _ := json.Marshal(obj)
@@ -843,9 +793,15 @@ func bodyFacts(obj map[string]any) string {
 }
 
 // TestLiveProbeProjectionDryRun 零成本：验证生产路径（ChatStream）从 OpenAI 风格请求
-// 投影出的 Qoder body 是否符合预期 —— 尤其 is_reasoning 必须随 reasoning_effort 变化。
+// 投影出的 Qoder body 是否符合官方 bve() 的写法 —— 开关 + parameters 两处同源。
 // 不联网。这个用例能挡住「探针误用」与「投影逻辑失效」两类问题。
+//
+// 用假的模型能力表覆盖 Qoder 面，模拟上游目录声明（真实 ladder 见 ModelCatalog 用例）。
 func TestLiveProbeProjectionDryRun(t *testing.T) {
+	reasoning.Caps.SetRemote(reasoning.RealmQoder, map[string]reasoning.Cap{
+		"qwen3.8-flash": {Efforts: []string{"low", "medium", "xhigh"}, DefaultEffort: "medium", SupportsDisable: true},
+		"glm-5.3":       {Efforts: []string{"low", "high", "max"}, DefaultEffort: "max"},
+	})
 	project := func(name string, openaiBody string) {
 		var req struct {
 			Model           string           `json:"model"`
@@ -857,20 +813,23 @@ func TestLiveProbeProjectionDryRun(t *testing.T) {
 		if err := json.Unmarshal([]byte(openaiBody), &req); err != nil {
 			t.Fatalf("%s: 解析失败: %v", name, err)
 		}
-		enabled := reasoningEnabled(req.ReasoningEffort, req.Thinking)
-		raw, err := buildAgentBody(req.Messages, "qfmodel", req.Tools, enabled)
+		spec := reasoningSpecFor(req.Model, req.ReasoningEffort, req.Thinking)
+		raw, err := buildAgentBody(req.Messages, "qfmodel", req.Tools, spec)
 		if err != nil {
 			t.Fatalf("%s: build 失败: %v", name, err)
 		}
 		var obj map[string]any
 		json.Unmarshal(raw, &obj)
-		t.Logf("%-28s → is_reasoning=%-5v | %s", name, enabled, bodyFacts(obj))
+		t.Logf("%-30s → is_reasoning=%-5v effort=%-7q | %s", name, spec.Enabled, spec.Effort, bodyFacts(obj))
 	}
 	project("无 reasoning 字段", `{"model":"qwen3.8-flash","messages":[{"role":"user","content":"hi"}]}`)
-	project("reasoning_effort=high", `{"model":"qwen3.8-flash","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"high"}`)
-	project("reasoning_effort=none", `{"model":"qwen3.8-flash","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"none"}`)
+	project("reasoning_effort=high（降级）", `{"model":"qwen3.8-flash","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"high"}`)
+	project("reasoning_effort=xhigh", `{"model":"qwen3.8-flash","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"xhigh"}`)
+	project("reasoning_effort=none（可关模型）", `{"model":"qwen3.8-flash","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"none"}`)
+	project("reasoning_effort=none（不可关模型）", `{"model":"glm-5.3","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"none"}`)
 	project("thinking.type=enabled", `{"model":"qwen3.8-flash","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"enabled"}}`)
-	t.Log("== 生产路径只投影 is_reasoning 布尔（Qoder 协议无档位），parameters/顶层 camelCase 不会被生产代码发送")
+	t.Log("== 生产路径按官方 bve() 投影：model_config.is_reasoning 与 parameters.enable_thinking 同源，")
+	t.Log("   parameters.reasoning_effort 按该模型 ladder 就近降级；未表达档位时不下发 parameters。")
 }
 
 // TestLiveProbeEffort 第 2 步：同一 prompt 下横向对比不同字段注入的行为。
@@ -923,7 +882,7 @@ func TestLiveProbeEffort(t *testing.T) {
 	prompt := probePrompt()
 	repeat := probeRepeat()
 	t.Logf("探测模型：客户端名=%s 上游 key=%s；每组重复 %d 次", clientModel, modelKey, repeat)
-	t.Logf("模型 ladder：%v（默认档=%v，支持关闭=%v）", caps.Efforts, caps.EnabledDefault, caps.HasDisabled)
+	t.Logf("模型 ladder：%v（默认档=%q，支持关闭=%v）", caps.Efforts, caps.DefaultEffort, caps.SupportsDisable)
 	t.Logf("探测 prompt（%d 字）：%s", len([]rune(prompt)), truncate(strings.ReplaceAll(prompt, "\n", " "), 90))
 
 	cases := filterCases(buildProbeCases(caps))
@@ -947,7 +906,7 @@ func TestLiveProbeEffort(t *testing.T) {
 		okCount := 0
 		for i := 0; i < repeat; i++ {
 			messages := []map[string]any{{"role": "user", "content": usePrompt}}
-			raw, err := buildAgentBody(messages, modelKey, nil, tc.reasoning)
+			raw, err := buildAgentBody(messages, modelKey, nil, reasoningSpec{Enabled: tc.reasoning})
 			if err != nil {
 				t.Fatalf("%s: 构造 body 失败：%v", tc.name, err)
 			}

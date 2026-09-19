@@ -219,15 +219,25 @@ func (h *Handler) currentReasoningEffort() string {
 }
 
 // reasoningDefaultFor 返回该渠道可用的默认思考档。
-// 只有 WorkBuddy 国内版/国际版支持：上游认 low/high/max 三档（标准档位由渠道层投影）。
-// TraeWork 协议没有可验证的思考控制字段、Qoder 只有 is_reasoning 开关，
-// 注入默认档只会被上游忽略或报错，因此返回空串。
+// WorkBuddy 国内版/国际版与 Qoder 支持：Qoder 的档位来自模型目录的
+// thinking_config ladder，由 qoder 渠道层按模型能力就近降级（Clamp），
+// 因此这里只需把面板配置的默认档原样注入，具体能不能用交给渠道层判断。
+// TraeWork 协议没有可验证的思考控制字段，注入默认档只会被上游忽略或报错。
 func (h *Handler) reasoningDefaultFor(k provider.Kind) string {
-	switch k {
-	case provider.WorkBuddy, provider.WorkBuddyAI:
+	if supportsEffortCaps(k) {
 		return h.currentReasoningEffort()
 	}
 	return ""
+}
+
+// supportsEffortCaps 该渠道是否有可验证的思考档位能力（投影 + /v1/models 声明）。
+// TraeWork 协议无此字段，不参与。
+func supportsEffortCaps(k provider.Kind) bool {
+	switch k {
+	case provider.WorkBuddy, provider.WorkBuddyAI, provider.Qoder:
+		return true
+	}
+	return false
 }
 
 // CurrentAPIKey 读取当前生效的 API Key（供外层兼容层跟随面板修改）。
@@ -317,12 +327,12 @@ func buildModelEntry(k provider.Kind, mi provider.ModelInfo) map[string]any {
 		"input_modalities": mi.InputModalities(),
 		"modality":         mi.Modality(),
 	}
-	// 思考能力与可选档位：仅两个 WorkBuddy 渠道有可验证的档位能力，
+	// 思考能力与可选档位：三个渠道有可验证的档位能力（WorkBuddy 双面 + Qoder），
 	// 远端声明优先、静态兜底表补齐、皆无则省略字段（不输出空数组）。
 	if mi.SupportsReasoning {
 		entry["supports_reasoning"] = true
 	}
-	if k == provider.WorkBuddy || k == provider.WorkBuddyAI {
+	if supportsEffortCaps(k) {
 		realm := reasoning.RealmForKind(k.String())
 		if efforts, def := reasoning.Caps.Listing(realm, mi.ID, mi.SupportedEfforts, mi.DefaultEffort); len(efforts) > 0 {
 			entry["reasoning_supported_efforts"] = efforts
@@ -336,17 +346,21 @@ func buildModelEntry(k provider.Kind, mi provider.ModelInfo) map[string]any {
 
 // publishEffortCaps 把目录接口返回的档位能力写入 internal/reasoning 的能力表。
 // 远端值为权威（投影与 /v1/models 共用同一份表）；空结果不覆盖既有能力。
-// 只处理 WorkBuddy 国内版/国际版：其余渠道协议没有可验证的思考档位字段。
+// 只处理有档位能力的渠道（WorkBuddy 双面 + Qoder）：TraeWork 协议没有该字段。
 func publishEffortCaps(kind provider.Kind, infos []provider.ModelInfo) {
-	if kind != provider.WorkBuddy && kind != provider.WorkBuddyAI {
+	if !supportsEffortCaps(kind) {
 		return
 	}
 	caps := make(map[string]reasoning.Cap, len(infos))
 	for _, mi := range infos {
-		if len(mi.SupportedEfforts) == 0 && mi.DefaultEffort == "" {
+		if len(mi.SupportedEfforts) == 0 && mi.DefaultEffort == "" && !mi.ReasoningCanDisable {
 			continue
 		}
-		caps[mi.ID] = reasoning.Cap{Efforts: mi.SupportedEfforts, DefaultEffort: mi.DefaultEffort}
+		caps[mi.ID] = reasoning.Cap{
+			Efforts:         mi.SupportedEfforts,
+			DefaultEffort:   mi.DefaultEffort,
+			SupportsDisable: mi.ReasoningCanDisable,
+		}
 	}
 	reasoning.Caps.SetRemote(reasoning.RealmForKind(kind.String()), caps)
 }

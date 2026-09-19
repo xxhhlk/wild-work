@@ -8,17 +8,34 @@ import (
 	"time"
 )
 
+// reasoningSpec Qoder 请求里的思考控制。
+//
+// 官方桌面版 SDK（@qoder-ai/qoder-cn-agent-sdk 的 bve()，CLI v1.1.53）就是这样
+// 写的：档位与开关**同时**落在 model_config 与 parameters 两处，且
+// parameters.enable_thinking 必须与 model_config.is_reasoning 同源，否则上游
+// 会收到自相矛盾的组合（is_reasoning=true + enable_thinking=false）。
+type reasoningSpec struct {
+	// Enabled 投影到 model_config.is_reasoning。
+	Enabled bool
+	// Effort 投影到 parameters.reasoning_effort；空串表示不下发档位字段
+	// （客户端没给档位、或该模型没有可用的 ladder）。
+	Effort string
+}
+
 // buildAgentBody 构造请求体。
 //   - messages：客户端原始消息列表（可含 system/assistant/tool 多轮）
 //   - modelKey：上游模型 key（如 dmodel）
 //   - tools：客户端传来的 OpenAI tools 数组；为空则不注入 tools 字段
-//   - enableReasoning：是否启用思考模式
+//   - spec：思考控制（开关 + 档位），见 reasoningSpec
 //
-// Qoder 协议（model_config）只有 is_reasoning 开关，没有强度档位：
-// 客户端给出的档位只能映射成「开 / 关」，无法区分多档强度。
+// 思考字段按官方 bve() 的写法投影：
+//
+//	model_config.is_reasoning            = spec.Enabled
+//	parameters.reasoning_effort          = spec.Effort     （仅非空时写）
+//	parameters.enable_thinking           = spec.Enabled    （仅非空时写）
 //
 // 注意：developer 角色必须改写为 system。
-func buildAgentBody(messages []map[string]any, modelKey string, tools []any, enableReasoning bool) ([]byte, error) {
+func buildAgentBody(messages []map[string]any, modelKey string, tools []any, spec reasoningSpec) ([]byte, error) {
 	// developer → system（浅拷贝消息避免污染调用方数据）
 	msgs := make([]map[string]any, len(messages))
 	for i, m := range messages {
@@ -58,13 +75,13 @@ func buildAgentBody(messages []map[string]any, modelKey string, tools []any, ena
 		"is_reply":         true,
 		"image_urls":       nil,
 		"session_type":     "qodercli",
-		"model_config":     map[string]any{"key": modelKey, "is_reasoning": enableReasoning},
+		"model_config":     map[string]any{"key": modelKey, "is_reasoning": spec.Enabled},
 		"chat_context": map[string]any{
 			"chatPrompt": "",
 			"text":       map[string]any{"type": "text", "text": prompt},
 			"extra": map[string]any{
 				"context":         []any{},
-				"modelConfig":     map[string]any{"key": modelKey, "is_reasoning": enableReasoning},
+				"modelConfig":     map[string]any{"key": modelKey, "is_reasoning": spec.Enabled},
 				"originalContent": map[string]any{"type": "text", "text": prompt},
 			},
 			"features":  []any{},
@@ -76,6 +93,15 @@ func buildAgentBody(messages []map[string]any, modelKey string, tools []any, ena
 			"begin_at": now.UnixMilli(),
 			"name":     truncateRunes(prompt, 30),
 		},
+	}
+
+	// 档位字段：仅在客户端表达了强度（或明确关闭）时下发。
+	// 不下发时上游按 model_config.is_reasoning 与自身默认档处理。
+	if spec.Effort != "" {
+		base["parameters"] = map[string]any{
+			"reasoning_effort": spec.Effort,
+			"enable_thinking":  spec.Enabled,
+		}
 	}
 
 	if len(tools) > 0 {

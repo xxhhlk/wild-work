@@ -11,11 +11,16 @@
 //  2. 本文件按 realm 分开的静态兜底表（远端缺失时补齐）；
 //  3. 两者皆无 → 不降级（档位原样透传），/v1/models 也不暴露档位字段。
 //
+// Qoder（RealmQoder）是特例：能力一律来自其模型目录的 thinking_config
+// （每模型一条 ladder，见 internal/qoder/models.go），静态表刻意留空 —— 猜错
+// ladder 会把「未知」当「已知」而发出非法档位。
+//
 // ⚠️ 静态表数值来自对官方客户端（codebuddy.js / product.ts）的逆向记录，
 // 本仓库未独立复现；远端返回值始终优先，实测不符时只改本文件即可。
 package reasoning
 
 import (
+	"sort"
 	"strings"
 	"sync"
 )
@@ -26,6 +31,11 @@ const (
 	RealmCN = "cn"
 	// RealmGlobal WorkBuddy 国际版（www.workbuddy.ai）。
 	RealmGlobal = "global"
+	// RealmQoder Qoder（model.chat / agent_chat_generation）。
+	// 与 WorkBuddy 的档位表**完全独立**：Qoder 的档位来自上游模型目录的
+	// thinking_config（每模型一条 ladder），且不少模型只支持关闭节点而不支持
+	// 档位、或反之，与 CodeBuddy 的同名模型并不通用。
+	RealmQoder = "qoder"
 )
 
 // Cap 一个模型的档位能力。
@@ -34,6 +44,10 @@ type Cap struct {
 	Efforts []string
 	// DefaultEffort 上游声明的默认档；可能为空。
 	DefaultEffort string
+	// SupportsDisable 上游声明该模型可显式关闭思考（Qoder 的
+	// thinking_config.disabled 节点）。false 表示未知或不可关闭——此时
+	// 「客户端要求关闭」不应被当成可满足的请求（详见 qoder 渠道的投影）。
+	SupportsDisable bool
 }
 
 // effortRank 档位从低到高。ultra 是客户端可能发的最强档（上游无此值，
@@ -87,6 +101,11 @@ var globalEffortFallback = map[string]Cap{
 	"kimi-k2.6":           {Efforts: []string{"medium"}},
 }
 
+// qoderEffortFallback Qoder 的静态兜底表**刻意留空**：
+// 它的档位能力一律来自上游模型目录的 thinking_config（远端权威），
+// 本地猜一条 ladder 反而会把「未知」当成「已知」而降级错档位。
+var qoderEffortFallback = map[string]Cap{}
+
 // Catalog 档位能力表：静态兜底 + 远端覆盖（并发安全）。
 type Catalog struct {
 	mu     sync.RWMutex
@@ -103,8 +122,11 @@ var Caps = NewCatalog()
 
 // normalizeRealm 归一化产品面：空/未知一律按国内版处理（渠道缺省）。
 func normalizeRealm(realm string) string {
-	if strings.EqualFold(strings.TrimSpace(realm), RealmGlobal) {
+	switch {
+	case strings.EqualFold(strings.TrimSpace(realm), RealmGlobal):
 		return RealmGlobal
+	case strings.EqualFold(strings.TrimSpace(realm), RealmQoder):
+		return RealmQoder
 	}
 	return RealmCN
 }
@@ -114,26 +136,34 @@ func normalizeModel(model string) string {
 	return strings.ToLower(strings.TrimSpace(model))
 }
 
-// staticCap 取静态兜底条目。
+// staticCap 取静态兜底条目。Qoder 无静态表（能力只认上游目录）。
 func staticCap(realm, model string) Cap {
-	table := cnEffortFallback
-	if normalizeRealm(realm) == RealmGlobal {
-		table = globalEffortFallback
+	switch normalizeRealm(realm) {
+	case RealmGlobal:
+		return globalEffortFallback[normalizeModel(model)]
+	case RealmQoder:
+		return qoderEffortFallback[normalizeModel(model)]
 	}
-	return table[normalizeModel(model)]
+	return cnEffortFallback[normalizeModel(model)]
 }
 
 // SetRemote 用远端目录返回的档位能力覆盖某产品面的缓存。
 // 空 map 不覆盖（防一次失败探测清空既有能力）。
+// 「无档位但有 disabled 节点」的模型（Qoder 的 qwen3.7-max 这类）也要保留：
+// 它虽不支持多档，但支持显式关闭，投影时需要这个信息。
 func (c *Catalog) SetRemote(realm string, caps map[string]Cap) {
 	if c == nil || len(caps) == 0 {
 		return
 	}
 	bucket := make(map[string]Cap, len(caps))
 	for model, cap := range caps {
-		if len(cap.Efforts) == 0 && cap.DefaultEffort == "" {
+		if len(cap.Efforts) == 0 && cap.DefaultEffort == "" && !cap.SupportsDisable {
 			continue
 		}
+		if len(cap.Efforts) > 0 {
+			cap.Efforts = SortEfforts(cap.Efforts)
+		}
+		cap.DefaultEffort = normalizeModel(cap.DefaultEffort)
 		bucket[normalizeModel(model)] = cap
 	}
 	if len(bucket) == 0 {
@@ -154,20 +184,55 @@ func (c *Catalog) Lookup(realm, model string) (Cap, bool) {
 		return Cap{}, false
 	}
 	r := normalizeRealm(realm)
+	known := func(cap Cap) bool { return len(cap.Efforts) > 0 || cap.SupportsDisable }
 	if c != nil {
 		c.mu.RLock()
 		if bucket, ok := c.remote[r]; ok {
-			if cap, ok := bucket[key]; ok && len(cap.Efforts) > 0 {
+			if cap, ok := bucket[key]; ok && known(cap) {
 				c.mu.RUnlock()
 				return cap, true
 			}
 		}
 		c.mu.RUnlock()
 	}
-	if cap := staticCap(r, key); len(cap.Efforts) > 0 {
+	if cap := staticCap(r, key); known(cap) {
 		return cap, true
 	}
 	return Cap{}, false
+}
+
+// SortEfforts 按强度升序排列档位（未知档位排在已知档位之后，保持原有相对顺序）。
+// 上游返回的 efforts 是 JSON 对象（键序在 Go map 里丢失），投影与
+// /v1/models 都需要稳定的顺序，否则同一模型每次输出顺序可能不同。
+func SortEfforts(efforts []string) []string {
+	if len(efforts) <= 1 {
+		return append([]string(nil), efforts...)
+	}
+	out := append([]string(nil), efforts...)
+	sort.SliceStable(out, func(i, j int) bool {
+		ri, oki := effortRank[normalizeModel(out[i])]
+		rj, okj := effortRank[normalizeModel(out[j])]
+		switch {
+		case oki && okj:
+			return ri < rj
+		case oki:
+			return true // 已知档位排在未知之前
+		case okj:
+			return false
+		}
+		return false
+	})
+	return out
+}
+
+// LowestEffort 返回档位集合里最低的一档（空集合返回空串）。
+// 用于「客户端要求关闭、但该模型不支持关闭」时降到最低档而非发出非法档位。
+func LowestEffort(efforts []string) string {
+	sorted := SortEfforts(efforts)
+	if len(sorted) == 0 {
+		return ""
+	}
+	return normalizeModel(sorted[0])
 }
 
 // Clamp 把请求档位降级到该模型支持的档位：
@@ -260,11 +325,15 @@ func containsEffort(efforts []string, want string) bool {
 	return false
 }
 
-// RealmForKind 把渠道名映射成产品面（仅两个 WorkBuddy 渠道有档位能力）。
+// RealmForKind 把渠道名映射成产品面（三个渠道有档位能力）。
 // 放在 reasoning 包是为了让渠道层与模型列表共用同一映射，避免两处漂移。
+// Qoder 与 WorkBuddy 的档位表互不相通（同名模型 ladder 不同），故单独一个面。
 func RealmForKind(kind string) string {
-	if strings.EqualFold(strings.TrimSpace(kind), "workbuddyai") {
+	switch {
+	case strings.EqualFold(strings.TrimSpace(kind), "workbuddyai"):
 		return RealmGlobal
+	case strings.EqualFold(strings.TrimSpace(kind), "qoder"):
+		return RealmQoder
 	}
 	return RealmCN
 }

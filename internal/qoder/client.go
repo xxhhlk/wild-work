@@ -195,15 +195,25 @@ type thinkingParam struct {
 	Type string `json:"type"`
 }
 
-// reasoningEnabled 把归一化后的思考控制投影成 Qoder 的 is_reasoning 开关。
+// reasoningSpecFor 把归一化后的思考控制投影成 Qoder 的请求字段。
 //
-// Qoder 的 model_config 只有 is_reasoning 布尔位，没有强度档位，因此：
-//   - 未表达（reasoning_effort 为空且无 thinking）→ false，与旧行为一致；
-//   - none/off/disabled → false（旧实现按「字段非空即开启」判断，会把显式关闭误判为开启）；
-//   - 其余任何档位（minimal…ultra）或 enabled/adaptive → true。
+// 官方桌面版 SDK 的 bve() 同时写 model_config.is_reasoning、
+// parameters.reasoning_effort、parameters.enable_thinking，因此这里返回
+// 一个 reasoningSpec 交给 body 层三处一起写，避免出现矛盾态。
+//
+// 语义（clientModel 用客户端名，与模型目录的能力表同键）：
+//   - 未表达 → 关，且不下发档位字段（与旧行为一致，避免打扰上游默认档）；
+//   - 显式关闭 → 该模型声明可关闭（thinking_config.disabled）时真关
+//     （effort=none + enable_thinking=false + is_reasoning=false）；
+//     不可关闭时**降到最低档**而不是发 none——上游对不认识的 none 会静默
+//     忽略并按其默认档执行，反而偏离客户端「别想太多」的意图；
+//     能力未知（目录未拉到）时只关开关，不猜档位；
+//   - 指定档位 → 按该模型 ladder 就近降级（reasoning.Caps.Clamp），
+//     避免把 high 发给只认 low/medium/xhigh 的模型；
+//   - 只说开思考 → 补上游标了 is_default 的档；没有声明则只翻开关。
 //
 // thinking.type 作为兜底：未经 server 层归一化的直连调用仍可能只带该字段。
-func reasoningEnabled(reasoningEffort string, thinking *thinkingParam) bool {
+func reasoningSpecFor(clientModel, reasoningEffort string, thinking *thinkingParam) reasoningSpec {
 	probe := map[string]any{}
 	if reasoningEffort != "" {
 		probe["reasoning_effort"] = reasoningEffort
@@ -211,9 +221,36 @@ func reasoningEnabled(reasoningEffort string, thinking *thinkingParam) bool {
 	if thinking != nil && thinking.Type != "" {
 		probe["thinking"] = map[string]any{"type": thinking.Type}
 	}
-	control, _ := reasoning.Resolve(probe, false)
-	enabled, _ := control.Enabled()
-	return enabled
+	control, err := reasoning.Resolve(probe, false)
+	if err != nil {
+		return reasoningSpec{} // 非法控制已在 server 层拦下；此处兜底按未表达处理
+	}
+	const realm = reasoning.RealmQoder
+	switch control.Mode {
+	case reasoning.ModeDisabled:
+		cap, ok := reasoning.Caps.Lookup(realm, clientModel)
+		if !ok {
+			return reasoningSpec{}
+		}
+		if cap.SupportsDisable {
+			return reasoningSpec{Enabled: false, Effort: "none"}
+		}
+		if lowest := reasoning.LowestEffort(cap.Efforts); lowest != "" {
+			return reasoningSpec{Enabled: true, Effort: lowest}
+		}
+		return reasoningSpec{}
+	case reasoning.ModeEnabled, reasoning.ModeEffort:
+		effort := reasoning.ChatEffort(control)
+		if control.Mode == reasoning.ModeEnabled && control.BudgetTokens == nil {
+			// 只说开思考：用该模型声明的默认档；没有声明就不下发档位字段。
+			effort = reasoning.Caps.DefaultEffort(realm, clientModel)
+		}
+		if effort != "" {
+			effort = reasoning.Caps.Clamp(realm, clientModel, effort)
+		}
+		return reasoningSpec{Enabled: true, Effort: effort}
+	}
+	return reasoningSpec{}
 }
 
 // ChatStream 发 chat 请求并返回原始嵌套 SSE body 流（调用方负责 Close）。
@@ -240,12 +277,14 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 		modelKey = reqOpenAI.Model
 	}
 
-	// 思考开关：服务端（internal/server.prepareChatBody）已把 reasoning_effort /
+	// 思考控制：服务端（internal/server.prepareChatBody）已把 reasoning_effort /
 	// reasoning.effort / thinking.* / enable_thinking 等写法归一化为顶层 reasoning_effort，
-	// 这里只把它投影成 Qoder 的 is_reasoning 布尔开关（协议无档位）。
-	enableReasoning := reasoningEnabled(reqOpenAI.ReasoningEffort, reqOpenAI.Thinking)
+	// 这里按官方 bve() 的写法投影成 is_reasoning + parameters{reasoning_effort, enable_thinking}。
+	spec := reasoningSpecFor(reqOpenAI.Model, reqOpenAI.ReasoningEffort, reqOpenAI.Thinking)
+	log.Printf("qoder reasoning: client=%q key=%q is_reasoning=%v effort=%q",
+		reqOpenAI.Model, modelKey, spec.Enabled, spec.Effort)
 
-	rawBody, err := buildAgentBody(reqOpenAI.Messages, modelKey, reqOpenAI.Tools, enableReasoning)
+	rawBody, err := buildAgentBody(reqOpenAI.Messages, modelKey, reqOpenAI.Tools, spec)
 	if err != nil {
 		return nil, 0, nil, fmt.Errorf("build qoder body: %w", err)
 	}

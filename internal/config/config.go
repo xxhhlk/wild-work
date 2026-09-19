@@ -148,8 +148,8 @@ type Config struct {
 		MaxTokensCap int `json:"max_tokens_cap"`
 		// ReasoningEffort 思考强度默认档：客户端未表达思考意图时注入的兜底值。
 		// 取值 none/minimal/low/medium/high/xhigh/max/ultra；空串或 off/none 表示不注入。
-		// 仅 WorkBuddy 国内版/国际版渠道生效（上游认 low/high/max 三档），
-		// 其余渠道协议没有可验证的档位字段。客户端显式指定时始终以客户端为准。
+		// 对 WorkBuddy 国内版/国际版与 Qoder 生效（两者档位表独立，同名模型 ladder 可能不同）；
+		// TraeWork 协议没有可验证的档位字段。档位按模型能力就近降级，客户端显式指定时始终以客户端为准。
 		ReasoningEffort string `json:"reasoning_effort"`
 		// ResponsesReasoningSummary 是否把上游思考链转成 Responses 的 reasoning item。
 		// 取值 auto（默认）/ on / off：
