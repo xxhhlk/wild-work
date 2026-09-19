@@ -210,8 +210,10 @@ API Key:  WildWorkAPI
   `model_config.is_reasoning` + `parameters.reasoning_effort` + `parameters.enable_thinking`，
   档位来自上游模型目录的 `thinking_config`（每模型一条 ladder，与 WorkBuddy 分表）；
   客户端要求关闭但该模型没有 `disabled` 节点时降到最低档；TraeWork 协议没有该字段。
-  ⚠️ Qoder 的 `agent_chat_generation` 端点**不下发可见思考链**（`reasoning_content` 恒空、
-  usage 无 `reasoning_tokens`），档位影响的是思考量/生成长度，不是能否看到思考过程。
+  ✅ Qoder 的 `agent_chat_generation` 端点**会下发可见思考链**（`reasoning_content` +
+  `usage.reasoning_tokens`）—— 前提是请求体与请求头按桌面版实测形状对齐（见 AGENTS.md R21）；
+  早期实现少了顶层 `system`、`task_id`、完整 `model_config` 等字段，才误判成「上游不支持」。
+  ⚠️ 请求体形状改动后务必跑 `TestLiveProbeProductionPath`（`-tags live`）回归。
 - **DeepSeek 系思考开关**：官方客户端开思考需同时下发 `thinking:{"type":"enabled"}` 与档位，
   缺该字段上游按「不思考」应答（`reasoning_content` 为空）；网关在客户端要开思考时自动补上，
   并给 assistant 消息回填 `reasoning_content`（多轮一致性）。由 `compat.deepseek_thinking`

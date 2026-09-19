@@ -42,7 +42,10 @@ func TestModelKeyStatic(t *testing.T) {
 
 func TestModelKeyDynamicPrecedence(t *testing.T) {
 	c := New()
-	c.setModelMap(map[string]string{"glm-5.3": "gmodel-new", "custom": "ckey"})
+	c.setModelMap(
+		map[string]string{"glm-5.3": "gmodel-new", "custom": "ckey"},
+		map[string]modelMeta{"gmodel-new": {Key: "gmodel-new", DisplayName: "GLM-5.3"}},
+	)
 	if got := c.modelKey("glm-5.3"); got != "gmodel-new" {
 		t.Errorf("dynamic should win, got %q", got)
 	}
@@ -51,6 +54,13 @@ func TestModelKeyDynamicPrecedence(t *testing.T) {
 	}
 	if got := c.modelKey("deepseek-v4-pro"); got != "dmodel" { // 动态缺失 → 静态兜底
 		t.Errorf("static fallback got %q", got)
+	}
+	// 元数据按上游 key 查；未命中返回只带 key 的零值（不猜窗口/档位）
+	if m := c.modelMetaFor("gmodel-new"); m.DisplayName != "GLM-5.3" {
+		t.Errorf("modelMetaFor hit = %#v", m)
+	}
+	if m := c.modelMetaFor("nope"); m.Key != "nope" || m.MaxOutputTokens != 0 || m.DefaultContextWindow != 0 {
+		t.Errorf("modelMetaFor miss = %#v, want zero-value meta with key", m)
 	}
 }
 
@@ -108,17 +118,173 @@ func TestBuildAgentBodyDeveloperToSystem(t *testing.T) {
 	if msgs[0]["role"] != "developer" {
 		t.Errorf("source mutated: role=%v", msgs[0]["role"])
 	}
-	// prompt 取最后一条 user 内容
+	// prompt 取最后一条 user 内容（chat_context.text 是字符串，不是 text 块）
 	var prompt struct {
 		ChatContext struct {
-			Text struct {
-				Text string `json:"text"`
-			} `json:"text"`
+			Text  string `json:"text"`
+			Extra struct {
+				OriginalContent string `json:"originalContent"`
+			} `json:"extra"`
 		} `json:"chat_context"`
 	}
 	_ = json.Unmarshal(raw, &prompt)
-	if prompt.ChatContext.Text.Text != "你好" {
-		t.Errorf("prompt = %q, want 你好", prompt.ChatContext.Text.Text)
+	if prompt.ChatContext.Text != "你好" {
+		t.Errorf("chat_context.text = %q, want 你好", prompt.ChatContext.Text)
+	}
+	if prompt.ChatContext.Extra.OriginalContent != "你好" {
+		t.Errorf("extra.originalContent = %q, want 你好", prompt.ChatContext.Extra.OriginalContent)
+	}
+}
+
+// 顶层字段按桌面版实测形状对齐（_spy/http-bodies/*.json）：
+// system 数组、task_id/source/version/is_retry、session_type=app、
+// aliyun_user_type 空串、tools 恒为数组、parameters 恒下发。
+func TestBuildAgentBodyWireShape(t *testing.T) {
+	msgs := []map[string]any{
+		{"role": "system", "content": []any{
+			map[string]any{"type": "text", "text": "块一"},
+			map[string]any{"type": "text", "text": "块二"},
+		}},
+		{"role": "user", "content": "看看当前目录有什么文件"},
+	}
+	raw, err := buildAgentBodyMeta(msgs, modelMeta{
+		Key: "qfmodel", DisplayName: "Qwen3.8-Flash", IsVL: true,
+		MaxInputTokens: 180000, MaxOutputTokens: 32000, DefaultContextWindow: 200000,
+	}, nil, reasoningSpec{Enabled: true, Effort: "xhigh"})
+	if err != nil {
+		t.Fatalf("buildAgentBodyMeta: %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	// 标量字段
+	want := map[string]any{
+		"chat_task":        "FREE_INPUT",
+		"is_reply":         true,
+		"is_retry":         false,
+		"source":           float64(1),
+		"version":          "3",
+		"agent_id":         "agent_common",
+		"task_id":          "common",
+		"session_type":     "app",
+		"aliyun_user_type": "",
+		"stream":           true,
+	}
+	for k, v := range want {
+		if body[k] != v {
+			t.Errorf("%s = %#v, want %#v", k, body[k], v)
+		}
+	}
+
+	// chat_record_id 必须与 request_id 同值；request_set_id 是同一回合的稳定 id
+	if body["chat_record_id"] != body["request_id"] {
+		t.Errorf("chat_record_id(%v) != request_id(%v)", body["chat_record_id"], body["request_id"])
+	}
+
+	// system 数组：从 system 消息抽文本块，与 messages[0].content 同构
+	sys, _ := body["system"].([]any)
+	if len(sys) != 2 {
+		t.Fatalf("system blocks = %d, want 2", len(sys))
+	}
+	if b0, _ := sys[0].(map[string]any); b0["type"] != "text" || b0["text"] != "块一" {
+		t.Errorf("system[0] = %#v", sys[0])
+	}
+
+	// tools 恒为数组（空也要下发）
+	if tools, ok := body["tools"].([]any); !ok || tools == nil || len(tools) != 0 {
+		t.Errorf("tools = %#v, want empty array", body["tools"])
+	}
+
+	// parameters 恒下发，且带 max_tokens / context_length
+	params, _ := body["parameters"].(map[string]any)
+	if params == nil {
+		t.Fatal("parameters 缺失")
+	}
+	if params["max_tokens"] != float64(32000) {
+		t.Errorf("parameters.max_tokens = %v, want 32000", params["max_tokens"])
+	}
+	if params["context_length"] != float64(200000) {
+		t.Errorf("parameters.context_length = %v, want 200000", params["context_length"])
+	}
+	if params["reasoning_effort"] != "xhigh" || params["enable_thinking"] != true {
+		t.Errorf("parameters = %#v", params)
+	}
+
+	// model_config 完整对象
+	mc, _ := body["model_config"].(map[string]any)
+	for k, v := range map[string]any{
+		"key": "qfmodel", "display_name": "Qwen3.8-Flash", "model": "",
+		"format": "openai", "is_vl": true, "is_reasoning": true,
+		"api_key": "", "url": "", "source": "system", "max_input_tokens": float64(180000),
+	} {
+		if mc[k] != v {
+			t.Errorf("model_config.%s = %#v, want %#v", k, mc[k], v)
+		}
+	}
+
+	// business：富对象，id 与 request_set_id 同值
+	biz, _ := body["business"].(map[string]any)
+	if biz == nil {
+		t.Fatal("business 缺失")
+	}
+	if biz["product"] != "app" || biz["type"] != "agent" || biz["version"] != clientVersion {
+		t.Errorf("business = %#v", biz)
+	}
+	if biz["id"] != body["request_set_id"] {
+		t.Errorf("business.id(%v) != request_set_id(%v)", biz["id"], body["request_set_id"])
+	}
+	if biz["stage"] != "start" {
+		t.Errorf("business.stage = %v, want start", biz["stage"])
+	}
+	if _, has := body["image_urls"]; has {
+		t.Error("顶层 image_urls 不应存在（桌面端放在 chat_context.imageUrls）")
+	}
+}
+
+// 模型元数据缺失时回落默认值：不猜窗口（不下发 context_length），
+// max_tokens 用目录里 14 个模型一致的 32000。
+func TestBuildAgentBodyMetaDefaults(t *testing.T) {
+	raw, err := buildAgentBody([]map[string]any{{"role": "user", "content": "hi"}}, "dmodel", nil, reasoningSpec{})
+	if err != nil {
+		t.Fatalf("buildAgentBody: %v", err)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(raw, &body)
+	params, _ := body["parameters"].(map[string]any)
+	if params == nil || params["max_tokens"] != float64(defaultMaxOutputTokens) {
+		t.Fatalf("parameters = %#v, want max_tokens=%d", body["parameters"], defaultMaxOutputTokens)
+	}
+	if _, has := params["context_length"]; has {
+		t.Errorf("窗口未知时不应下发 context_length，实际 %v", params["context_length"])
+	}
+	mc, _ := body["model_config"].(map[string]any)
+	if mc["display_name"] != "dmodel" || mc["format"] != "openai" || mc["source"] != "system" {
+		t.Errorf("model_config 默认值 = %#v", mc)
+	}
+	if mc["max_input_tokens"] != float64(defaultMaxInputTokens) {
+		t.Errorf("max_input_tokens = %v, want %d", mc["max_input_tokens"], defaultMaxInputTokens)
+	}
+}
+
+// context_config 解析：只认 is_default 标记，缺标记返回 0（不下发）。
+func TestParseDefaultContextWindow(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want int64
+	}{
+		{`{"200K":{"token_count":200000,"is_default":true},"400K":{"token_count":400000}}`, 200000},
+		{`{"400K":{"token_count":400000,"is_default":true},"200K":{"token_count":200000}}`, 400000},
+		{`{"200K":{"token_count":200000}}`, 0},
+		{``, 0},
+		{`null`, 0},
+		{`{`, 0},
+	}
+	for _, tc := range cases {
+		if got := parseDefaultContextWindow(json.RawMessage(tc.raw)); got != tc.want {
+			t.Errorf("parseDefaultContextWindow(%s) = %d, want %d", tc.raw, got, tc.want)
+		}
 	}
 }
 
@@ -264,11 +430,19 @@ func TestBuildAgentBodyReasoningFields(t *testing.T) {
 		t.Errorf("关闭时 parameters = %v, want none/false", body.Parameters)
 	}
 
-	// 未表达：不下发 parameters（上游按自身默认处理）。
+	// 未表达档位：parameters 仍恒下发（只带 max_tokens），但不带思考字段。
+	// 依据：桌面版 A6e() 里 h 始终非空，至少写 max_tokens。
 	raw, _ = buildAgentBody(msgs, "qfmodel", nil, reasoningSpec{})
 	var plain map[string]any
 	_ = json.Unmarshal(raw, &plain)
-	if _, has := plain["parameters"]; has {
-		t.Errorf("未表达档位时不应下发 parameters，实际 %v", plain["parameters"])
+	p, _ := plain["parameters"].(map[string]any)
+	if p == nil {
+		t.Fatalf("parameters 应恒下发，实际缺失")
+	}
+	if _, has := p["reasoning_effort"]; has {
+		t.Errorf("未表达档位时不应下发 reasoning_effort，实际 %v", p)
+	}
+	if _, has := p["enable_thinking"]; has {
+		t.Errorf("未表达档位时不应下发 enable_thinking，实际 %v", p)
 	}
 }

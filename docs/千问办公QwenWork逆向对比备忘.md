@@ -202,8 +202,8 @@
 | 域名 | Base `openapi.qoder.com.cn` / Gateway `gateway.qoder.com.cn` |
 | 鉴权 | `dt-` / `drt-`；COSY 签名（`cosy.go`：RSA_PKCS1 + AES-128-CBC + MD5） |
 | RSA 公钥 | 与两个参考项目**逐字节相同** |
-| 静态头 | `cosy-clienttype: 5`、`cosy-version: 0.1.43`、`cosy-data-policy: AGREE`、`user-agent: Go-http-client/2.0` |
-| body | `buildAgentBody` 重构造（`session_type: "qodercli"`、`chat_context.text` 为 **对象**） |
+| 静态头 | `cosy-clienttype: 10`、`cosy-version: 1.1.57`、`cosy-data-policy: disagree`、`cosy-business-product/-type/-scene: app/agent/app`、`cosy-machineos: x86_64_win32`、`user-agent: Go-http-client/2.0`（2026-09-20 起按桌面版实测对齐，见 AGENTS.md R21） |
+| body | `buildAgentBodyMeta` 重构造（`session_type: "app"`、`chat_context.text` 为**字符串**、顶层 `system` 数组、`parameters` 恒下发；对齐后 legacy 端点开始下发思考链） |
 | 编码 | `Encode=1` + `qoderEncode`（base64 + 自定义字母表 + 三段重排） |
 | SSE | `parseNestedSSE` 剥 `body` 外层 |
 | 签到 | `DailyCheckin` 返回错误（无活动） |

@@ -45,7 +45,8 @@ Wild-Work 是 WorkBuddy（国内版+国际版）/TraeWork/Qoder 多渠道账号�
 | R17 | **Responses 的思考链是独立 `reasoning` output item，且必须排在 `output_index=0`**；`output_index` 按实际输出顺序动态分配（思考 → 文本 → 工具），不得硬编码 | 官方顺序要求思考先于回答；硬编码 message=0 会让带思考的响应出现倒序 item。思考增量只在文本开始前接受，文本开始后到达的片段丢弃 |
 | R18 | **档位必须按模型能力就近降级，不得按模型家族固定压档**：能力表优先取上游目录接口的 `reasoning.supportedEfforts`/`defaultEffort`（`provider.ModelInfo.SupportedEfforts` → `internal/reasoning.Caps`），缺失才回落 `internal/reasoning/catalog.go` 的 realm 静态表；未收录模型档位原样透传 | 上游各模型可接受档位差异很大（国内版 `deepseek-v4-pro` 无 `max`、国际版 `deepseek-v4.1-flash` 只认 `high`、`glm-5.1` 只认 `medium`），旧的「deepseek 家族固定压 low/high/max」会发出非法档位。国内版/国际版**分表**，绝不混用（同一模型两面档位不同） |
 | R19 | **DeepSeek 系「开思考」= `thinking:{"type":"enabled"}` + 档位，二者缺一上游按不思考应答**；网关在客户端表达开思考时自动补 `thinking.type`，并给 assistant 消息回填 string 类型的 `reasoning_content`（多轮一致性）。由 `compat.deepseek_thinking`（默认开）统一开关，客户端显式给出的 `thinking.type` 绝不覆盖 | 逆向官方客户端 `codebuddy.js`（`thinkingFormat:"deepseek"` + `requiresReasoningContentOnAssistantMessages`）的结论；此前只发 `reasoning_effort`，DeepSeek 思维链可能一直为空。与参考实现差异：**不在客户端未表达时强行开思考**，避免给不需要思考的请求增加延迟与额度开销 |
-| R20 | **Qoder 思考投影按官方客户端 `bve()` 的三处同源写法**：`model_config.is_reasoning` + `parameters.reasoning_effort` + `parameters.enable_thinking`，三者必须同源（绝不出现 `is_reasoning=true` 配 `enable_thinking=false`）；档位能力来自上游模型目录的 `thinking_config`（`provider.ModelInfo` → `reasoning.Caps` 的 `RealmQoder` 面，**与 WorkBuddy 分表**，无静态兜底）；客户端要关闭但该模型无 `disabled` 节点（如 `glm-5.3`）时**降到最低档**而不是发上游不认的 `none`；未表达档位时不下发 `parameters` | 逆向 Qoder CN 桌面版内置 SDK（`@qoder-ai/qoder-cn-agent-sdk` 的 `qoder-worker-runtime.obf.mjs`，CLI v1.1.53）拿到；实测 `parameters.reasoning_effort` 确实改变生成量（`none` 2402 < 基线 2952 < `medium` 3455 tokens）。**注意 legacy 端点仍不下发可见思考链**（`reasoning_content` 恒空、usage 无 `reasoning_tokens`），档位只影响思考量/生成长度 |
+| R20 | **Qoder 思考投影按官方客户端 `bve()` 的三处同源写法**：`model_config.is_reasoning` + `parameters.reasoning_effort` + `parameters.enable_thinking`，三者必须同源（绝不出现 `is_reasoning=true` 配 `enable_thinking=false`）；档位能力来自上游模型目录的 `thinking_config`（`provider.ModelInfo` → `reasoning.Caps` 的 `RealmQoder` 面，**与 WorkBuddy 分表**，无静态兜底）；客户端要关闭但该模型无 `disabled` 节点（如 `glm-5.3`）时**降到最低档**而不是发上游不认的 `none`；`parameters` 恒下发（见 R21） | 逆向 Qoder CN 桌面版内置 SDK（`@qoder-ai/qoder-cn-agent-sdk` 的 `qoder-worker-runtime.obf.mjs`，CLI v1.1.53）拿到；实测 `parameters.reasoning_effort` 确实改变生成量（`none` 2402 < 基线 2952 < `medium` 3455 tokens）。**R21 已推翻「legacy 端点不下发思考链」这条结论**（当时是因为请求体/请求头没对齐桌面版） |
+| R21 | **Qoder 请求体与请求头按桌面版「实测抓包」逐字段对齐**（不再只参考 SDK 源码）。body：补顶层 `system` 数组（从 system 消息抽文本块，与 `messages[0]` 同构）、`task_id:"common"`、`source:1`、`version:"3"`、`is_retry:false`、`session_type:"app"`、`aliyun_user_type:""`、完整 `model_config`（`key/display_name/model/format/is_vl/is_reasoning/api_key/url/source/max_input_tokens`）、`business` 富对象（`product/version/type/id(=request_set_id)/name/begin_at/stage`）、`tools` 恒为数组、`chat_context.text` 与 `extra.originalContent` 为**字符串**；`parameters` **恒下发**且含 `max_tokens`（目录 `max_output_tokens`，实测目录无此字段 → 常量 32000）与 `context_length`（`context_config` 中标 `is_default` 的档，未知则不下发）。headers：`cosy-clienttype: 10`、`cosy-data-policy: disagree`、`cosy-version: 1.1.57`（签名 payload `cosyVersion` 必须同改）、补 `cosy-business-product/-type/-scene`、`cosy-machineos: x86_64_win32`、`cosy-machinehostname`、`accept-language`，去掉桌面端没有的 `cosy-clientip` | 依据 `_spy/http-bodies/*.json`（7 个真实请求体）+ `_spy/qoder-real-request.json`（27 个真实请求头）。**对齐后 legacy `agent_chat_generation` 立刻开始下发可见思考链**：探针 `reasoning_content` 1876（medium）/26145（xhigh）字，生产链路端到端 36845 字，`usage.completion_tokens_details.reasoning_tokens` 1435–11913 —— 这是「思考强度终于可见」的关键修复。回归护栏：`TestLiveProbeProductionPath`（走 `ChatStream` 全链路）。**唯一刻意保留的差异**：`accept-encoding` 固定 `identity`（桌面端是 `br,gzip,deflate`；Go 手动设置该头后不会自动解压，brotli 需额外依赖）。**版本同步要求**：`clientVersion` 同时出现在请求头与 `business.version`，改动必须成对 |
 
 ## 2. 架构选型（依据）
 
@@ -157,6 +158,13 @@ POST /api/quit                     # 退出程序
     （`app.refreshIfSessionDead`，scheduler 的 checkin 路径同理）。
 20. **凡是调 `Upstream.RefreshToken` 的地方必须紧跟 `SaveAtomic`**：refresh token 会轮换，不落盘 = 下次启动用旧 refresh token，
     重回上一条的死锁（`RefreshPricing` 曾漏，已补）。
+21. **Qoder 的客户端版本号只有一处定义（`internal/qoder/clientVersion`）**：它同时出现在请求头 `cosy-version`、
+    签名 payload 的 `cosyVersion`、以及 body 的 `business.version`。三处必须同值 —— 只改头会让上游看到
+    「头说 1.1.57、body 说别的」的自相矛盾身份。桌面版升级后照 `_spy/qoder-real-request.json` 重新取值。
+22. **Qoder 的 `parameters` 恒下发**（至少带 `max_tokens`），且**请求体/请求头形状以实测抓包为准，不以 SDK 源码为准**：
+    R20 时期按源码推的形状少了顶层 `system`、`task_id`、完整 `model_config` 等字段，导致 legacy 端点一直不下发
+    `reasoning_content`，被误判成「上游不支持」。改动 Qoder 请求形状前后，必须跑 `TestLiveProbeProductionPath`
+    （走 `ChatStream` 全链路，断言 `reasoning_content` 非空）。
 
 ## 7. 平台能力差异表（internal/platform）
 

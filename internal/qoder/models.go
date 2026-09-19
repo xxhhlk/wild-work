@@ -27,6 +27,13 @@ type DynamicModel struct {
 	IsVL           bool    `json:"is_vl"`
 	MaxInputTokens int64   `json:"max_input_tokens"`
 	PriceFactor    float64 `json:"price_factor"`
+	// MaxOutputTokens 输出上限（桌面端把它写进 parameters.max_tokens）。
+	// 目录缺该字段时按 defaultMaxOutputTokens 兜底。
+	MaxOutputTokens int64 `json:"max_output_tokens"`
+	// ContextConfig 上下文窗口档位表：
+	//   {"200K":{"token_count":200000,"is_default":true},"400K":{"token_count":400000}}
+	// 桌面端把标了 is_default 的那档写进 parameters.context_length。
+	ContextConfig json.RawMessage `json:"context_config"`
 	// ThinkingConfig 上游声明的思考能力（档位 ladder / 是否可关闭）。
 	// 实测形状（2026-09-19，qwen3.8-max / deepseek-v4-pro / glm-5.3 等）：
 	//   {"disabled":{"description":"Disable thinking"},
@@ -84,6 +91,27 @@ func parseThinkingConfig(raw json.RawMessage) thinkCaps {
 		caps.DefaultEffort = "" // 默认档必须落在支持的档位里
 	}
 	return caps
+}
+
+// parseDefaultContextWindow 从 context_config 取标了 is_default 的窗口大小。
+// 没有 is_default 标记时返回 0（宁可不下发 context_length，也不猜一档）。
+func parseDefaultContextWindow(raw json.RawMessage) int64 {
+	if len(raw) == 0 || string(raw) == "null" {
+		return 0
+	}
+	var cfg map[string]struct {
+		TokenCount int64 `json:"token_count"`
+		IsDefault  bool  `json:"is_default"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return 0
+	}
+	for _, v := range cfg {
+		if v.IsDefault && v.TokenCount > 0 {
+			return v.TokenCount
+		}
+	}
+	return 0
 }
 
 // containsEffort 档位成员判定。
@@ -163,6 +191,7 @@ func (c *Client) FetchModels(a *auth.Auth) ([]provider.ModelInfo, error) {
 		return nil, err
 	}
 	mm := make(map[string]string, len(dyn))
+	metas := make(map[string]modelMeta, len(dyn))
 	out := make([]provider.ModelInfo, 0, len(dyn))
 	for _, m := range dyn {
 		name := NormalizeModelName(m.DisplayName)
@@ -170,6 +199,14 @@ func (c *Client) FetchModels(a *auth.Auth) ([]provider.ModelInfo, error) {
 			name = m.Key
 		}
 		mm[name] = m.Key
+		metas[m.Key] = modelMeta{
+			Key:                  m.Key,
+			DisplayName:          m.DisplayName,
+			IsVL:                 m.IsVL,
+			MaxInputTokens:       m.MaxInputTokens,
+			MaxOutputTokens:      m.MaxOutputTokens,
+			DefaultContextWindow: parseDefaultContextWindow(m.ContextConfig),
+		}
 		caps := parseThinkingConfig(m.ThinkingConfig)
 		mi := provider.ModelInfo{
 			ID:            name,
@@ -192,7 +229,7 @@ func (c *Client) FetchModels(a *auth.Auth) ([]provider.ModelInfo, error) {
 		}
 		out = append(out, mi)
 	}
-	c.setModelMap(mm)
+	c.setModelMap(mm, metas)
 	for _, m := range dyn {
 		nm := NormalizeModelName(m.DisplayName)
 		if strings.Contains(m.DisplayName, "3.8") || strings.Contains(strings.ToLower(m.DisplayName), "flash") {

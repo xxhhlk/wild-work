@@ -98,11 +98,17 @@ Agent: `trae-api-cn.mchost.guru`, UG: `api.trae.cn`, OAuth: `api.trae.com.cn`
 
 Base: `openapi.qoder.com.cn`, Gateway: `gateway.qoder.com.cn`
 
-聊天请求体由 `buildAgentBody()` 构造（嵌套结构），消息体再经 `qoderEncode()` 编码。SSE 为嵌套格式（`data:{"body":"<json>"}`），`parseNestedSSE()` 解析。
+聊天请求体由 `buildAgentBodyMeta()` 构造（嵌套结构），消息体再经 `qoderEncode()` 编码。SSE 为嵌套格式（`data:{"body":"<json>"}`），`parseNestedSSE()` 解析。
+
+请求体形状**以桌面版实测抓包为准**（`_spy/http-bodies/*.json`，见 AGENTS.md R21）：
+顶层 `system` 数组、`task_id`/`source`/`version`/`is_retry`、`session_type:"app"`、
+完整 `model_config`（10 字段，值来自模型目录元数据）、`business` 富对象、`tools` 恒为数组、
+`parameters` 恒下发（`max_tokens` + 已知时的 `context_length`）。
+`buildAgentBody()` 是元数据缺失时的兼容入口。
 
 模型定价：`price_factor` 字段（数字）。
 
-思考投影：`buildAgentBody()` 按 Qoder 官方客户端（桌面版内置 SDK 的 `bve()`）的写法，
+思考投影：`buildAgentBodyMeta()` 按 Qoder 官方客户端（桌面版内置 SDK 的 `A6e()`/`bve()`）的写法，
 把服务端归一化后的思考控制投影到**三处同源字段**：
 
 ```
@@ -113,7 +119,8 @@ parameters.enable_thinking    = 开关（与 is_reasoning 同源，绝不矛盾�
 
 档位由 `reasoningSpecFor()` 计算：显式关闭且模型有 `disabled` 节点 → `none`；无 `disabled`
 节点 → 降到最低档（上游对不认识的 `none` 会静默忽略并按其默认档执行，反而偏离客户端意图）；
-只说开思考 → 补上游标了 `is_default` 的档；未表达档位 → 不下发 `parameters`。
+只说开思考 → 补上游标了 `is_default` 的档；未表达档位 → 不下发档位字段（`parameters` 仍下发，
+只带 `max_tokens`/`context_length`）。
 模型 ladder 来自目录接口的 `thinking_config`（`parseThinkingConfig`），存入
 `reasoning.Caps` 的 `RealmQoder` 面（**与 WorkBuddy 分表**，无静态兜底，未知不降级）。
 
@@ -316,10 +323,12 @@ GOOS=windows CGO_ENABLED=0 go build -ldflags "-H windowsgui" -o dist/wild-work.e
 1. **`--no-tray` 无头模式**：无桌面 Linux 必须用此参数；不带参数在无 DBus 环境托盘 panic 会直接 exit 并提示。
 2. **Windows 弹窗双显示器**：`MessageBoxW` 使用 `MB_DEFAULT_DESKTOP_ONLY` 标志强制主显示器。
 3. **Qoder 非流式不支持**：`Aggregate` 聚合返回空 content，建议只用流式。
-4. **Qoder 思考链不暴露**：档位（`parameters.reasoning_effort`）确实生效（实测生成量
-   `none` < 基线 < `medium`），但 `agent_chat_generation` 端点不在 SSE 里返回
-   `reasoning_content`，usage 也没有 `reasoning_tokens` —— 客户端拿不到可见思考过程。
-   桌面版能显示思考内容是因为它走 **gRPC**（`model.chat.ChatService/ChatCompletionStream`
-   + `security_oauth_token`），与 legacy HTTP 是两条路。
+4. **Qoder 思考链已可见**（2026-09-20 起）：`agent_chat_generation` 端点会返回
+   `reasoning_content` 与 `usage.completion_tokens_details.reasoning_tokens`，前提是请求体/请求头
+   按桌面版实测形状对齐（AGENTS.md R21）。实测同一 prompt：`reasoning_effort=medium` → 思考 1876 字 /
+   `reasoning_tokens=1435`；`xhigh` → 思考 26145 字 / `reasoning_tokens=8373`；生产链路端到端 36845 字。
+   历史结论「legacy 不下发思考」是**请求形状没对齐**导致的误判，已推翻。
+   回归护栏：`go test -tags live ./internal/qoder/ -run TestLiveProbeProductionPath -v`
+   （需要 `WILDWORK_AUTHDIR` 指向账号目录）。
 5. **`config.example.json` 与 `config.Default()` 必须同步**。
 6. **定价缓存文件**：`data/pricing-cache.json`，首次启动从静态兜底开始，添加账号后自动拉取。

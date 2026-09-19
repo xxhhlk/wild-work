@@ -27,9 +27,11 @@ type Client struct {
 	Gateway string // 推理网关，默认 https://gateway.qoder.com.cn
 
 	// modelMap 客户端名（display_name 规范化）→ 上游 model key。
-	// 由 FetchModels 填充；ChatStream 优先查此表，查不到再查静态表。
-	modelMu  sync.RWMutex
-	modelMap map[string]string
+	// metaByKey 上游 model key → 模型元数据（model_config / parameters 取值来源）。
+	// 均由 FetchModels 填充；ChatStream 优先查此表，查不到再查静态表。
+	modelMu   sync.RWMutex
+	modelMap  map[string]string
+	metaByKey map[string]modelMeta
 }
 
 // New 生产默认。Qoder gateway 对 HTTP/2 不友好（stream INTERNAL_ERROR），强制 HTTP/1.1。
@@ -60,10 +62,11 @@ func NewWithBase(base, gateway string) *Client {
 	return c
 }
 
-// setModelMap 记录动态模型映射（客户端名 → key）。
-func (c *Client) setModelMap(m map[string]string) {
+// setModelMap 记录动态模型映射（客户端名 → key）与上游 key → 元数据。
+func (c *Client) setModelMap(names map[string]string, metas map[string]modelMeta) {
 	c.modelMu.Lock()
-	c.modelMap = m
+	c.modelMap = names
+	c.metaByKey = metas
 	c.modelMu.Unlock()
 }
 
@@ -76,6 +79,18 @@ func (c *Client) modelKey(clientName string) string {
 		return k
 	}
 	return staticModelKeys[clientName]
+}
+
+// modelMetaFor 上游 key → 模型元数据。未命中（静态表兜底路径 / 目录未拉取）
+// 时返回只带 key 的零值，由 body 层补默认值，绝不猜 ladder 或窗口。
+func (c *Client) modelMetaFor(key string) modelMeta {
+	c.modelMu.RLock()
+	m, ok := c.metaByKey[key]
+	c.modelMu.RUnlock()
+	if ok {
+		return m
+	}
+	return modelMeta{Key: key}
 }
 
 func (c *Client) gatewayBase() string { return c.Gateway }
@@ -284,7 +299,7 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 	log.Printf("qoder reasoning: client=%q key=%q is_reasoning=%v effort=%q",
 		reqOpenAI.Model, modelKey, spec.Enabled, spec.Effort)
 
-	rawBody, err := buildAgentBody(reqOpenAI.Messages, modelKey, reqOpenAI.Tools, spec)
+	rawBody, err := buildAgentBodyMeta(reqOpenAI.Messages, c.modelMetaFor(modelKey), reqOpenAI.Tools, spec)
 	if err != nil {
 		return nil, 0, nil, fmt.Errorf("build qoder body: %w", err)
 	}

@@ -16,8 +16,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -135,7 +137,7 @@ func aesCBCEncrypt(plain, tempKey []byte) ([]byte, error) {
 // AuthHeader 计算单次请求的 Authorization 头。
 func (s *CosySession) AuthHeader(body, rawURL, uid string) (string, error) {
 	payload := map[string]string{
-		"cosyVersion": "0.1.43",
+		"cosyVersion": clientVersion,
 		"ideVersion":  "",
 		"info":        s.Info,
 		"requestId":   uuid4(),
@@ -155,39 +157,65 @@ func (s *CosySession) AuthHeader(body, rawURL, uid string) (string, error) {
 	return "Bearer COSY." + payloadB64 + "." + sig, nil
 }
 
-// ApplyHeaders 把 15 个必带头 + 推理附加头全部设置到 req。
-// accept 恒为 text/event-stream（与插件一致）；sse 仅控制 cache-control。
+// ApplyHeaders 把桌面版实测的请求头集合设置到 req。
+//
+// 取值以 2026-09-20 抓到的 Qoder CN 桌面版真实请求为准（_spy/qoder-real-request.json，
+// 27 个头）。相对早期实现的差异：cosy-clienttype 5→10、cosy-data-policy
+// AGREE→disagree、cosy-version 0.1.43→1.1.57（签名 payload 的 cosyVersion 同步）、
+// 补 cosy-business-product/-type/-scene 与 cosy-machineos/-machinehostname、
+// 去掉桌面端没有的 cosy-clientip。
+//
+// 唯一刻意保留的差异：accept-encoding 固定 identity（桌面端是 br,gzip,deflate）。
+// Go 手动设置该头后不会自动解压，而 brotli 需要额外依赖；identity 能拿到明文 SSE。
 func (s *CosySession) ApplyHeaders(req *http.Request, body, rawURL, uid string, sse bool, modelKey string) error {
 	auth, err := s.AuthHeader(body, rawURL, uid)
 	if err != nil {
 		return err
 	}
 	h := req.Header
-	h.Set("cosy-data-policy", "AGREE")
+	h.Set("cosy-data-policy", "disagree")
 	h.Set("content-type", "application/json")
 	h.Set("cosy-machinetype", s.MachineType)
-	h.Set("cosy-clienttype", "5")
+	h.Set("cosy-clienttype", "10")
 	h.Set("cosy-date", fmt.Sprintf("%d", time.Now().Unix()))
 	h.Set("cosy-user", uid)
 	h.Set("cosy-key", s.CosyKey)
 	h.Set("accept", "text/event-stream")
+	h.Set("accept-language", "*")
 	if sse {
 		h.Set("cache-control", "no-cache")
 	}
-	h.Set("cosy-clientip", "169.254.198.161")
 	h.Set("authorization", auth)
 	h.Set("accept-encoding", "identity")
-	h.Set("cosy-version", "0.1.43")
+	h.Set("cosy-version", clientVersion)
 	h.Set("cosy-machineid", s.MachineID)
 	h.Set("cosy-machinetoken", s.MachineToken)
+	h.Set("cosy-machineos", "x86_64_win32")
+	if hn := hostname(); hn != "" {
+		h.Set("cosy-machinehostname", hn)
+	}
+	h.Set("cosy-business-product", "app")
+	h.Set("cosy-business-type", "agent")
+	h.Set("cosy-scene", "app")
 	h.Set("login-version", "v2")
 	h.Set("user-agent", clientUA)
 	if modelKey != "" {
 		h.Set("x-model-key", modelKey)
-		h.Set("x-model-source", "system")
+		h.Set("x-model-source", defaultModelSource)
 	}
 	return nil
 }
+
+// hostname 进程级缓存的本机名（cosy-machinehostname，桌面端发机器名）。
+var hostnameOnce = sync.OnceValue(func() string {
+	n, err := os.Hostname()
+	if err != nil {
+		return ""
+	}
+	return n
+})
+
+func hostname() string { return hostnameOnce() }
 
 // uuid4 简单 UUIDv4。
 func uuid4() string {

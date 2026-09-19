@@ -828,8 +828,73 @@ func TestLiveProbeProjectionDryRun(t *testing.T) {
 	project("reasoning_effort=none（可关模型）", `{"model":"qwen3.8-flash","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"none"}`)
 	project("reasoning_effort=none（不可关模型）", `{"model":"glm-5.3","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"none"}`)
 	project("thinking.type=enabled", `{"model":"qwen3.8-flash","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"enabled"}}`)
-	t.Log("== 生产路径按官方 bve() 投影：model_config.is_reasoning 与 parameters.enable_thinking 同源，")
-	t.Log("   parameters.reasoning_effort 按该模型 ladder 就近降级；未表达档位时不下发 parameters。")
+	t.Log("== 生产路径按官方 A6e() 投影：model_config.is_reasoning 与 parameters.enable_thinking 同源，")
+	t.Log("   parameters.reasoning_effort 按该模型 ladder 就近降级；parameters 恒下发（至少带 max_tokens）。")
+}
+
+// TestLiveProbeProductionPath 走**生产链路**（ChatStream → buildAgentBodyMeta →
+// ApplyHeaders → sse.go aggregate），确认思考链真的能透到 OpenAI 兼容层。
+//
+// 与 TestLiveProbeEffort 的区别：那个用 chatStreamRaw 手搓 body 直发，只验证
+// 「上游在什么条件下吐思考」；这个验证「wild-work 自己发出去的请求就能拿到思考」，
+// 顺带覆盖动态模型元数据（model_config 的 display_name/is_vl/max_input_tokens…）
+// 是否真的被带上。2026-09-20 之前这里恒为 0 字（body/header 未对齐桌面版）。
+func TestLiveProbeProductionPath(t *testing.T) {
+	a := liveAuth(t)
+	c := New()
+	if _, err := c.FetchModels(a); err != nil {
+		t.Fatalf("FetchModels 失败（生产路径依赖动态元数据）：%v", err)
+	}
+
+	clientModel := os.Getenv("WILDWORK_PROBE_MODEL")
+	if clientModel == "" {
+		clientModel = "qwen3.8-flash"
+	}
+	key := c.modelKey(clientModel)
+	meta := c.modelMetaFor(key)
+	t.Logf("客户端名=%s 上游 key=%s 元数据=%+v", clientModel, key, meta)
+	// 动态元数据必须真的拉到：display_name 来自目录、默认窗口来自 context_config。
+	// 注意 max_output_tokens 目录里没有（实测 2026-09-20），恒由 defaultMaxOutputTokens 兜底，
+	// 所以不能把它当「元数据拉到了」的判据。
+	if meta.DisplayName == "" || meta.DefaultContextWindow == 0 {
+		t.Fatalf("动态元数据没拉到（%+v）—— 生产路径会退化成默认值，用例失去意义", meta)
+	}
+
+	body, err := json.Marshal(map[string]any{
+		"model":            clientModel,
+		"messages":         []map[string]any{{"role": "user", "content": probePrompt()}},
+		"reasoning_effort": "xhigh",
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	start := time.Now()
+	rc, status, respBody, err := c.ChatStream(a, body)
+	if err != nil {
+		t.Fatalf("ChatStream 传输失败：%v", err)
+	}
+	if rc == nil {
+		t.Fatalf("ChatStream 被拒：status=%d body=%s", status, truncate(string(respBody), 300))
+	}
+	defer rc.Close()
+
+	msg, err := aggregate(rc, clientModel)
+	if err != nil {
+		t.Fatalf("aggregate 解析失败：%v", err)
+	}
+	reasoning := msgField(msg, "reasoning_content")
+	content := msgField(msg, "content")
+	t.Logf("status=%d 耗时=%s 思考=%d 字 回答=%d 字", status, time.Since(start).Round(time.Millisecond),
+		len([]rune(reasoning)), len([]rune(content)))
+	if u, ok := msg["usage"].(map[string]any); ok {
+		if b, err := json.Marshal(u); err == nil {
+			t.Logf("usage=%s", b)
+		}
+	}
+	if reasoning == "" {
+		t.Errorf("生产链路没拿到 reasoning_content —— body/header 与桌面版又不一致了（见 _spy/qoder-wire-body-spec.md）")
+	}
 }
 
 // TestLiveProbeEffort 第 2 步：同一 prompt 下横向对比不同字段注入的行为。
