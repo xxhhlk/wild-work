@@ -102,10 +102,20 @@ Base: `openapi.qoder.com.cn`, Gateway: `gateway.qoder.com.cn`
 
 模型定价：`price_factor` 字段（数字）。
 
-思考开关：`buildAgentBody` 的 `is_reasoning` 由 `reasoningEnabled()` 投影 —— 服务端
-（`internal/server.prepareChatBody`）先把各种客户端写法归一化成顶层 `reasoning_effort`，
-这里只判断「是否开启」（`none`/`off` 为关闭，其余档位为开启）。协议没有档位字段，
-多档强度无法区分。
+思考投影：`buildAgentBody()` 按 Qoder 官方客户端（桌面版内置 SDK 的 `bve()`）的写法，
+把服务端归一化后的思考控制投影到**三处同源字段**：
+
+```
+model_config.is_reasoning     = 开关
+parameters.reasoning_effort   = 档位（按该模型 thinking_config 的 ladder 就近降级）
+parameters.enable_thinking    = 开关（与 is_reasoning 同源，绝不矛盾）
+```
+
+档位由 `reasoningSpecFor()` 计算：显式关闭且模型有 `disabled` 节点 → `none`；无 `disabled`
+节点 → 降到最低档（上游对不认识的 `none` 会静默忽略并按其默认档执行，反而偏离客户端意图）；
+只说开思考 → 补上游标了 `is_default` 的档；未表达档位 → 不下发 `parameters`。
+模型 ladder 来自目录接口的 `thinking_config`（`parseThinkingConfig`），存入
+`reasoning.Caps` 的 `RealmQoder` 面（**与 WorkBuddy 分表**，无静态兜底，未知不降级）。
 
 思考链下发：上游的 `reasoning_content` 在三个接口上分别落地 —— Chat 原样透传；
 Anthropic 转 `thinking` 内容块（`anthropic_stream.go`）；Responses 转 `reasoning` output item
@@ -306,6 +316,10 @@ GOOS=windows CGO_ENABLED=0 go build -ldflags "-H windowsgui" -o dist/wild-work.e
 1. **`--no-tray` 无头模式**：无桌面 Linux 必须用此参数；不带参数在无 DBus 环境托盘 panic 会直接 exit 并提示。
 2. **Windows 弹窗双显示器**：`MessageBoxW` 使用 `MB_DEFAULT_DESKTOP_ONLY` 标志强制主显示器。
 3. **Qoder 非流式不支持**：`Aggregate` 聚合返回空 content，建议只用流式。
-4. **Qoder 思考过程不暴露**：`is_reasoning:true` 后上游仍不在 SSE 中返回 `reasoning_content`。
+4. **Qoder 思考链不暴露**：档位（`parameters.reasoning_effort`）确实生效（实测生成量
+   `none` < 基线 < `medium`），但 `agent_chat_generation` 端点不在 SSE 里返回
+   `reasoning_content`，usage 也没有 `reasoning_tokens` —— 客户端拿不到可见思考过程。
+   桌面版能显示思考内容是因为它走 **gRPC**（`model.chat.ChatService/ChatCompletionStream`
+   + `security_oauth_token`），与 legacy HTTP 是两条路。
 5. **`config.example.json` 与 `config.Default()` 必须同步**。
 6. **定价缓存文件**：`data/pricing-cache.json`，首次启动从静态兜底开始，添加账号后自动拉取。

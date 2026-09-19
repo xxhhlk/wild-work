@@ -155,12 +155,14 @@
         <select id="selEffort" class="select">
           <option value="">不注入（跟随客户端）</option>
           <option value="low">low</option>
+          <option value="medium">medium</option>
           <option value="high">high</option>
+          <option value="xhigh">xhigh</option>
           <option value="max">max</option>
         </select>
-        <span class="hint" style="margin-left:6px">仅 WorkBuddy 生效</span>
+        <span class="hint" style="margin-left:6px">WorkBuddy / Qoder 生效</span>
       </div>
-      <div class="hint" style="margin:-2px 0 6px">客户端未指定思考强度时的兜底档；客户端显式指定（含关闭）时一律以客户端为准。档位会按模型能力自动降级（如国内版 deepseek-v4-pro 只认 low/high/xhigh）。</div>
+      <div class="hint" style="margin:-2px 0 6px">客户端未指定思考强度时的兜底档；客户端显式指定（含关闭）时一律以客户端为准。档位会按模型能力自动降级（如 WorkBuddy 国内版 deepseek-v4-pro 只认 low/high/xhigh；Qoder 的 qwen3.8 系只认 low/medium/xhigh）。</div>
       <div class="row" style="align-items:center">
         <label class="lbl">DeepSeek 开关</label>
         <label style="display:flex;align-items:center;gap:6px;font-size:13px">
@@ -228,7 +230,10 @@
       <p>4. 模型 ID 建议带渠道前缀：<code>workbuddy/&lt;model&gt;</code>、<code>workbuddyai/&lt;model&gt;</code>、<code>traework/&lt;model&gt;</code>、<code>qoder/&lt;model&gt;</code>；
         也支持裸名（走 <code>config.json</code> 的 <code>compat.default_channel</code> / <code>model_map</code>）。</p>
       <p>5. 思考强度：客户端可用 <code>reasoning_effort</code> / <code>reasoning.effort</code> / <code>thinking</code> 等写法指定档位
-        （none/minimal/low/medium/high/xhigh/max/ultra）；API 配置里的「思考强度」是客户端未指定时的兜底档，仅 WorkBuddy 渠道生效。</p>
+        （none/minimal/low/medium/high/xhigh/max/ultra）；API 配置里的「思考强度」是客户端未指定时的兜底档，
+        对 WorkBuddy 双面与 Qoder 生效（TraeWork 协议无此字段）。</p>
+      <p>5.1 Qoder 的思考档位来自其模型目录（每个模型的 ladder 不同），客户端要「关闭」而该模型不支持关闭时会自动降到最低档；
+        注意 Qoder 的 <code>agent_chat_generation</code> 端点不下发可见思考链，档位影响的是思考量/回答长度，不会让思考过程显示出来。</p>
       <p>5. 积分会随聊天消耗实时变化，"全部刷新积分"可即时获取最新余额。</p>
       <p>6. 日志文件位于 exe 目录下 <code>data/app.log</code>，可从托盘菜单"查看日志"打开。</p>
       <p>7. 退出程序：右键托盘图标选择"退出"。</p>

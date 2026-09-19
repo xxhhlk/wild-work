@@ -206,14 +206,19 @@ API Key:  WildWorkAPI
   网关按「不超过请求强度的最高支持档」就近降级（支持档全部高于请求档时取最低支持档），
   未收录的模型档位原样透传。能力表优先取上游目录接口返回的 `reasoning.supportedEfforts`
   /`defaultEffort`，缺失时回落内置静态表（见 `internal/reasoning/catalog.go`）。
-- 渠道能力：WorkBuddy 国内版/国际版按上述能力表投影；Qoder 协议只有开关（`is_reasoning`），
-  非「关闭」一律按开启处理，无法区分多档；TraeWork 协议没有该字段。
+- 渠道能力：WorkBuddy 国内版/国际版按上述能力表投影；**Qoder 按官方客户端的三处同源写法投影**
+  `model_config.is_reasoning` + `parameters.reasoning_effort` + `parameters.enable_thinking`，
+  档位来自上游模型目录的 `thinking_config`（每模型一条 ladder，与 WorkBuddy 分表）；
+  客户端要求关闭但该模型没有 `disabled` 节点时降到最低档；TraeWork 协议没有该字段。
+  ⚠️ Qoder 的 `agent_chat_generation` 端点**不下发可见思考链**（`reasoning_content` 恒空、
+  usage 无 `reasoning_tokens`），档位影响的是思考量/生成长度，不是能否看到思考过程。
 - **DeepSeek 系思考开关**：官方客户端开思考需同时下发 `thinking:{"type":"enabled"}` 与档位，
   缺该字段上游按「不思考」应答（`reasoning_content` 为空）；网关在客户端要开思考时自动补上，
   并给 assistant 消息回填 `reasoning_content`（多轮一致性）。由 `compat.deepseek_thinking`
   （或 `WILDWORK_DEEPSEEK_THINKING=0`，面板「DeepSeek 开关」同款）控制，默认开启。
 - 默认档：`compat.reasoning_effort`（或环境变量 `WILDWORK_REASONING_EFFORT`，面板「思考强度」同款）
-  在客户端**未指定**时注入，仅 WorkBuddy 渠道生效；留空表示不注入。
+  在客户端**未指定**时注入，对 WorkBuddy 双面与 Qoder 生效（Qoder 的具体档位按模型 ladder 降级）；
+  留空表示不注入。
   客户端显式指定（含显式关闭）时一律以客户端为准，默认档不会把它复活。
   客户端只说「开思考」没给档位时，用该模型声明的默认档（缺失才回退 `high`）。
 - `thinking.budget_tokens` 会按预算换算档位：`>= 4096` → `high`，`< 1024` → `low`，
