@@ -38,6 +38,16 @@
 // 旧版把 time.Since(start) 卡在 ChatStream 返回处，量到的是 TTFB（≈1s），于是
 // 「总耗时 395s ÷ 12 次 = 33s 一次」却显示成「1.11s」。现在分别记录 TTFB 与总耗时。
 //
+// # 关于请求必须直发的坑（2026-09-19 修正，最关键）
+//
+// ChatStream 会把入参当 **OpenAI 请求**重新解析（只认 model/messages/tools/
+// reasoning_effort/thinking），再重新构造 Qoder body。旧版探针传的是已经构造好的
+// Qoder 原生 body，于是 `model` 解析为空、`is_reasoning` 恒为 false、
+// `parameters.reasoning_effort` 与顶层 `reasoningEffort` 被整段丢弃 ——
+// 6 个用例实际发出的是同一个「空 key + 关思考」请求（上游兜底到 auto），
+// 思考长度当然全 0，会把「从没开启过思考」误判成「上游不下发思考」。
+// 现在统一走 chatStreamRaw 直发；生产投影另有 TestLiveProbeProjectionDryRun 零成本覆盖。
+//
 // # 关于模型 key 的坑（2026-09-19 修正）
 //
 // 静态表 staticModelKeys 只有老模型（无 qwen3.8-flash 等新名），客户端名要靠
@@ -382,8 +392,8 @@ func scanStream(raw []byte) streamStats {
 	}
 	_ = parseNestedSSE(bytes.NewReader(raw), func(chunk map[string]any) error {
 		st.Chunks++
-		if _, ok := chunk["usage"].(map[string]any); ok {
-			st.TopKeys["usage"]++
+		for k := range chunk {
+			st.TopKeys[k]++
 		}
 		if choices, ok := chunk["choices"].([]any); ok {
 			for _, ci := range choices {
@@ -662,6 +672,88 @@ func TestLiveProbeCaseTableDryRun(t *testing.T) {
 	}
 }
 
+// chatStreamRaw 用**探针自己构造的 Qoder 原生 body** 直发上游，不经过 ChatStream 的
+// OpenAI→Qoder 投影。
+//
+// # 为什么必须直发（2026-09-19 血泪教训）
+//
+// ChatStream 会把入参当 **OpenAI 请求**重新解析（只认 model/messages/tools/
+// reasoning_effort/thinking），再重新调 buildAgentBody 构造 Qoder body。探针传的是
+// 已经构造好的 Qoder 原生 body（model_config / parameters / 顶层 reasoningEffort），于是：
+//   - `model` 解析为空 → model_config.key=""（上游兜底到 auto）
+//   - `is_reasoning` 由 reasoningEnabled("", nil) 算出 → 恒为 false
+//   - 注入的 parameters.reasoning_effort / 顶层 reasoningEffort 被整段丢弃
+//
+// 结果：所有用例实际发出的是同一个「空 key + 关思考」请求，思考长度当然全 0 ——
+// 会把「上游不下发思考」误判成结论。
+//
+// 用这个函数才能把任意字段真实送达上游。
+func (c *Client) chatStreamRaw(a *auth.Auth, body []byte, modelKey string) (io.ReadCloser, int, []byte, error) {
+	encoded := qoderEncode(body)
+	url := c.gatewayBase() + EpChat
+	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(encoded))
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	dt := a.JWT()
+	sess, err := NewCosySession(a.MachineID, a.MachineToken, a.MachineType, a.Nickname, a.UID, dt, a.RefreshToken)
+	if err != nil {
+		return nil, 0, nil, fmt.Errorf("cosy session: %w", err)
+	}
+	if err := sess.ApplyHeaders(req, encoded, url, a.UID, true, modelKey); err != nil {
+		return nil, 0, nil, fmt.Errorf("cosy headers: %w", err)
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	if resp.StatusCode >= 400 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		resp.Body.Close()
+		return nil, resp.StatusCode, raw, nil
+	}
+	return resp.Body, resp.StatusCode, nil, nil
+}
+
+// bodyFacts 抽取要发给上游的关键字段，用于在日志里确认「注入到底有没有生效」。
+func bodyFacts(obj map[string]any) string {
+	mc, _ := obj["model_config"].(map[string]any)
+	p, _ := obj["parameters"].(map[string]any)
+	return fmt.Sprintf("model_config=%v parameters=%v 顶层 reasoningEffort=%v",
+		mc, p, obj["reasoningEffort"])
+}
+
+// TestLiveProbeProjectionDryRun 零成本：验证生产路径（ChatStream）从 OpenAI 风格请求
+// 投影出的 Qoder body 是否符合预期 —— 尤其 is_reasoning 必须随 reasoning_effort 变化。
+// 不联网。这个用例能挡住「探针误用」与「投影逻辑失效」两类问题。
+func TestLiveProbeProjectionDryRun(t *testing.T) {
+	project := func(name string, openaiBody string) {
+		var req struct {
+			Model           string           `json:"model"`
+			Messages        []map[string]any `json:"messages"`
+			Tools           []any            `json:"tools"`
+			ReasoningEffort string           `json:"reasoning_effort"`
+			Thinking        *thinkingParam   `json:"thinking"`
+		}
+		if err := json.Unmarshal([]byte(openaiBody), &req); err != nil {
+			t.Fatalf("%s: 解析失败: %v", name, err)
+		}
+		enabled := reasoningEnabled(req.ReasoningEffort, req.Thinking)
+		raw, err := buildAgentBody(req.Messages, "qfmodel", req.Tools, enabled)
+		if err != nil {
+			t.Fatalf("%s: build 失败: %v", name, err)
+		}
+		var obj map[string]any
+		json.Unmarshal(raw, &obj)
+		t.Logf("%-28s → is_reasoning=%-5v | %s", name, enabled, bodyFacts(obj))
+	}
+	project("无 reasoning 字段", `{"model":"qwen3.8-flash","messages":[{"role":"user","content":"hi"}]}`)
+	project("reasoning_effort=high", `{"model":"qwen3.8-flash","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"high"}`)
+	project("reasoning_effort=none", `{"model":"qwen3.8-flash","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"none"}`)
+	project("thinking.type=enabled", `{"model":"qwen3.8-flash","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"enabled"}}`)
+	t.Log("== 生产路径只投影 is_reasoning 布尔（Qoder 协议无档位），parameters/顶层 camelCase 不会被生产代码发送")
+}
+
 // TestLiveProbeEffort 第 2 步：同一 prompt 下横向对比不同字段注入的行为。
 //
 // 判读：
@@ -748,9 +840,14 @@ func TestLiveProbeEffort(t *testing.T) {
 				tc.mutate(obj)
 			}
 			body, _ := json.Marshal(obj)
+			// 关键：直发原生 body，否则注入的 model key / is_reasoning / parameters 会被
+			// ChatStream 的 OpenAI→Qoder 投影整段丢弃（见 chatStreamRaw 注释）。
+			if i == 0 {
+				t.Logf("   实际发出：%s", bodyFacts(obj))
+			}
 
 			start := time.Now()
-			rc, status, respBody, err := c.ChatStream(a, body)
+			rc, status, respBody, err := c.chatStreamRaw(a, body, modelKey)
 			ttfb := time.Since(start)
 			if err != nil {
 				res.note = "传输层失败：" + err.Error()
