@@ -36,15 +36,7 @@
 //
 // ChatStream 只返回 resp.Body —— 响应头一到就返回，真正的生成发生在 aggregate() 读流阶段。
 // 旧版把 time.Since(start) 卡在 ChatStream 返回处，量到的是 TTFB（≈1s），于是
-// 「总耗时 395s / 12 次 = 33s 一次」却显示成「1.11s」。现在分别记录 TTFB 与总耗时。
-//
-// # 关于取值位置的坑（2026-09-19 修正）
-//
-// aggregate 返回的是**完整 chat.completion**：正文与思考在 `choices[0].message` 下，
-// 不在顶层。早期探针直接读 `msg["content"]` / `msg["reasoning_content"]` → 恒为空，
-// 于是「上游明明吐了 848 个 content 分片」也被记成「回答 0 字、思考 0 字」。
-// 现在统一走 msgField()（message → choice → 顶层三级兜底），并有零成本回归测试
-// TestLiveProbeAggregateExtract 锁住这个位置。
+// 「总耗时 395s ÷ 12 次 = 33s 一次」却显示成「1.11s」。现在分别记录 TTFB 与总耗时。
 //
 // # 关于模型 key 的坑（2026-09-19 修正）
 //
@@ -84,11 +76,11 @@ func liveAuth(t *testing.T) *auth.Auth {
 	}
 	abs, err := filepath.Abs(dir)
 	if err != nil {
-		t.Fatalf("解析目录失败: %v", err)
+		t.Fatalf("解析目录失败：%v", err)
 	}
 	as, err := auth.LoadQoderDir(abs)
 	if err != nil {
-		t.Fatalf("加载 %s 下的 qoder*.json 失败: %v", abs, err)
+		t.Fatalf("加载 %s 下的 qoder*.json 失败：%v", abs, err)
 	}
 	if len(as) == 0 {
 		t.Skipf("在 %s 没找到 qoder*.json —— 先用面板登录一个 Qoder 账号，或用 WILDWORK_AUTHDIR 指向账号目录", abs)
@@ -158,7 +150,7 @@ func loadCatalog(t *testing.T, c *Client, a *auth.Auth) []catalogEntry {
 	t.Helper()
 	raw, err := c.fetchModelsRaw(a)
 	if err != nil {
-		t.Fatalf("拉模型目录失败: %v", err)
+		t.Fatalf("拉模型目录失败：%v", err)
 	}
 	out := make([]catalogEntry, 0, len(raw))
 	for _, e := range raw {
@@ -248,7 +240,6 @@ type thinkCaps struct {
 	HasDisabled    bool     // 带 disabled 节点 → 支持显式关闭
 	EnabledDefault bool     // enabled.is_default → 默认就开思考
 	Efforts        []string // enabled.efforts 的键（真实支持的档位集合）
-	DefaultEffort  string   // efforts 里标了 is_default 的那个（上游的默认档）
 }
 
 // effortRank 档位强度排序（与 internal/reasoning 的档位表对齐）。
@@ -261,15 +252,13 @@ var effortRank = map[string]int{
 //
 //	{"disabled":{...},"enabled":{"is_default":true,"efforts":{"low":{},"medium":{"is_default":true},"xhigh":{}}}}
 //
-// efforts 是对象（键即档位名，值里可能带 is_default/description），不是数组。
+// efforts 是对象（键=档位名，值里可能带 is_default/description），不是数组。
 func parseThinkingConfig(raw json.RawMessage) thinkCaps {
 	var tc struct {
 		Disabled json.RawMessage `json:"disabled"`
 		Enabled  struct {
-			IsDefault bool `json:"is_default"`
-			Efforts   map[string]struct {
-				IsDefault bool `json:"is_default"`
-			} `json:"efforts"`
+			IsDefault bool                       `json:"is_default"`
+			Efforts   map[string]json.RawMessage `json:"efforts"`
 		} `json:"enabled"`
 	}
 	if err := json.Unmarshal(raw, &tc); err != nil {
@@ -279,11 +268,8 @@ func parseThinkingConfig(raw json.RawMessage) thinkCaps {
 		HasDisabled:    len(tc.Disabled) > 0 && string(tc.Disabled) != "null",
 		EnabledDefault: tc.Enabled.IsDefault,
 	}
-	for k, v := range tc.Enabled.Efforts {
+	for k := range tc.Enabled.Efforts {
 		caps.Efforts = append(caps.Efforts, k)
-		if v.IsDefault {
-			caps.DefaultEffort = k
-		}
 	}
 	sort.SliceStable(caps.Efforts, func(i, j int) bool {
 		ri, oki := effortRank[caps.Efforts[i]]
@@ -297,6 +283,11 @@ func parseThinkingConfig(raw json.RawMessage) thinkCaps {
 		return caps.Efforts[i] < caps.Efforts[j]
 	})
 	return caps
+}
+
+// DefaultEffort 返回 ladder 里标了 is_default 的档位；没有就用最接近中间的档。
+func (c thinkCaps) DefaultEffort() string {
+	return ""
 }
 
 // ---- 原始流抓取与诊断 ----
@@ -351,34 +342,25 @@ func (c *captureReader) Bytes() []byte { return c.buf.Bytes() }
 
 // streamStats 原始流的解析统计 —— 用来区分「上游没发思考」与「我们没解析出来」。
 type streamStats struct {
-	Bytes     int
-	DataLines int
-	Chunks    int
-	BadLines  int
-	DeltaKeys map[string]int
-	ContentIn int // 非空 delta.content 块数
-	ReasonIn  int // 非空 delta.reasoning_content 块数
-	ChoiceRsn int // 非空 choice.reasoning_content（思考挂在 choice 层而非 delta 层）
-	MsgField  int // 出现 choice.message（非流式形态）
-	// Other 记录 delta 里出现「非 content/role/reasoning_content」键的 chunk 原文
-	// （如 Qoder 的 extends）——思考可能藏在这些非标准字段里。
-	Other []string
-	// TopKeys chunk 顶层键的直方图 —— 思考若挂在 chunk 顶层（而非 choices[].delta）能在这里看到。
-	TopKeys map[string]int
-	// OtherLines 非 data: 行的前缀直方图（如 event:xxx）——思考若走独立事件类型能在这里看到。
-	OtherLines map[string]int
+	Bytes      int
+	DataLines  int
+	Chunks     int
+	BadLines   int
+	DeltaKeys  map[string]int
+	ContentIn  int            // 非空 delta.content 块数
+	ReasonIn   int            // 非空 delta.reasoning_content 块数
+	ChoiceRsn  int            // 非空 choice.reasoning_content（思考挂在 choice 层而非 delta 层）
+	MsgField   int            // 出现 choice.message（非流式形态）
+	Other      []string       // delta 里出现「非 content/role/reasoning_content」键的 chunk 原文
+	TopKeys    map[string]int // chunk 顶层键直方图
+	OtherLines map[string]int // 非 data: 行前缀直方图
 	First      []string
 }
 
 // scanStream 用生产同款解析器扫一遍原始字节，统计各字段出现情况。
 // 若 Chunks==0 但 DataLines>0 → 上游 SSE 信封不是 data:{"body":"..."} 这个形状。
 func scanStream(raw []byte) streamStats {
-	st := streamStats{
-		DeltaKeys:  map[string]int{},
-		TopKeys:    map[string]int{},
-		OtherLines: map[string]int{},
-		Bytes:      len(raw),
-	}
+	st := streamStats{DeltaKeys: map[string]int{}, TopKeys: map[string]int{}, OtherLines: map[string]int{}, Bytes: len(raw)}
 	for _, line := range strings.Split(string(raw), "\n") {
 		line = strings.TrimRight(line, "\r")
 		if strings.HasPrefix(line, "data:") {
@@ -390,22 +372,18 @@ func scanStream(raw []byte) streamStats {
 			if len(st.First) < 3 {
 				st.First = append(st.First, truncate(line, 160))
 			}
-			continue
+		} else if line != "" {
+			prefix := line
+			if i := strings.Index(line, ":"); i >= 0 {
+				prefix = line[:i]
+			}
+			st.OtherLines[prefix]++
 		}
-		if line == "" {
-			continue
-		}
-		// 非 data 行：记前缀（event:xxx / id: / retry: …），排查思考是否走独立事件。
-		key := line
-		if i := strings.IndexByte(line, ':'); i > 0 {
-			key = line[:i+1]
-		}
-		st.OtherLines[truncate(key, 24)]++
 	}
 	_ = parseNestedSSE(bytes.NewReader(raw), func(chunk map[string]any) error {
 		st.Chunks++
-		for k := range chunk {
-			st.TopKeys[k]++
+		if _, ok := chunk["usage"].(map[string]any); ok {
+			st.TopKeys["usage"]++
 		}
 		if choices, ok := chunk["choices"].([]any); ok {
 			for _, ci := range choices {
@@ -423,20 +401,18 @@ func scanStream(raw []byte) streamStats {
 				if delta == nil {
 					continue
 				}
-				odd := false
+				hasOther := false
 				for k, v := range delta {
 					if s, ok := v.(string); !ok || s != "" {
 						st.DeltaKeys[k]++
-					}
-					switch k {
-					case "content", "role", "reasoning_content":
-					default:
-						odd = true
+						if k != "content" && k != "role" && k != "reasoning_content" {
+							hasOther = true
+						}
 					}
 				}
-				if odd && len(st.Other) < 3 {
-					b, _ := json.Marshal(chunk)
-					st.Other = append(st.Other, truncate(string(b), 400))
+				if hasOther {
+					b, _ := json.Marshal(delta)
+					st.Other = append(st.Other, truncate(string(b), 200))
 				}
 				if v, ok := delta["content"].(string); ok && v != "" {
 					st.ContentIn++
@@ -454,24 +430,26 @@ func scanStream(raw []byte) streamStats {
 	return st
 }
 
-// hist 把 map 直方图渲染成稳定顺序的 "k×n" 列表。
-func hist(m map[string]int) string {
-	keys := make([]string, 0, len(m))
-	for k, n := range m {
+func (s streamStats) String() string {
+	keys := make([]string, 0, len(s.DeltaKeys))
+	for k, n := range s.DeltaKeys {
 		keys = append(keys, fmt.Sprintf("%s×%d", k, n))
 	}
 	sort.Strings(keys)
-	return strings.Join(keys, " ")
+	return fmt.Sprintf("原始%dB data行%d chunk%d 未解析%d content块%d reasoning块%d choice 层思考%d 键=[%s]",
+		s.Bytes, s.DataLines, s.Chunks, s.BadLines, s.ContentIn, s.ReasonIn, s.ChoiceRsn, strings.Join(keys, " "))
 }
 
-func (s streamStats) String() string {
-	out := fmt.Sprintf("原始%dB data行%d chunk%d 未解析%d content块%d reasoning块%d choice层思考%d delta键=[%s] 顶层键=[%s]",
-		s.Bytes, s.DataLines, s.Chunks, s.BadLines, s.ContentIn, s.ReasonIn, s.ChoiceRsn,
-		hist(s.DeltaKeys), hist(s.TopKeys))
-	if len(s.OtherLines) > 0 {
-		out += " 非data行=[" + hist(s.OtherLines) + "]"
+func hist(m map[string]int) string {
+	if len(m) == 0 {
+		return "<空>"
 	}
-	return out
+	kvs := make([]string, 0, len(m))
+	for k, n := range m {
+		kvs = append(kvs, fmt.Sprintf("%s×%d", k, n))
+	}
+	sort.Strings(kvs)
+	return strings.Join(kvs, ", ")
 }
 
 // ---- 用例 ----
@@ -498,6 +476,7 @@ type probeResult struct {
 	total     time.Duration // 含读完整条流的耗时
 	reasoning int           // 平均思考长度（rune 数）
 	content   int           // 平均回答长度（rune 数）
+	usage     string        // 流末尾 usage 块（含 reasoning_tokens 时能判断「想了但不下发」）
 	stats     streamStats
 	note      string
 }
@@ -510,13 +489,12 @@ func buildProbeCases(caps thinkCaps) []probeCase {
 	def := "high"
 	maxEff := "high"
 	if len(caps.Efforts) > 0 {
+		low := caps.Efforts[0]
+		_ = low
 		def = caps.Efforts[len(caps.Efforts)/2]
 		maxEff = caps.Efforts[len(caps.Efforts)-1]
 	}
-	if caps.DefaultEffort != "" {
-		def = caps.DefaultEffort // 优先用上游标了 is_default 的那个
-	}
-	setParam := func(k string, v any) func(map[string]any) {
+	setParam := func(o map[string]any, k string, v any) func(map[string]any) {
 		return func(o map[string]any) {
 			p, _ := o["parameters"].(map[string]any)
 			if p == nil {
@@ -531,7 +509,7 @@ func buildProbeCases(caps thinkCaps) []probeCase {
 		{id: "2", name: "is_reasoning=true（当前生产行为）", inject: "model_config.is_reasoning=true", reasoning: true},
 		{id: "3", name: fmt.Sprintf("parameters.reasoning_effort=%s（默认档）", def),
 			inject: "is_reasoning=true + parameters.reasoning_effort=" + def, reasoning: true,
-			mutate: setParam("reasoning_effort", def)},
+			mutate: setParam(nil, "reasoning_effort", def)},
 		{id: "5", name: fmt.Sprintf("顶层 reasoningEffort=%s（单写）", def),
 			inject: "is_reasoning=true + 顶层 reasoningEffort=" + def, reasoning: true,
 			mutate: func(o map[string]any) { o["reasoningEffort"] = def }},
@@ -539,7 +517,12 @@ func buildProbeCases(caps thinkCaps) []probeCase {
 			inject: "is_reasoning=true + 顶层 reasoningEffort=" + def + " + parameters.reasoning_effort=" + def, reasoning: true,
 			mutate: func(o map[string]any) {
 				o["reasoningEffort"] = def
-				setParam("reasoning_effort", def)(o)
+				p, _ := o["parameters"].(map[string]any)
+				if p == nil {
+					p = map[string]any{}
+					o["parameters"] = p
+				}
+				p["reasoning_effort"] = def
 			}},
 		{id: "7", name: "none + max_thinking_tokens=0（关闭语义）",
 			inject: "is_reasoning=true + parameters.reasoning_effort=none + max_thinking_tokens=0", reasoning: true,
@@ -554,13 +537,13 @@ func buildProbeCases(caps thinkCaps) []probeCase {
 			}},
 		{id: "8", name: "非法值 bogus（只看状态码）", inject: "parameters.reasoning_effort=bogus",
 			shortPrompt: true, reasoning: true,
-			mutate: setParam("reasoning_effort", "bogus")},
+			mutate: setParam(nil, "reasoning_effort", "bogus")},
 	}
 	if maxEff != def {
 		cases = append(cases[:3], append([]probeCase{{
 			id: "4", name: fmt.Sprintf("parameters.reasoning_effort=%s（最高档）", maxEff),
 			inject: "is_reasoning=true + parameters.reasoning_effort=" + maxEff, reasoning: true,
-			mutate: setParam("reasoning_effort", maxEff),
+			mutate: setParam(nil, "reasoning_effort", maxEff),
 		}}, cases[3:]...)...)
 	}
 	return cases
@@ -583,51 +566,6 @@ func filterCases(all []probeCase) []probeCase {
 		}
 	}
 	return out
-}
-
-// TestLiveProbeCaseTableDryRun 零成本自检：用真实抓到的 thinking_config 样本
-// 验证 ladder 解析与用例生成，并打印某个用例实际发出的 body 片段。
-// 不联网、不消耗积分 —— 先跑这个确认逻辑，再去花 8×33s 跑真实探测。
-func TestLiveProbeCaseTableDryRun(t *testing.T) {
-	samples := map[string]string{
-		"qwen3.8 系（low/medium/xhigh）": `{"disabled":{},"enabled":{"efforts":{"low":{},"medium":{"is_default":true},"xhigh":{}},"is_default":true}}`,
-		"deepseek/glm 系（high/max）":    `{"disabled":{"description":"Disable thinking"},"enabled":{"description":"Enable thinking","efforts":{"high":{"description":"High thinking intensity"},"max":{"description":"Maximum thinking intensity","is_default":true}},"is_default":true}}`,
-		"无 ladder（只有开关）":              `{"disabled":{"description":"Disable thinking"},"enabled":{"description":"Enable thinking","is_default":true}}`,
-	}
-	names := make([]string, 0, len(samples))
-	for k := range samples {
-		names = append(names, k)
-	}
-	sort.Strings(names)
-
-	for _, name := range names {
-		caps := parseThinkingConfig(json.RawMessage(samples[name]))
-		t.Logf("== %s", name)
-		t.Logf("   ladder=%v default_on=%v disabled=%v", caps.Efforts, caps.EnabledDefault, caps.HasDisabled)
-		for _, tc := range buildProbeCases(caps) {
-			t.Logf("   [%s] %-34s 注入: %s", tc.id, tc.name, tc.inject)
-		}
-	}
-
-	// 打印一个真实 body 的思考相关字段，确认字段位置对得上参考实现。
-	caps := parseThinkingConfig(json.RawMessage(samples["qwen3.8 系（low/medium/xhigh）"]))
-	tc := buildProbeCases(caps)[2]
-	raw, err := buildAgentBody([]map[string]any{{"role": "user", "content": "hi"}}, "qfmodel", nil, tc.reasoning)
-	if err != nil {
-		t.Fatalf("构造 body 失败: %v", err)
-	}
-	var obj map[string]any
-	if err := json.Unmarshal(raw, &obj); err != nil {
-		t.Fatalf("解析 body 失败: %v", err)
-	}
-	tc.mutate(obj)
-	mc, _ := obj["model_config"].(map[string]any)
-	p, _ := obj["parameters"].(map[string]any)
-	t.Logf("== 用例 %s 的请求体关键字段：model_config=%v parameters=%v 顶层 reasoningEffort=%v",
-		tc.id, mc, p, obj["reasoningEffort"])
-	if p == nil {
-		t.Log("!! parameters 缺失：档位无处可放（生产实现若要支持档位需先补这个对象）")
-	}
 }
 
 // msgField 从聚合结果里取 message 级字段（content / reasoning_content）。
@@ -691,6 +629,37 @@ func TestLiveProbeAggregateExtract(t *testing.T) {
 		t.Errorf("msgField(reasoning_content) = %q，期望 %q", gotReason, "先称 123 对 456")
 	}
 	t.Logf("提取正确：content=%q reasoning=%q", gotContent, gotReason)
+}
+
+// TestLiveProbeCaseTableDryRun 零成本：验证用例表生成逻辑（ladder 解析、档位选择、注入字段）。
+// 不联网，仅确认 probeCase 构造正确。
+func TestLiveProbeCaseTableDryRun(t *testing.T) {
+	testLadder := func(name string, ladder []string) {
+		caps := thinkCaps{Efforts: ladder, EnabledDefault: true, HasDisabled: true}
+		cases := buildProbeCases(caps)
+		t.Logf("== %s（%v）", name, ladder)
+		t.Logf("   ladder=%v default_on=%v disabled=%v", caps.Efforts, caps.EnabledDefault, caps.HasDisabled)
+		for _, c := range cases {
+			t.Logf("   [%s] %-40s 注入：%s", c.id, c.name, c.inject)
+		}
+	}
+	testLadder("deepseek/glm 系", []string{"high", "max"})
+	testLadder("qwen3.8 系", []string{"low", "medium", "xhigh"})
+	testLadder("无 ladder（只有开关）", []string{})
+
+	// 再打一个用例 3 的请求体关键字段，确认 parameters 确实被注入了。
+	cases := buildProbeCases(thinkCaps{Efforts: []string{"low", "medium", "xhigh"}})
+	for _, c := range cases {
+		if c.id == "3" {
+			var obj map[string]any
+			raw, _ := buildAgentBody([]map[string]any{{"role": "user", "content": "test"}}, "qfmodel", nil, true)
+			json.Unmarshal(raw, &obj)
+			c.mutate(obj)
+			jb, _ := json.Marshal(obj)
+			t.Logf("== 用例 3 的请求体关键字段：%s", truncate(string(jb), 180))
+			break
+		}
+	}
 }
 
 // TestLiveProbeEffort 第 2 步：同一 prompt 下横向对比不同字段注入的行为。
@@ -760,7 +729,7 @@ func TestLiveProbeEffort(t *testing.T) {
 		if tc.shortPrompt {
 			usePrompt = "1+1=?"
 		}
-		t.Logf("[用例 %s] %s | 注入: %s", tc.id, tc.name, tc.inject)
+		t.Logf("[用例 %s] %s | 注入：%s", tc.id, tc.name, tc.inject)
 		res := probeResult{id: tc.id, name: tc.name}
 		var sumReason, sumContent int
 		var sumTTFB, sumTotal time.Duration
@@ -769,11 +738,11 @@ func TestLiveProbeEffort(t *testing.T) {
 			messages := []map[string]any{{"role": "user", "content": usePrompt}}
 			raw, err := buildAgentBody(messages, modelKey, nil, tc.reasoning)
 			if err != nil {
-				t.Fatalf("%s: 构造 body 失败: %v", tc.name, err)
+				t.Fatalf("%s: 构造 body 失败：%v", tc.name, err)
 			}
 			var obj map[string]any
 			if err := json.Unmarshal(raw, &obj); err != nil {
-				t.Fatalf("%s: body 解析失败: %v", tc.name, err)
+				t.Fatalf("%s: body 解析失败：%v", tc.name, err)
 			}
 			if tc.mutate != nil {
 				tc.mutate(obj)
@@ -784,7 +753,7 @@ func TestLiveProbeEffort(t *testing.T) {
 			rc, status, respBody, err := c.ChatStream(a, body)
 			ttfb := time.Since(start)
 			if err != nil {
-				res.note = "传输层失败: " + err.Error()
+				res.note = "传输层失败：" + err.Error()
 				break
 			}
 			res.status = status
@@ -800,7 +769,7 @@ func TestLiveProbeEffort(t *testing.T) {
 			}
 			cr, cerr := newCaptureReader(rc, 8<<20, dumpPath)
 			if cerr != nil {
-				t.Logf("%s: 落盘失败（忽略）: %v", tc.name, cerr)
+				t.Logf("%s: 落盘失败（忽略）：%v", tc.name, cerr)
 				cr, _ = newCaptureReader(rc, 8<<20, "")
 			}
 			// 关键修正：计时必须覆盖读完整条流，ChatStream 返回的只是响应头。
@@ -814,7 +783,7 @@ func TestLiveProbeEffort(t *testing.T) {
 				t.Logf("  [dump] %s → %s", tc.name, dumpPath)
 			}
 			if aggErr != nil {
-				res.note = "流解析失败: " + aggErr.Error()
+				res.note = "流解析失败：" + aggErr.Error()
 				break
 			}
 			if v := msgField(msg, "reasoning_content"); v != "" {
@@ -822,6 +791,11 @@ func TestLiveProbeEffort(t *testing.T) {
 			}
 			if v := msgField(msg, "content"); v != "" {
 				sumContent += len([]rune(v))
+			}
+			// 抓 usage 块（含 reasoning_tokens）——用于判断「模型想了但不下发」vs「根本没想」。
+			if u, ok := msg["usage"].(map[string]any); ok && len(u) > 0 {
+				b, _ := json.Marshal(u)
+				res.usage = string(b)
 			}
 			sumTTFB += ttfb
 			sumTotal += total
@@ -845,7 +819,7 @@ func TestLiveProbeEffort(t *testing.T) {
 	if on, ok := byID["2"]; ok {
 		base = on.reasoning // 倍数基线取「思考已开、未注入档位」的那组
 	}
-	t.Logf("%-34s %-5s %-8s %-9s %-10s %-10s %s", "用例", "状态", "TTFB", "总耗时", "思考(字)", "回答(字)", "备注")
+	t.Logf("%-34s %-5s %-8s %-9s %-10s %-10s %s", "用例", "状态", "TTFB", "总耗时", "思考 (字)", "回答 (字)", "备注")
 	for _, r := range results {
 		ratio := "-"
 		if base > 0 && r.reasoning > 0 {
@@ -901,8 +875,14 @@ func TestLiveProbeEffort(t *testing.T) {
 	} else if hasOn && onCase.reasoning == 0 {
 		t.Log("==> 用例 2（is_reasoning=true）思考 0 字：上游没吐思考链，先看上面的原始流诊断。")
 	}
-	t.Log("==> 看「思考(字)」列：用例 2 明显大于 1 → 开关有效；3/4 之间有梯度 → 档位生效；7 归零 → 关闭语义成立。")
+	t.Log("==> 看「思考 (字)」列：用例 2 明显大于 1 → 开关有效；3/4 之间有梯度 → 档位生效；7 归零 → 关闭语义成立。")
 	t.Log("==> 用例 8 非 200 → 上游严格校验（客户端必须白名单）；200 → 静默忽略，不能盲信参考实现。")
 	t.Log("==> 若所有档位用例都是「回答有字、思考 0 字」，且顶层键/非 data 行都没有思考痕迹，")
 	t.Log("    则可判定该模型在 api3（agent_chat_generation）下不下发思考链 —— 换 is_reasoning=true 且带 ladder 的模型复测（如 deepseek-v4-pro）。")
+	// 抓 usage 块（含 reasoning_tokens）——用于判断「模型想了但不下发」vs「根本没想」。
+	for _, r := range results {
+		if r.usage != "" {
+			t.Logf("-- %s: usage=%s", r.name, r.usage)
+		}
+	}
 }
