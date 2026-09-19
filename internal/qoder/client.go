@@ -232,6 +232,8 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 	}
 	modelKey := c.modelKey(reqOpenAI.Model)
 	if modelKey == "" {
+		// 动态映射与静态表都未命中：发 raw 模型名可能被上游 200 兜底空流，需显式告警。
+		log.Printf("qoder chat_stream uid=%s model=%q: no upstream key, fallback to raw model name", a.UID, reqOpenAI.Model)
 		modelKey = reqOpenAI.Model
 	}
 

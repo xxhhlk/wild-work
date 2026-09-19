@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -112,6 +113,15 @@ func (c *Client) FetchModels(a *auth.Auth) ([]provider.ModelInfo, error) {
 		out = append(out, mi)
 	}
 	c.setModelMap(mm)
+	for _, m := range dyn {
+		nm := NormalizeModelName(m.DisplayName)
+		if strings.Contains(m.DisplayName, "3.8") || strings.Contains(strings.ToLower(m.DisplayName), "flash") {
+			log.Printf("qoder catalog: client=%q key=%q display=%q", nm, m.Key, m.DisplayName)
+		}
+	}
+	if mm["qwen3.8-flash"] == "" {
+		log.Printf("qoder catalog: qwen3.8-flash NOT in dynamic modelMap")
+	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("models api returned empty list")
 	}

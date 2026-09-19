@@ -30,6 +30,7 @@ const (
 // 与 qoderwork2api fallbackModelMap 对齐；优先用动态模型接口（COSY /algo/api/v2/model/list）。
 var staticModelKeys = map[string]string{
 	"auto":              "auto",
+	"qwen3.8-flash":     "qfmodel",
 	"qwen3.8-max":       "qmodel_38max",
 	"qwen3.7-max":       "qmodel_latest",
 	"qwen3.7-plus":      "qmodel",

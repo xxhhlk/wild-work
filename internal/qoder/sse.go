@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -203,7 +204,27 @@ func sortInts(a []int) {
 // 每个 chunk 重写 model 字段为客户端模型名；末尾补 data: [DONE]。
 func streamAsOpenAI(w io.Writer, r io.Reader, model string, flush func()) error {
 	sawDone := false
+	var contentLen, reasoningLen, toolCallsLen int
 	err := parseNestedSSE(r, func(chunk map[string]any) error {
+		ch, _ := chunk["choices"].([]any)
+		if len(ch) > 0 {
+			c, _ := ch[0].(map[string]any)
+			// 思考内容可能挂在 choice 层（非 delta 层），需一并统计避免漏判。
+			if rc, ok := c["reasoning_content"].(string); ok {
+				reasoningLen += len(rc)
+			}
+			if delta, ok := c["delta"].(map[string]any); ok {
+				if txt, ok := delta["content"].(string); ok {
+					contentLen += len(txt)
+				}
+				if rc, ok := delta["reasoning_content"].(string); ok {
+					reasoningLen += len(rc)
+				}
+				if tcs, ok := delta["tool_calls"].([]any); ok {
+					toolCallsLen += len(tcs)
+				}
+			}
+		}
 		chunk["model"] = model
 		raw, _ := json.Marshal(chunk)
 		if _, err := fmt.Fprintf(w, "data: %s\n\n", raw); err != nil {
@@ -216,6 +237,11 @@ func streamAsOpenAI(w io.Writer, r io.Reader, model string, flush func()) error 
 	})
 	if err != nil {
 		return err
+	}
+	if contentLen == 0 && reasoningLen == 0 && toolCallsLen == 0 {
+		// 上游 200 但无任何 content/reasoning/tool_calls，判定为空流。
+		// 可能是 model key 映射缺失导致上游空响应，需结合 model 名排查。
+		log.Printf("qoder empty stream detected: model=%q content=%d reasoning=%d tool_calls=%d", model, contentLen, reasoningLen, toolCallsLen)
 	}
 	if !sawDone {
 		if _, err := io.WriteString(w, "data: [DONE]\n\n"); err != nil {
