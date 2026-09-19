@@ -230,6 +230,9 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 	if err := json.Unmarshal(body, &reqOpenAI); err != nil {
 		return nil, 0, nil, fmt.Errorf("parse chat body: %w", err)
 	}
+	// 探测工具链路：tools 定义是否到达、消息里 assistant/tool 轮是否存在，
+	// 用于区分「上游没拿到工具」vs「拿到但不调用/谎报已修改」。
+	logToolsProbe(reqOpenAI.Tools, reqOpenAI.Messages)
 	modelKey := c.modelKey(reqOpenAI.Model)
 	if modelKey == "" {
 		// 动态映射与静态表都未命中：发 raw 模型名可能被上游 200 兜底空流，需显式告警。
@@ -454,6 +457,40 @@ func EnsureFingerprint(a *auth.Auth) {
 	if a.MachineType == "" {
 		a.MachineType = strings.ReplaceAll(uuid4(), "-", "")[:18]
 	}
+}
+
+// logToolsProbe 打印工具链路观测信息：tools 定义到达情况 + 消息里工具相关轮次。
+// 只打结构统计（不含具体 tool 内容/正文），避免泄漏与刷屏。
+func logToolsProbe(tools []any, messages []map[string]any) {
+	toolCount := len(tools)
+	funcDefs := 0
+	assistantCalls, toolRounds := 0, 0
+	for _, m := range messages {
+		role, _ := m["role"].(string)
+		switch role {
+		case "assistant":
+			if tc, ok := m["tool_calls"].([]any); ok && len(tc) > 0 {
+				assistantCalls += len(tc)
+			}
+		case "tool":
+			toolRounds++
+		}
+	}
+	for _, t := range tools {
+		tm, ok := t.(map[string]any)
+		if !ok {
+			continue
+		}
+		if typ, _ := tm["type"].(string); typ == "function" {
+			if fn, ok := tm["function"].(map[string]any); ok {
+				if name, _ := fn["name"].(string); name != "" {
+					funcDefs++
+				}
+			}
+		}
+	}
+	log.Printf("qoder tool probe: tools=%d funcDefs=%d assistant_tool_calls=%d tool_rounds=%d",
+		toolCount, funcDefs, assistantCalls, toolRounds)
 }
 
 func truncate(s string, n int) string {
