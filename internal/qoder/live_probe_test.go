@@ -559,6 +559,18 @@ func setNestedModelConfig(o map[string]any, k string, v any) {
 	mc[k] = v
 }
 
+// setParams 往 parameters 对象里合并多个键。
+func setParams(o map[string]any, kv map[string]any) {
+	p, _ := o["parameters"].(map[string]any)
+	if p == nil {
+		p = map[string]any{}
+		o["parameters"] = p
+	}
+	for k, v := range kv {
+		p[k] = v
+	}
+}
+
 // buildProbeCases 按模型能力生成用例表。
 //
 // 关键：**必须包含 is_reasoning=false / true 的对照**。旧版所有用例都硬编码
@@ -631,6 +643,29 @@ func buildProbeCases(caps thinkCaps) []probeCase {
 					mc["reasoning_effort"] = def
 				}
 				setNestedModelConfig(o, "reasoning_effort", def)
+			}},
+		// 用例 11/12 直接照抄 Qoder CN 桌面版（Electron，SDK v1.1.53）构造 legacy
+		// agent_chat_generation body 的官方写法（qoder-worker-runtime.obf.mjs 的 bve()）：
+		//
+		//	parameters.reasoning_effort = <档位>
+		//	parameters.enable_thinking  = true           // ← 关键：随档位一起写
+		//	parameters.max_tokens       = <默认输出上限>
+		//	effort == "none" → enable_thinking=false，并删掉 reasoning_budget_tokens
+		//	effort == "none" / enable_thinking==false → model_config.is_reasoning = false
+		//
+		// 之前只注入 reasoning_effort、不注入 enable_thinking —— 与官方请求不一致，
+		// 很可能是「思考 0 字」的真正原因。
+		{id: "11", name: fmt.Sprintf("桌面版官方形态 %s（reasoning_effort+enable_thinking）", def),
+			inject:    "is_reasoning=true + parameters{reasoning_effort=" + def + ", enable_thinking=true, max_tokens=32768}",
+			reasoning: true,
+			mutate: func(o map[string]any) {
+				setParams(o, map[string]any{"reasoning_effort": def, "enable_thinking": true, "max_tokens": 32768})
+			}},
+		{id: "12", name: "桌面版关闭形态（none + enable_thinking=false）",
+			inject:    "is_reasoning=true + parameters{reasoning_effort=none, enable_thinking=false, max_tokens=32768}",
+			reasoning: true,
+			mutate: func(o map[string]any) {
+				setParams(o, map[string]any{"reasoning_effort": "none", "enable_thinking": false, "max_tokens": 32768})
 			}},
 	}
 	if maxEff != def {
