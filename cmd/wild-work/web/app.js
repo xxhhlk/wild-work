@@ -326,7 +326,7 @@ function renderFees(fees) {
       caps.push(`<span class="cap-icon cap-img" title="支持图像输入（多模态视觉）：可直接发送图片给该模型">👁</span>`);
     }
     if (m.supports_reasoning) {
-      caps.push(`<span class="cap-icon cap-reason" title="支持思考/推理模式：回复前会进行推理（可能含 reasoning_content）">🧠</span>`);
+      caps.push(`<span class="cap-icon cap-reason" title="支持思考/推理模式：回复前会进行推理；上游是否回吐思考链（reasoning_content）因渠道而异">🧠</span>`);
     }
     if (m.supports_tools) {
       caps.push(`<span class="cap-icon cap-tool" title="支持函数/工具调用（tool_calls）">🔧</span>`);

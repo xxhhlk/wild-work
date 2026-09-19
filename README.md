@@ -213,6 +213,8 @@ API Key:  WildWorkAPI
   ✅ Qoder 的 `agent_chat_generation` 端点**会下发可见思考链**（`reasoning_content` +
   `usage.reasoning_tokens`）—— 前提是请求体与请求头按桌面版实测形状对齐（见 AGENTS.md R21）；
   早期实现少了顶层 `system`、`task_id`、完整 `model_config` 等字段，才误判成「上游不支持」。
+  可见性在三个接口一致：Chat 原样透传 `reasoning_content`、Anthropic 转 `thinking` 块、
+  Responses 转 `reasoning` item（Responses 侧另受下方「思考摘要」策略控制，默认 `auto`）。
   ⚠️ 请求体形状改动后务必跑 `TestLiveProbeProductionPath`（`-tags live`）回归。
 - **DeepSeek 系思考开关**：官方客户端开思考需同时下发 `thinking:{"type":"enabled"}` 与档位，
   缺该字段上游按「不思考」应答（`reasoning_content` 为空）；网关在客户端要开思考时自动补上，

@@ -162,7 +162,7 @@
         </select>
         <span class="hint" style="margin-left:6px">WorkBuddy / Qoder 生效</span>
       </div>
-      <div class="hint" style="margin:-2px 0 6px">客户端未指定思考强度时的兜底档；客户端显式指定（含关闭）时一律以客户端为准。档位会按模型能力自动降级（如 WorkBuddy 国内版 deepseek-v4-pro 只认 low/high/xhigh；Qoder 的 qwen3.8 系只认 low/medium/xhigh）。</div>
+      <div class="hint" style="margin:-2px 0 6px">客户端未指定思考强度时的兜底档；客户端显式指定（含关闭）时一律以客户端为准。档位会按模型能力自动降级（如 WorkBuddy 国内版 deepseek-v4-pro 只认 low/high/xhigh）；Qoder 不内置档位表，一律以其模型目录声明的 ladder 为准。</div>
       <div class="row" style="align-items:center">
         <label class="lbl">DeepSeek 开关</label>
         <label style="display:flex;align-items:center;gap:6px;font-size:13px">
@@ -232,12 +232,15 @@
       <p>5. 思考强度：客户端可用 <code>reasoning_effort</code> / <code>reasoning.effort</code> / <code>thinking</code> 等写法指定档位
         （none/minimal/low/medium/high/xhigh/max/ultra）；API 配置里的「思考强度」是客户端未指定时的兜底档，
         对 WorkBuddy 双面与 Qoder 生效（TraeWork 协议无此字段）。</p>
-      <p>5.1 Qoder 的思考档位来自其模型目录（每个模型的 ladder 不同），客户端要「关闭」而该模型不支持关闭时会自动降到最低档；
-        注意 Qoder 的 <code>agent_chat_generation</code> 端点不下发可见思考链，档位影响的是思考量/回答长度，不会让思考过程显示出来。</p>
-      <p>5. 积分会随聊天消耗实时变化，"全部刷新积分"可即时获取最新余额。</p>
-      <p>6. 日志文件位于 exe 目录下 <code>data/app.log</code>，可从托盘菜单"查看日志"打开。</p>
-      <p>7. 退出程序：右键托盘图标选择"退出"。</p>
-      <p>8. 本工具仅供个人学习使用，请遵守各上游平台服务条款。</p>
+      <p>5.1 Qoder 的思考档位来自其模型目录（每个模型的 ladder 不同，与 WorkBuddy 的表相互独立），
+        客户端要「关闭」而该模型不支持关闭时会自动降到最低档；投影按官方客户端的三处同源字段下发
+        （<code>model_config.is_reasoning</code> + <code>parameters.reasoning_effort</code> + <code>parameters.enable_thinking</code>）。
+        思考链正常下发：Chat 接口透传 <code>reasoning_content</code>，Anthropic 接口转 <code>thinking</code> 块，
+        Responses 接口转 <code>reasoning</code> item（是否下发受上面「思考摘要」策略控制）。</p>
+      <p>6. 积分会随聊天消耗实时变化，"全部刷新积分"可即时获取最新余额。</p>
+      <p>7. 日志文件位于 exe 目录下 <code>data/app.log</code>，可从托盘菜单"查看日志"打开。</p>
+      <p>8. 退出程序：右键托盘图标选择"退出"。</p>
+      <p>9. 本工具仅供个人学习使用，请遵守各上游平台服务条款。</p>
     </div>
     <div class="modal-actions">
       <button class="btn small primary" id="btnHelpClose">知道了</button>
