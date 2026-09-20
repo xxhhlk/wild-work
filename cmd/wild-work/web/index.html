@@ -235,8 +235,9 @@
       <p>5.1 Qoder 的思考档位来自其模型目录（每个模型的 ladder 不同，与 WorkBuddy 的表相互独立），
         客户端要「关闭」而该模型不支持关闭时会自动降到最低档；投影按官方客户端的三处同源字段下发
         （<code>model_config.is_reasoning</code> + <code>parameters.reasoning_effort</code> + <code>parameters.enable_thinking</code>）。
-        思考链正常下发：Chat 接口透传 <code>reasoning_content</code>，Anthropic 接口转 <code>thinking</code> 块，
-        Responses 接口转 <code>reasoning</code> item（是否下发受上面「思考摘要」策略控制）。</p>
+        <code>agent_chat_generation</code> 端点会下发可见思考链：Chat 接口透传 <code>reasoning_content</code>，
+        Anthropic 接口转 <code>thinking</code> 块，Responses 接口转 <code>reasoning</code> item
+        （Responses 侧另受 API 配置里「思考摘要」策略控制）。</p>
       <p>6. 积分会随聊天消耗实时变化，"全部刷新积分"可即时获取最新余额。</p>
       <p>7. 日志文件位于 exe 目录下 <code>data/app.log</code>，可从托盘菜单"查看日志"打开。</p>
       <p>8. 退出程序：右键托盘图标选择"退出"。</p>
