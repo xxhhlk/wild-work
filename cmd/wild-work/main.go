@@ -264,6 +264,10 @@ func main() {
 
 	if err := appInst.StartServer(); err != nil {
 		log.Printf("listen %s failed: %v（面板中将提示）", cfg.Listen.Addr(), err)
+	} else {
+		// 地址必须落日志：气泡可能被系统静音，托盘提示要悬停才看得到。
+		log.Printf("已启动：OpenAI 兼容 API http://%s:%d/v1（Web UI http://%s:%d/）",
+			displayHost(cfg), cfg.Listen.Port, displayHost(cfg), cfg.Listen.Port)
 	}
 
 	// 调度器后台运行
@@ -287,12 +291,6 @@ func main() {
 	// 启动即刷新「模型列表 + 费率」，之后每 30 分钟。
 	// 否则刚启动时费率缓存为空，面板下方全是 unknown（需手动点刷新才正常）。
 	appInst.StartPricingAutoRefresh(sctx, app.PricingRefreshInterval)
-
-	// 启动提示（非 --autostart）：系统通知
-	if !autostart && !noTray {
-		platform.Notify("wild-work 已启动",
-			fmt.Sprintf("OpenAI 兼容 API 地址：\nhttp://%s:%d\n\n点击右下角托盘图标或菜单打开主界面。", displayHost(cfg), cfg.Listen.Port))
-	}
 
 	if noTray {
 		// 无头模式：打印信息，阻塞等待信号
@@ -326,7 +324,9 @@ func main() {
 				os.Exit(1)
 			}
 		}()
-		systray.Run(trayIconICO, "wild-work — 渠道聚合代理", systray.Actions{
+		// 托盘提示带上监听地址：气泡可能被系统静音/失败，悬停也能看到地址。
+		trayTip := fmt.Sprintf("wild-work — 渠道聚合代理\nhttp://%s:%d", displayHost(cfg), cfg.Listen.Port)
+		systray.Run(trayIconICO, trayTip, systray.Actions{
 			OpenUI: func() {
 				_ = platform.OpenURL(fmt.Sprintf("http://%s:%d/", displayHost(cfg), cfg.Listen.Port))
 			},
@@ -340,6 +340,22 @@ func main() {
 					// 先摘托盘图标：NIM_DELETE 由托盘消息循环执行，返回即已回收。
 					// 直接 os.Exit 会跳过这一步，Windows 任务栏留下幽灵图标。
 					systray.Quit(3 * time.Second)
+				}
+			},
+			// 启动提示（非 --autostart）：托盘就绪后弹气泡。
+			// 必须晚于托盘：气泡要挂在已注册的托盘图标上；而改用模态弹窗
+			// （MessageBox）会阻塞调用线程，托盘图标就迟迟不出现。
+			Ready: func() {
+				if autostart {
+					return
+				}
+				if !systray.Notify("wild-work 已启动",
+					fmt.Sprintf("OpenAI 兼容 API 地址：http://%s:%d\n点击托盘图标或菜单打开主界面。",
+						displayHost(cfg), cfg.Listen.Port)) {
+					// 气泡不可用（系统关掉通知 / 库改了窗口类名）：降级写日志，
+					// **不要**退回模态弹窗 —— 那正是这个 bug 的成因。
+					log.Printf("启动提示：托盘气泡不可用，API 地址 http://%s:%d（悬停托盘图标同样可见）",
+						displayHost(cfg), cfg.Listen.Port)
 				}
 			},
 		})

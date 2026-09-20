@@ -35,7 +35,19 @@ type Actions struct {
 	OpenLog func()
 	// Quit 退出程序。
 	Quit func()
+	// Ready 托盘就绪后回调：图标已注册、消息循环即将开始。
+	// 在独立 goroutine 里执行，阻塞式操作不会卡住托盘菜单与退出路径。
+	Ready func()
 }
+
+// Notify 弹一条系统通知。
+//
+// Windows：在托盘图标上弹气泡（非阻塞），返回是否送达；托盘未就绪或气泡不可用时
+// 返回 false。其它平台：走系统通知，恒返回 false（没有气泡这条路径）。
+//
+// **必须在托盘就绪后调用**（见 Actions.Ready）。启动阶段改用 MessageBox 这类模态
+// 对话框会阻塞托盘创建，图标迟迟不出现。
+func Notify(title, msg string) bool { return notify(title, msg) }
 
 // menuIcon 生成 16x16 菜单项图标：白边纯色方块，包成单条目 ICO。
 //
@@ -121,6 +133,11 @@ func Run(icon []byte, tooltip string, act Actions) {
 		mOpen.Click(func() { go act.OpenUI() })
 		mLog.Click(func() { go act.OpenLog() })
 		mQuit.Click(func() { go act.Quit() })
+
+		// 就绪回调放最后：此时图标、菜单都已注册，气泡（若有）才挂得上。
+		if act.Ready != nil {
+			go act.Ready()
+		}
 	}, func() {
 		log.Printf("托盘已退出")
 		doneOnce.Do(func() { close(doneCh) })
