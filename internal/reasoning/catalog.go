@@ -8,7 +8,8 @@
 //
 // 数据来源三级（语义对齐 workbuddy2api/internal/upstream/effort_catalog.go）：
 //  1. 远端目录接口返回的 reasoning.supportedEfforts / defaultEffort（权威，优先）；
-//  2. 本文件按 realm 分开的静态兜底表（远端缺失时补齐）；
+//  2. 本文件按 realm 分开的静态兜底表（远端缺失时补齐；可被
+//     compat.static_effort_fallback 关闭，关闭后只剩远端一级）；
 //  3. 两者皆无 → 不降级（档位原样透传），/v1/models 也不暴露档位字段。
 //
 // Qoder（RealmQoder）是特例：能力一律来自其模型目录的 thinking_config
@@ -20,9 +21,11 @@
 package reasoning
 
 import (
+	"log"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 // Realm 上游产品面。同一模型在不同面档位可能不同，**绝不混用**。
@@ -106,6 +109,63 @@ var globalEffortFallback = map[string]Cap{
 // 本地猜一条 ladder 反而会把「未知」当成「已知」而降级错档位。
 var qoderEffortFallback = map[string]Cap{}
 
+// staticFallback 静态兜底表开关。默认开启；由 main.go 按配置
+// compat.static_effort_fallback 覆盖，面板可热更新（排障与实测对比用）。
+// 关闭后档位能力只认远端目录下发值，未下发的模型一律不降级。
+var staticFallback = func() *atomic.Bool {
+	b := &atomic.Bool{}
+	b.Store(true)
+	return b
+}()
+
+// SetStaticEffortFallback 设置静态兜底表开关（启动时与面板保存时调用）。
+func SetStaticEffortFallback(on bool) { staticFallback.Store(on) }
+
+// StaticEffortFallback 当前是否启用静态兜底表。
+func StaticEffortFallback() bool { return staticFallback.Load() }
+
+// 静态表可观测性：每个 (realm, model) 只记一次，供按实测逐条收敛用。
+var (
+	staticUseLogged      sync.Map // 走静态兜底的模型
+	staticConflictLogged sync.Map // 远端与静态表不一致的模型
+)
+
+func logStaticUse(realm, model string, cap Cap) {
+	if _, loaded := staticUseLogged.LoadOrStore(realm+"/"+model, struct{}{}); loaded {
+		return
+	}
+	log.Printf("[reasoning] 档位能力走静态兜底 realm=%s model=%s efforts=%v default=%q（远端目录未下发该模型）",
+		realm, model, cap.Efforts, cap.DefaultEffort)
+}
+
+func logStaticConflict(realm, model string, remote, local Cap) {
+	if _, loaded := staticConflictLogged.LoadOrStore(realm+"/"+model, struct{}{}); loaded {
+		return
+	}
+	log.Printf("[reasoning] 远端档位与静态表不一致（以远端为准）realm=%s model=%s remote=%v/%q static=%v/%q",
+		realm, model, remote.Efforts, remote.DefaultEffort, local.Efforts, local.DefaultEffort)
+}
+
+// sameCap 两份档位能力是否等价（顺序无关；默认档与可关闭标记一并比较）。
+func sameCap(a, b Cap) bool {
+	if a.DefaultEffort != b.DefaultEffort || a.SupportsDisable != b.SupportsDisable {
+		return false
+	}
+	if len(a.Efforts) != len(b.Efforts) {
+		return false
+	}
+	seen := make(map[string]bool, len(a.Efforts))
+	for _, e := range a.Efforts {
+		seen[normalizeModel(e)] = true
+	}
+	for _, e := range b.Efforts {
+		if !seen[normalizeModel(e)] {
+			return false
+		}
+	}
+	return true
+}
+
 // Catalog 档位能力表：静态兜底 + 远端覆盖（并发安全）。
 type Catalog struct {
 	mu     sync.RWMutex
@@ -177,7 +237,7 @@ func (c *Catalog) SetRemote(realm string, caps map[string]Cap) {
 	c.remote[normalizeRealm(realm)] = bucket
 }
 
-// Lookup 三级查找：远端 → 静态兜底。第二个返回值为 false 表示未知。
+// Lookup 三级查找：远端 → 静态兜底（开关关闭时跳过）。第二个返回值为 false 表示未知。
 func (c *Catalog) Lookup(realm, model string) (Cap, bool) {
 	key := normalizeModel(model)
 	if key == "" {
@@ -185,20 +245,41 @@ func (c *Catalog) Lookup(realm, model string) (Cap, bool) {
 	}
 	r := normalizeRealm(realm)
 	known := func(cap Cap) bool { return len(cap.Efforts) > 0 || cap.SupportsDisable }
+	local := staticCap(r, key)
 	if c != nil {
 		c.mu.RLock()
-		if bucket, ok := c.remote[r]; ok {
-			if cap, ok := bucket[key]; ok && known(cap) {
-				c.mu.RUnlock()
-				return cap, true
-			}
+		bucket, ok := c.remote[r]
+		var remote Cap
+		hasRemote := false
+		if ok {
+			remote, hasRemote = bucket[key]
+			hasRemote = hasRemote && known(remote)
 		}
 		c.mu.RUnlock()
+		if hasRemote {
+			if known(local) && !sameCap(remote, local) {
+				logStaticConflict(r, key, remote, local)
+			}
+			return remote, true
+		}
 	}
-	if cap := staticCap(r, key); known(cap) {
-		return cap, true
+	if StaticEffortFallback() && known(local) {
+		logStaticUse(r, key, local)
+		return local, true
 	}
 	return Cap{}, false
+}
+
+// HasRemote 该产品面是否已有远端下发的档位能力。
+// 供请求路径判断要不要预热目录（远端一旦成功下发即长期保留，故通常只在
+// 进程内首次请求时触发一次）。
+func (c *Catalog) HasRemote(realm string) bool {
+	if c == nil {
+		return false
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return len(c.remote[normalizeRealm(realm)]) > 0
 }
 
 // SortEfforts 按强度升序排列档位（未知档位排在已知档位之后，保持原有相对顺序）。

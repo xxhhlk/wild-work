@@ -156,3 +156,37 @@ func TestBadDuration(t *testing.T) {
 		t.Fatal("want error for bad duration")
 	}
 }
+
+// 静态兜底表开关：字段缺失视为启用（旧配置/旧前端不得静默关掉该能力）。
+func TestStaticEffortFallbackEnabled(t *testing.T) {
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "c.json")
+
+	os.WriteFile(fp, []byte(`{}`), 0o600)
+	c, err := Load(fp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.StaticEffortFallbackEnabled() {
+		t.Fatal("字段缺失应视为启用")
+	}
+
+	os.WriteFile(fp, []byte(`{"compat":{"static_effort_fallback":false}}`), 0o600)
+	c, err = Load(fp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.StaticEffortFallbackEnabled() {
+		t.Fatal("显式 false 应关闭")
+	}
+
+	t.Setenv("WILDWORK_STATIC_EFFORT_FALLBACK", "on")
+	os.WriteFile(fp, []byte(`{"compat":{"static_effort_fallback":false}}`), 0o600)
+	c, err = Load(fp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.StaticEffortFallbackEnabled() {
+		t.Fatal("环境变量应覆盖配置文件")
+	}
+}

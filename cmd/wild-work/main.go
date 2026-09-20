@@ -29,6 +29,7 @@ import (
 	"wild-work/internal/provider"
 	"wild-work/internal/qoder"
 	"wild-work/internal/qwenwork"
+	"wild-work/internal/reasoning"
 	"wild-work/internal/scheduler"
 	"wild-work/internal/server"
 	"wild-work/internal/systray"
@@ -248,6 +249,10 @@ func main() {
 	upstream.SetDeepseekThinking(cfg.DeepseekThinkingEnabled())
 	log.Printf("思考控制：deepseek_thinking=%v（thinking 开关字段 + reasoning_content 回填）",
 		cfg.DeepseekThinkingEnabled())
+	// 档位静态兜底表开关（档位层包级开关；面板保存 compat 时会热更新）
+	reasoning.SetStaticEffortFallback(cfg.StaticEffortFallbackEnabled())
+	log.Printf("思考控制：static_effort_fallback=%v（上游目录未下发档位能力时是否用内置表补齐）",
+		cfg.StaticEffortFallbackEnabled())
 	appInst.SetHandler(inner)
 	appInst.SetRootHandler(mux)
 	compat.SetAPIKeySource(inner.CurrentAPIKey) // 面板改 API-Key 后，兼容层立即跟随

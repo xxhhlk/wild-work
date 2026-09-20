@@ -1125,8 +1125,9 @@ func (a *App) ServerRunning() bool {
 // SetCompat 保存模型名路由与思考强度配置（compat 段）并写回 config.json。
 // reasoningEffort 为空表示不注入默认档；reasoningSummary 为空按 auto 处理；
 // deepseekThinking 控制 WorkBuddy 上游 DeepSeek 系的 thinking 开关字段与回填；
+// staticEffortFallback 控制档位静态兜底表（上游未声明档位时是否用内置表补齐）；
 // 非法取值直接报错（不写盘）。
-func (a *App) SetCompat(defaultChannel string, maxTokensCap int, modelMap map[string]string, reasoningEffort, reasoningSummary string, deepseekThinking bool) error {
+func (a *App) SetCompat(defaultChannel string, maxTokensCap int, modelMap map[string]string, reasoningEffort, reasoningSummary string, deepseekThinking, staticEffortFallback bool) error {
 	if modelMap == nil {
 		modelMap = map[string]string{}
 	}
@@ -1153,6 +1154,7 @@ func (a *App) SetCompat(defaultChannel string, maxTokensCap int, modelMap map[st
 	a.cfg.Compat.ReasoningEffort = effort
 	a.cfg.Compat.ResponsesReasoningSummary = summary
 	a.cfg.Compat.DeepseekThinking = &deepseekThinking
+	a.cfg.Compat.StaticEffortFallback = &staticEffortFallback
 	err = config.Save(a.cfg, a.cfgPath)
 	a.mu.Unlock()
 	if err != nil {
@@ -1168,8 +1170,10 @@ func (a *App) SetCompat(defaultChannel string, maxTokensCap int, modelMap map[st
 	}
 	// DeepSeek 思考改写开关作用于渠道层（包级开关），立即生效。
 	upstream.SetDeepseekThinking(deepseekThinking)
-	log.Printf("模型名路由配置已更新：default_channel=%q max_tokens_cap=%d reasoning_effort=%q responses_reasoning_summary=%q deepseek_thinking=%v model_map=%d 条",
-		defaultChannel, maxTokensCap, effort, summary, deepseekThinking, len(modelMap))
+	// 档位静态兜底表开关作用于档位层（包级开关），立即生效。
+	reasoning.SetStaticEffortFallback(staticEffortFallback)
+	log.Printf("模型名路由配置已更新：default_channel=%q max_tokens_cap=%d reasoning_effort=%q responses_reasoning_summary=%q deepseek_thinking=%v static_effort_fallback=%v model_map=%d 条",
+		defaultChannel, maxTokensCap, effort, summary, deepseekThinking, staticEffortFallback, len(modelMap))
 	return nil
 }
 
@@ -1236,8 +1240,10 @@ type State struct {
 		// ResponsesReasoningSummary Responses 思考摘要策略：auto / on / off
 		ResponsesReasoningSummary string `json:"responses_reasoning_summary"`
 		// DeepseekThinking WorkBuddy 上游 DeepSeek 系思考改写开关（默认 true）
-		DeepseekThinking bool     `json:"deepseek_thinking"`
-		Channels         []string `json:"channels"` // 可用渠道列表（供 UI 下拉）
+		DeepseekThinking bool `json:"deepseek_thinking"`
+		// StaticEffortFallback 档位静态兜底表开关（默认 true）
+		StaticEffortFallback bool     `json:"static_effort_fallback"`
+		Channels             []string `json:"channels"` // 可用渠道列表（供 UI 下拉）
 	} `json:"compat"`
 }
 
@@ -1260,6 +1266,7 @@ func (a *App) GetState() State {
 	st.Compat.ReasoningEffort = a.cfg.Compat.ReasoningEffort
 	st.Compat.ResponsesReasoningSummary = a.cfg.Compat.ResponsesReasoningSummary
 	st.Compat.DeepseekThinking = a.cfg.DeepseekThinkingEnabled()
+	st.Compat.StaticEffortFallback = a.cfg.StaticEffortFallbackEnabled()
 	st.Compat.ModelMap = a.cfg.Compat.ModelMap
 	if st.Compat.ModelMap == nil {
 		st.Compat.ModelMap = map[string]string{}
@@ -1509,6 +1516,7 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 			ReasoningEffort           string            `json:"reasoning_effort"`
 			ResponsesReasoningSummary string            `json:"responses_reasoning_summary"`
 			DeepseekThinking          *bool             `json:"deepseek_thinking"`
+			StaticEffortFallback      *bool             `json:"static_effort_fallback"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		// 字段缺失（旧版前端/第三方调用）按启用处理，避免静默关掉该能力。
@@ -1516,7 +1524,11 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		if req.DeepseekThinking != nil {
 			deepseekThinking = *req.DeepseekThinking
 		}
-		if err := a.SetCompat(req.DefaultChannel, req.MaxTokensCap, req.ModelMap, req.ReasoningEffort, req.ResponsesReasoningSummary, deepseekThinking); err != nil {
+		staticEffortFallback := true
+		if req.StaticEffortFallback != nil {
+			staticEffortFallback = *req.StaticEffortFallback
+		}
+		if err := a.SetCompat(req.DefaultChannel, req.MaxTokensCap, req.ModelMap, req.ReasoningEffort, req.ResponsesReasoningSummary, deepseekThinking, staticEffortFallback); err != nil {
 			apiError(w, http.StatusBadRequest, err.Error())
 			return
 		}

@@ -189,6 +189,44 @@ func TestCatalogRemoteOverridesStatic(t *testing.T) {
 	}
 }
 
+// 静态兜底表开关：关闭后只认远端下发值（不降级、不暴露档位、不补默认档）。
+func TestCatalogStaticFallbackSwitch(t *testing.T) {
+	if !StaticEffortFallback() {
+		t.Fatal("默认应启用静态兜底表")
+	}
+	defer SetStaticEffortFallback(true)
+	cat := NewCatalog()
+
+	if _, ok := cat.Lookup(RealmCN, "deepseek-v4-pro"); !ok {
+		t.Fatal("启用时静态表应命中 deepseek-v4-pro")
+	}
+	SetStaticEffortFallback(false)
+	if _, ok := cat.Lookup(RealmCN, "deepseek-v4-pro"); ok {
+		t.Fatal("关闭后不应回落到静态表")
+	}
+	if got := cat.Clamp(RealmCN, "deepseek-v4-pro", "max"); got != "max" {
+		t.Fatalf("关闭后档位应原样透传，实际 %s", got)
+	}
+	if got := cat.DefaultEffort(RealmCN, "deepseek-v4-pro"); got != "" {
+		t.Fatalf("关闭后不应补默认档，实际 %q", got)
+	}
+	if e, d := cat.Listing(RealmCN, "deepseek-v4-pro", nil, ""); len(e) != 0 || d != "" {
+		t.Fatalf("关闭后不应暴露档位，实际 %v/%q", e, d)
+	}
+
+	// 远端下发值不受开关影响：关闭状态下仍参与降级
+	cat.SetRemote(RealmCN, map[string]Cap{"deepseek-v4-pro": {Efforts: []string{"low", "high"}, DefaultEffort: "high"}})
+	if !cat.HasRemote(RealmCN) {
+		t.Fatal("HasRemote 应报告已有远端能力")
+	}
+	if cat.HasRemote(RealmGlobal) {
+		t.Fatal("未下发过的产品面不应报告 HasRemote")
+	}
+	if got := cat.Clamp(RealmCN, "deepseek-v4-pro", "max"); got != "high" {
+		t.Fatalf("远端能力应参与降级，实际 %s", got)
+	}
+}
+
 // 默认档：仅「开思考但没给档位」时按模型能力补，不硬编码 high。
 func TestCatalogDefaultEffort(t *testing.T) {
 	if got := Caps.DefaultEffort(RealmCN, "deepseek-v4-pro"); got != "high" {

@@ -634,6 +634,8 @@ function openApiConfig() {
   sumSel.value = [...sumSel.options].some(o => o.value === sumVal) ? sumVal : "auto";
   // DeepSeek 思考改写开关：字段缺失按启用（与后端一致）
   $("chkDsThink").checked = cc.deepseek_thinking !== false;
+  // 档位静态兜底表开关：字段缺失按启用（与后端一致）
+  $("chkEffortFallback").checked = cc.static_effort_fallback !== false;
   const map = cc.model_map || {};
   const entries = Object.entries(map);
   $("mapSummary").textContent = entries.length === 0 ? "（空）" : entries.map(([k,v]) => `${k} → ${v}`).join("\u00A0 \u00A0");
@@ -733,8 +735,9 @@ async function saveApiConfig() {
   const reasoningEffort = $("selEffort").value;
   const responsesReasoningSummary = $("selSummary").value || "auto";
   const deepseekThinking = $("chkDsThink").checked;
+  const staticEffortFallback = $("chkEffortFallback").checked;
   try {
-    await api("/api/config/compat", { default_channel: defaultChannel, max_tokens_cap: maxTokensCap, reasoning_effort: reasoningEffort, responses_reasoning_summary: responsesReasoningSummary, deepseek_thinking: deepseekThinking, model_map: modelMap });
+    await api("/api/config/compat", { default_channel: defaultChannel, max_tokens_cap: maxTokensCap, reasoning_effort: reasoningEffort, responses_reasoning_summary: responsesReasoningSummary, deepseek_thinking: deepseekThinking, static_effort_fallback: staticEffortFallback, model_map: modelMap });
     toast("模型路由已更新");
     closeApiConfig();
     loadState();

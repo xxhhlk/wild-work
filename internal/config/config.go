@@ -164,6 +164,11 @@ type Config struct {
 		// （对齐官方客户端行为，见 internal/upstream/thinking.go）；
 		// false：完全不碰这两个字段（回退旧行为，排障用）。
 		DeepseekThinking *bool `json:"deepseek_thinking"`
+		// StaticEffortFallback 思考档位静态兜底表开关。
+		// true / 未设置（默认）：上游目录未下发档位能力的模型，用内置静态表补齐
+		// 并参与就近降级（见 internal/reasoning/catalog.go）；
+		// false：只认上游目录下发值，未下发的模型不降级（实测对比用）。
+		StaticEffortFallback *bool `json:"static_effort_fallback"`
 	} `json:"compat"`
 
 	// 解析后
@@ -175,6 +180,11 @@ type Config struct {
 // DeepseekThinkingEnabled DeepSeek 思考改写是否启用（字段未设置视为启用）。
 func (c *Config) DeepseekThinkingEnabled() bool {
 	return c.Compat.DeepseekThinking == nil || *c.Compat.DeepseekThinking
+}
+
+// StaticEffortFallbackEnabled 档位静态兜底表是否启用（字段未设置视为启用）。
+func (c *Config) StaticEffortFallbackEnabled() bool {
+	return c.Compat.StaticEffortFallback == nil || *c.Compat.StaticEffortFallback
 }
 
 // Default 默认配置。
@@ -340,6 +350,11 @@ func applyEnv(c *Config) {
 	if v := os.Getenv("WILDWORK_DEEPSEEK_THINKING"); v != "" {
 		if b, ok := parseBoolLoose(v); ok {
 			c.Compat.DeepseekThinking = &b
+		}
+	}
+	if v := os.Getenv("WILDWORK_STATIC_EFFORT_FALLBACK"); v != "" {
+		if b, ok := parseBoolLoose(v); ok {
+			c.Compat.StaticEffortFallback = &b
 		}
 	}
 }

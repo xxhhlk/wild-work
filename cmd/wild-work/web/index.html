@@ -180,6 +180,14 @@
         </label>
       </div>
       <div class="hint" style="margin:-2px 0 6px">仅 WorkBuddy 国内版/国际版的 deepseek 系模型：官方客户端开思考需同时带 <code>thinking.type=enabled</code>，缺该字段上游按「不思考」应答；assistant 消息也需回填 reasoning_content 以保持多轮一致。上游若对该字段报错可关闭。</div>
+      <div class="row" style="align-items:center">
+        <label class="lbl">档位兜底表</label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px">
+          <input type="checkbox" id="chkEffortFallback">
+          <span>上游未声明档位时用内置表补齐</span>
+        </label>
+      </div>
+      <div class="hint" style="margin:-2px 0 6px">内置表仅在上游模型目录未下发档位能力时生效（远端下发值始终优先）。关闭后只认上游声明，未声明的模型不做降级、模型列表里也不暴露档位——用于对照实测上游真实能力。</div>
       <div class="row"><label class="lbl">思考摘要</label>
         <select id="selSummary" class="select">
           <option value="auto">auto（客户端索要时下发）</option>

@@ -418,6 +418,22 @@ func (h *Handler) fetchRuntimeModels(rt *Runtime) []provider.ModelInfo {
 	return infos
 }
 
+// ensureEffortCaps 请求路径的档位能力表预热。
+// 远端目录此前只在「列模型」（/v1/models 与面板费率表）时拉取，纯 API 调用方
+// 从不列模型，档位投影会一直在无远端能力的状态下进行。这里只在尚无远端能力时
+// 触发一次拉取——fetchRuntimeModels 自带 TTL 与失败冷却，且远端一旦成功下发
+// 即长期保留，因此正常情况每个进程只多付一次目录请求。
+func (h *Handler) ensureEffortCaps(rt *Runtime) {
+	if rt == nil || !reasoning.SupportsEffortKind(rt.Kind.String()) {
+		return
+	}
+	realm := reasoning.RealmForKind(rt.Kind.String())
+	if reasoning.Caps.HasRemote(realm) {
+		return
+	}
+	h.fetchRuntimeModels(rt)
+}
+
 func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	body, err := ReadBodyLimited(r)
 	if err != nil {
@@ -443,6 +459,8 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	clientModel := peek.Model // 客户端请求的原始模型名（含 channel/ 前缀），回填进响应
+	// 档位能力表预热（首次请求才触发目录拉取，见 ensureEffortCaps）
+	h.ensureEffortCaps(rt)
 	body, err = prepareChatBody(body, model, h.reasoningDefaultFor(rt.Kind))
 	if err != nil {
 		if reasoning.IsInvalid(err) {
