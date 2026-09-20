@@ -505,34 +505,42 @@ func TestPickContextWindow(t *testing.T) {
 	}
 }
 
-// TestBuildAgentBodyHonorsContextWindow 用户选定档位投影到 parameters.context_length，
+// TestBuildAgentBodyHonorsContextWindow 逐模型配置的档位投影到 parameters.context_length，
 // 且不改变 model_config.max_input_tokens（上游单次输入上限，另一字段）。
 func TestBuildAgentBodyHonorsContextWindow(t *testing.T) {
 	meta := modelMeta{
-		Key: "qfmodel", DisplayName: "Qwen3.8-Flash", IsVL: true,
+		Key: "qfmodel", DisplayName: "Qwen3.8-Flash", ClientName: "qwen3.8-flash", IsVL: true,
 		MaxInputTokens: 180000, MaxOutputTokens: 32000,
 		DefaultContextWindow: 200000, ContextOptions: []int64{200000, 400000, 1000000},
 	}
 	msgs := []map[string]any{{"role": "user", "content": "hi"}}
-	defer SetContextWindow(0)
+	defer SetContextWindows(nil)
 
-	SetContextWindow(0)
+	SetContextWindows(nil)
 	body := mustAgentBody(t, msgs, meta)
 	if got := body["parameters"].(map[string]any)["context_length"]; got != float64(200000) {
-		t.Errorf("未选档位应发上游默认档 200000，得到 %v", got)
+		t.Errorf("未配置档位应发上游默认档 200000，得到 %v", got)
 	}
 	if got := body["model_config"].(map[string]any)["max_input_tokens"]; got != float64(180000) {
 		t.Errorf("max_input_tokens 应保持上游原值 180000，得到 %v", got)
 	}
 
-	SetContextWindow(1000000)
+	SetContextWindows(map[string]int64{"qwen3.8-flash": 1000000})
 	body = mustAgentBody(t, msgs, meta)
 	if got := body["parameters"].(map[string]any)["context_length"]; got != float64(1000000) {
-		t.Errorf("选 1M 应发 1M，得到 %v", got)
+		t.Errorf("该模型选 1M 应发 1M，得到 %v", got)
+	}
+
+	// 逐模型生效：配置的是别的模型，本模型不受影响
+	SetContextWindows(map[string]int64{"glm-5.3": 1000000})
+	body = mustAgentBody(t, msgs, meta)
+	if got := body["parameters"].(map[string]any)["context_length"]; got != float64(200000) {
+		t.Errorf("未配置本模型时应发默认档 200000，得到 %v", got)
 	}
 
 	narrow := meta
 	narrow.ContextOptions = []int64{200000, 400000}
+	SetContextWindows(map[string]int64{"qwen3.8-flash": 1000000})
 	body = mustAgentBody(t, msgs, narrow)
 	if got := body["parameters"].(map[string]any)["context_length"]; got != float64(400000) {
 		t.Errorf("模型不支持 1M 时应就近取 400K，得到 %v", got)

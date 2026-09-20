@@ -169,12 +169,13 @@ type Config struct {
 		// 并参与就近降级（见 internal/reasoning/catalog.go）；
 		// false：只认上游目录下发值，未下发的模型不降级（实测对比用）。
 		StaticEffortFallback *bool `json:"static_effort_fallback"`
-		// QoderContextWindow Qoder 上下文窗口档位目标值（token 数）。
-		// 0 / 未设置（默认）：用上游模型目录里标了 is_default 的那档；
-		// >0：按该值从上游允许的档位里取不超过它的最高档
-		// （如选 1000000，支持 1M 的模型发 1M，只到 200K 的模型发 200K）。
-		// 仅 Qoder 生效：其它渠道的协议里没有可选的上下文档位。
-		QoderContextWindow int64 `json:"qoder_context_window"`
+		// ContextWindows 逐模型的上下文窗口档位，key 为 "渠道/模型"（与 /v1/models
+		// 的 id 同格式，如 "qoder/qwen3.8-flash"），值为选定的 token 数。
+		// 请求时按该值从上游允许的档位里取不超过它的最高档
+		// （如选 1000000，支持 1M 的模型发 1M，只到 200K 的模型发 200K）；
+		// 未列出的模型用上游模型目录里标了 is_default 的那档。
+		// 目前仅 Qoder 生效：其它渠道的请求体是 OpenAI 透传，没有可指定窗口的字段。
+		ContextWindows map[string]int64 `json:"context_windows"`
 	} `json:"compat"`
 
 	// 解析后
@@ -363,11 +364,31 @@ func applyEnv(c *Config) {
 			c.Compat.StaticEffortFallback = &b
 		}
 	}
-	if v := os.Getenv("WILDWORK_QODER_CONTEXT_WINDOW"); v != "" {
-		if n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64); err == nil {
-			c.Compat.QoderContextWindow = n
+	// 逐模型上下文档位："渠道/模型=token 数" 逗号分隔
+	if v := os.Getenv("WILDWORK_CONTEXT_WINDOWS"); v != "" {
+		if m := parseContextWindows(v); len(m) > 0 {
+			c.Compat.ContextWindows = m
 		}
 	}
+}
+
+// parseContextWindows 解析 "channel/model=123,channel/model2=456" 形式的环境变量。
+// 非法片段（缺 =、缺 /、非数字）整条跳过，不阻塞启动。
+func parseContextWindows(v string) map[string]int64 {
+	out := map[string]int64{}
+	for _, part := range strings.Split(v, ",") {
+		key, val, ok := strings.Cut(part, "=")
+		key = strings.TrimSpace(key)
+		if !ok || strings.Index(key, "/") <= 0 {
+			continue
+		}
+		n, err := strconv.ParseInt(strings.TrimSpace(val), 10, 64)
+		if err != nil || n <= 0 {
+			continue
+		}
+		out[key] = n
+	}
+	return out
 }
 
 // parseBoolLoose 宽松布尔解析（环境变量用）：1/true/yes/on 与 0/false/no/off。
@@ -402,8 +423,12 @@ func (c *Config) normalize() error {
 	if c.Compat.MaxTokensCap < 0 {
 		c.Compat.MaxTokensCap = 0 // 负数视为「不限制」，避免误用导致 max_tokens 被置 0
 	}
-	if c.Compat.QoderContextWindow < 0 {
-		c.Compat.QoderContextWindow = 0 // 负数视为「跟随上游默认档」
+	// 逐模型上下文档位：丢掉非法项（key 非 channel/model、值非正），
+	// 保留 nil 与空 map 的区别交给消费方，这里只做清洗。
+	for k, v := range c.Compat.ContextWindows {
+		if strings.Index(k, "/") <= 0 || v <= 0 {
+			delete(c.Compat.ContextWindows, k)
+		}
 	}
 	// 思考强度默认档：归一化为标准档位（"" 表示不注入）；非法取值在加载阶段就报错
 	effort, err := reasoning.ParseDefault(c.Compat.ReasoningEffort)

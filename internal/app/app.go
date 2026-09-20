@@ -1126,9 +1126,8 @@ func (a *App) ServerRunning() bool {
 // reasoningEffort 为空表示不注入默认档；reasoningSummary 为空按 auto 处理；
 // deepseekThinking 控制 WorkBuddy 上游 DeepSeek 系的 thinking 开关字段与回填；
 // staticEffortFallback 控制档位静态兜底表（上游未声明档位时是否用内置表补齐）；
-// qoderContextWindow 控制 Qoder 请求下发的上下文窗口档位（0 = 跟随上游默认档）；
-// 非法取值直接报错（不写盘）。
-func (a *App) SetCompat(defaultChannel string, maxTokensCap int, modelMap map[string]string, reasoningEffort, reasoningSummary string, deepseekThinking, staticEffortFallback bool, qoderContextWindow int64) error {
+// 非法取值直接报错（不写盘）。逐模型的上下文档位走 SetContextWindow。
+func (a *App) SetCompat(defaultChannel string, maxTokensCap int, modelMap map[string]string, reasoningEffort, reasoningSummary string, deepseekThinking, staticEffortFallback bool) error {
 	if modelMap == nil {
 		modelMap = map[string]string{}
 	}
@@ -1156,10 +1155,6 @@ func (a *App) SetCompat(defaultChannel string, maxTokensCap int, modelMap map[st
 	a.cfg.Compat.ResponsesReasoningSummary = summary
 	a.cfg.Compat.DeepseekThinking = &deepseekThinking
 	a.cfg.Compat.StaticEffortFallback = &staticEffortFallback
-	if qoderContextWindow < 0 {
-		qoderContextWindow = 0
-	}
-	a.cfg.Compat.QoderContextWindow = qoderContextWindow
 	err = config.Save(a.cfg, a.cfgPath)
 	a.mu.Unlock()
 	if err != nil {
@@ -1177,11 +1172,52 @@ func (a *App) SetCompat(defaultChannel string, maxTokensCap int, modelMap map[st
 	upstream.SetDeepseekThinking(deepseekThinking)
 	// 档位静态兜底表开关作用于档位层（包级开关），立即生效。
 	reasoning.SetStaticEffortFallback(staticEffortFallback)
-	// Qoder 上下文档位目标值作用于请求体构造（包级开关），立即生效。
-	qoder.SetContextWindow(qoderContextWindow)
-	log.Printf("模型名路由配置已更新：default_channel=%q max_tokens_cap=%d reasoning_effort=%q responses_reasoning_summary=%q deepseek_thinking=%v static_effort_fallback=%v qoder_context_window=%d model_map=%d 条",
-		defaultChannel, maxTokensCap, effort, summary, deepseekThinking, staticEffortFallback, qoderContextWindow, len(modelMap))
+	log.Printf("模型名路由配置已更新：default_channel=%q max_tokens_cap=%d reasoning_effort=%q responses_reasoning_summary=%q deepseek_thinking=%v static_effort_fallback=%v model_map=%d 条",
+		defaultChannel, maxTokensCap, effort, summary, deepseekThinking, staticEffortFallback, len(modelMap))
 	return nil
+}
+
+// SetContextWindow 设置单个模型的上下文窗口档位。
+// model 为 "渠道/模型"（与 /v1/models 的 id 同格式）；window <= 0 表示清除该模型的设置。
+// 目前仅 Qoder 的请求体有可指定的窗口字段，其它渠道只记录不影响转发。
+func (a *App) SetContextWindow(model string, window int64) error {
+	if _, _, ok := strings.Cut(model, "/"); !ok {
+		return fmt.Errorf("模型名 %q 需为 channel/model 形式", model)
+	}
+	a.mu.Lock()
+	if a.cfg.Compat.ContextWindows == nil {
+		a.cfg.Compat.ContextWindows = map[string]int64{}
+	}
+	if window <= 0 {
+		delete(a.cfg.Compat.ContextWindows, model)
+	} else {
+		a.cfg.Compat.ContextWindows[model] = window
+	}
+	err := config.Save(a.cfg, a.cfgPath)
+	a.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	a.ApplyContextWindows()
+	return nil
+}
+
+// ApplyContextWindows 把逐模型档位推给各渠道（包级开关），立即生效。
+// key 去掉渠道前缀后按客户端模型名下发——渠道包只认自己命名空间里的模型名。
+func (a *App) ApplyContextWindows() {
+	byKind := map[provider.Kind]map[string]int64{}
+	for k, v := range a.cfg.Compat.ContextWindows {
+		ch, model, ok := strings.Cut(k, "/")
+		if !ok || model == "" {
+			continue
+		}
+		kind := provider.Kind(ch)
+		if byKind[kind] == nil {
+			byKind[kind] = map[string]int64{}
+		}
+		byKind[kind][model] = v
+	}
+	qoder.SetContextWindows(byKind[provider.Qoder])
 }
 
 // SetCompatSyncer 注入 compat 热更新回调（由 main.go 注入，指向 gateway.SetCompat）。
@@ -1250,9 +1286,9 @@ type State struct {
 		DeepseekThinking bool `json:"deepseek_thinking"`
 		// StaticEffortFallback 档位静态兜底表开关（默认 true）
 		StaticEffortFallback bool `json:"static_effort_fallback"`
-		// QoderContextWindow Qoder 上下文窗口档位目标值（0 = 跟随上游默认档）
-		QoderContextWindow int64    `json:"qoder_context_window"`
-		Channels           []string `json:"channels"` // 可用渠道列表（供 UI 下拉）
+		// ContextWindows 逐模型上下文窗口档位（key = "渠道/模型"）
+		ContextWindows map[string]int64 `json:"context_windows"`
+		Channels       []string         `json:"channels"` // 可用渠道列表（供 UI 下拉）
 	} `json:"compat"`
 }
 
@@ -1276,7 +1312,10 @@ func (a *App) GetState() State {
 	st.Compat.ResponsesReasoningSummary = a.cfg.Compat.ResponsesReasoningSummary
 	st.Compat.DeepseekThinking = a.cfg.DeepseekThinkingEnabled()
 	st.Compat.StaticEffortFallback = a.cfg.StaticEffortFallbackEnabled()
-	st.Compat.QoderContextWindow = a.cfg.Compat.QoderContextWindow
+	st.Compat.ContextWindows = a.cfg.Compat.ContextWindows
+	if st.Compat.ContextWindows == nil {
+		st.Compat.ContextWindows = map[string]int64{}
+	}
 	st.Compat.ModelMap = a.cfg.Compat.ModelMap
 	if st.Compat.ModelMap == nil {
 		st.Compat.ModelMap = map[string]string{}
@@ -1287,26 +1326,6 @@ func (a *App) GetState() State {
 	sort.Strings(st.Compat.Channels)
 	st.Accounts = a.accountViews()
 	return st
-}
-
-// QoderContextOptions 汇总 Qoder 各模型声明的可选窗口档位（升序去重），供面板下拉。
-// 数据来自与 /v1/models 同一份渠道模型清单（内部有 TTL 缓存）。
-func (a *App) QoderContextOptions() []int64 {
-	if a.handler == nil {
-		return nil
-	}
-	seen := map[int64]bool{}
-	var out []int64
-	for _, mi := range a.handler.ChannelModels()[provider.Qoder] {
-		for _, o := range mi.ContextOptions {
-			if o > 0 && !seen[o] {
-				seen[o] = true
-				out = append(out, o)
-			}
-		}
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
-	return out
 }
 
 func (a *App) accountViews() []AccountView {
@@ -1538,12 +1557,17 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	})
-	mux.HandleFunc("GET /api/config/qoder_context_options", func(w http.ResponseWriter, r *http.Request) {
-		opts := a.QoderContextOptions()
-		if opts == nil {
-			opts = []int64{}
+	mux.HandleFunc("POST /api/config/context_window", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Model  string `json:"model"`
+			Window int64  `json:"window"`
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"options": opts})
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if err := a.SetContextWindow(req.Model, req.Window); err != nil {
+			apiError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	})
 	mux.HandleFunc("POST /api/config/compat", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
@@ -1554,7 +1578,6 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 			ResponsesReasoningSummary string            `json:"responses_reasoning_summary"`
 			DeepseekThinking          *bool             `json:"deepseek_thinking"`
 			StaticEffortFallback      *bool             `json:"static_effort_fallback"`
-			QoderContextWindow        int64             `json:"qoder_context_window"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		// 字段缺失（旧版前端/第三方调用）按启用处理，避免静默关掉该能力。
@@ -1566,7 +1589,7 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		if req.StaticEffortFallback != nil {
 			staticEffortFallback = *req.StaticEffortFallback
 		}
-		if err := a.SetCompat(req.DefaultChannel, req.MaxTokensCap, req.ModelMap, req.ReasoningEffort, req.ResponsesReasoningSummary, deepseekThinking, staticEffortFallback, req.QoderContextWindow); err != nil {
+		if err := a.SetCompat(req.DefaultChannel, req.MaxTokensCap, req.ModelMap, req.ReasoningEffort, req.ResponsesReasoningSummary, deepseekThinking, staticEffortFallback); err != nil {
 			apiError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -1629,6 +1652,11 @@ type feesModelRow struct {
 	// 空表示该渠道无档位能力或该模型未被收录，前端不展示档位行。
 	SupportedEfforts []string `json:"supported_efforts,omitempty"`
 	DefaultEffort    string   `json:"default_effort,omitempty"`
+	// ContextOptions 上游声明的可选上下文窗口档位（升序）；空表示该模型
+	// 不支持指定窗口（请求体里没有对应字段），前端不展示档位选择。
+	ContextOptions []int64 `json:"context_options,omitempty"`
+	// ContextChoice 当前选定的窗口档位（0 = 未指定，跟随上游默认档）。
+	ContextChoice int64 `json:"context_choice,omitempty"`
 }
 
 // buildFeesChannels 以「渠道 models 列表」为基准组表：
@@ -1637,7 +1665,8 @@ type feesModelRow struct {
 //   - 未在费率接口中出现的模型标记 Priced=false（前端显示 unknown + tooltip）；
 //   - 费率接口中多出的模型（models 列表中不存在）不展示，避免与 /v1/models 不一致。
 func buildFeesChannels(modelsByKind map[provider.Kind][]provider.ModelInfo,
-	pricing []provider.ModelPricing, order []provider.Kind) []feesChannel {
+	pricing []provider.ModelPricing, order []provider.Kind,
+	contextWindows map[string]int64) []feesChannel {
 	// 渠道 → (model → pricing)
 	byChannel := make(map[string]map[string]provider.ModelPricing)
 	for _, p := range pricing {
@@ -1667,6 +1696,10 @@ func buildFeesChannels(modelsByKind map[provider.Kind][]provider.ModelInfo,
 				SupportsImages:    mi.SupportsImages,
 				SupportsReasoning: mi.SupportsReasoning,
 				SupportsTools:     mi.SupportsTools,
+				// 可选上下文档位与 /v1/models 的 context_options 同源；
+				// 当前值取逐模型配置（key 与 /v1/models 的 id 同格式）。
+				ContextOptions: mi.ContextOptions,
+				ContextChoice:  contextWindows[k.String()+"/"+mi.ID],
 			}
 			// 思考档位同样与 /v1/models 同源：走同一个入口，
 			// 面板上看到的档位就是投影时会实际下发的档位。
@@ -1730,7 +1763,7 @@ func (a *App) FeesInfo() map[string]any {
 
 	channels := buildFeesChannels(modelsByKind, cached, []provider.Kind{
 		provider.WorkBuddy, provider.WorkBuddyAI, provider.TraeWork, provider.Qoder, provider.QwenWork,
-	})
+	}, a.cfg.Compat.ContextWindows)
 
 	result := map[string]any{
 		"note":       "本表以各渠道实际可用模型列表为准；倍率为空的模型表示上游未返回定价（未知）。",

@@ -299,7 +299,9 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 	log.Printf("qoder reasoning: client=%q key=%q is_reasoning=%v effort=%q",
 		reqOpenAI.Model, modelKey, spec.Enabled, spec.Effort)
 
-	rawBody, err := buildAgentBodyMeta(reqOpenAI.Messages, c.modelMetaFor(modelKey), reqOpenAI.Tools, spec)
+	meta := c.modelMetaFor(modelKey)
+	meta.ClientName = reqOpenAI.Model // 逐模型上下文档位按客户端模型名查
+	rawBody, err := buildAgentBodyMeta(reqOpenAI.Messages, meta, reqOpenAI.Tools, spec)
 	if err != nil {
 		return nil, 0, nil, fmt.Errorf("build qoder body: %w", err)
 	}

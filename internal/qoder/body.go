@@ -45,6 +45,7 @@ type reasoningSpec struct {
 type modelMeta struct {
 	Key                  string  // 上游 model key（如 qfmodel）
 	DisplayName          string  // 目录里的 display_name（如 Qwen3.8-Flash）
+	ClientName           string  // 客户端模型名（如 qwen3.8-flash），逐模型配置的查表键
 	IsVL                 bool    // is_vl
 	MaxInputTokens       int64   // max_input_tokens
 	MaxOutputTokens      int64   // max_output_tokens（→ parameters.max_tokens）
@@ -52,16 +53,26 @@ type modelMeta struct {
 	ContextOptions       []int64 // 上游允许的全部窗口档位（升序）
 }
 
-// contextWindowTarget 用户选定的上下文窗口目标值（0 = 跟随上游默认档）。
-// 面板热更新，请求构造时读取。
-var contextWindowTarget atomic.Int64
+// contextWindows 逐模型的上下文窗口档位（客户端模型名 → token 数）。
+// 面板热更新，请求构造时读取；缺省即跟随上游 is_default 档。
+var contextWindows atomic.Value // map[string]int64
 
-// SetContextWindow 设置上下文窗口目标值；0 表示跟随上游 is_default 档。
-func SetContextWindow(n int64) {
-	if n < 0 {
-		n = 0
+// SetContextWindows 设置逐模型档位（nil 或空表示全部跟随上游默认档）。
+// 存副本：调用方的 map 可能被继续修改。
+func SetContextWindows(m map[string]int64) {
+	cp := make(map[string]int64, len(m))
+	for k, v := range m {
+		if v > 0 {
+			cp[k] = v
+		}
 	}
-	contextWindowTarget.Store(n)
+	contextWindows.Store(cp)
+}
+
+// contextWindowFor 取该客户端模型的档位目标值；未配置返回 0。
+func contextWindowFor(clientModel string) int64 {
+	m, _ := contextWindows.Load().(map[string]int64)
+	return m[clientModel]
 }
 
 // pickContextWindow 按目标值从模型可选档位里取不超过目标的最高档；
@@ -154,7 +165,7 @@ func buildAgentBodyMeta(messages []map[string]any, meta modelMeta, tools []any, 
 		params["reasoning_effort"] = spec.Effort
 		params["enable_thinking"] = spec.Enabled
 	}
-	if cw := pickContextWindow(meta, contextWindowTarget.Load()); cw > 0 {
+	if cw := pickContextWindow(meta, contextWindowFor(meta.ClientName)); cw > 0 {
 		params["context_length"] = cw
 	}
 

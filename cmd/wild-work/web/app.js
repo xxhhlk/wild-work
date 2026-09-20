@@ -405,6 +405,17 @@ function renderFees(fees) {
     return ` <span class="rate-note"${style}>${esc(m.note)}</span>`;
   };
 
+  // 上下文档位选择：仅上游声明了可选档位的模型展示（Qoder 的 context_config）。
+  // 选定值随请求下发（就近取不超过它的最高档），未选则用上游默认档。
+  const ctxPicker = (channel, m) => {
+    if (!m || !m.context_options || m.context_options.length === 0) return "";
+    const cur = m.context_choice || 0;
+    const opts = [`<option value="0"${cur === 0 ? " selected" : ""}>默认</option>`]
+      .concat(m.context_options.map(n =>
+        `<option value="${n}"${n === cur ? " selected" : ""}>${fmtTokens(n)}</option>`));
+    return `<select class="ctx-pick" data-model="${esc(channel + "/" + m.model)}" title="上下文窗口">${opts.join("")}</select>`;
+  };
+
   for (const ch of channels) {
     const chName = chLabel(ch.channel);
     const chCls = chClass(ch.channel);
@@ -414,8 +425,8 @@ function renderFees(fees) {
     for (let i = 0; i < models.length; i += 2) {
       const m1 = models[i];
       const m2 = models[i + 1];
-      const id1 = m1 ? `<code title="${esc(modelTip(m1))}">${esc(m1.model)}</code>${capIcons(m1)}${noteCell(m1)}` : "";
-      const id2 = m2 ? `<code title="${esc(modelTip(m2))}">${esc(m2.model)}</code>${capIcons(m2)}${noteCell(m2)}` : "";
+      const id1 = m1 ? `<code title="${esc(modelTip(m1))}">${esc(m1.model)}</code>${capIcons(m1)}${noteCell(m1)}${ctxPicker(ch.channel, m1)}` : "";
+      const id2 = m2 ? `<code title="${esc(modelTip(m2))}">${esc(m2.model)}</code>${capIcons(m2)}${noteCell(m2)}${ctxPicker(ch.channel, m2)}` : "";
       html += `<tr><td>${id1}</td><td>${rateCell(m1)}</td><td>${id2}</td><td>${rateCell(m2)}</td></tr>`;
     }
   }
@@ -423,6 +434,16 @@ function renderFees(fees) {
   html += `</tbody></table>`;
   html += `<div class="note" style="margin-top:8px">${esc(fees.disclaimer || "")}</div>`;
   box.innerHTML = html;
+
+  box.querySelectorAll(".ctx-pick").forEach((sel) => {
+    sel.onchange = async () => {
+      try {
+        await api("/api/config/context_window", { model: sel.dataset.model, window: parseInt(sel.value, 10) || 0 });
+        toast("上下文窗口已更新");
+      } catch (e) { toast(e.message); }
+      loadFees();
+    };
+  });
 }
 
 // fmtTokens 把 token 数格式化为 1M / 192k 形式。
@@ -602,25 +623,6 @@ async function toggleAutostart() {
   } catch (e) { toast(e.message); loadState(); }
 }
 
-// fillQoderContext 填充 Qoder 上下文档位下拉。
-// 选项来自上游模型目录（后端汇总），打开对话框时拉一次；
-// 配置值不在选项里时补一项，否则 select.value 赋值失败会退回默认档，保存时把设置悄悄改掉。
-async function fillQoderContext(current) {
-  const sel = $("selQoderCtx");
-  let opts = [];
-  try {
-    opts = (await api("/api/config/qoder_context_options")).options || [];
-  } catch (e) { opts = []; }
-  sel.innerHTML = [`<option value="0">跟随上游默认档</option>`]
-    .concat(opts.map(n => `<option value="${n}">${fmtTokens(n)}</option>`)).join("");
-  const val = String(current || 0);
-  if (val !== "0" && ![...sel.options].some(o => o.value === val)) {
-    sel.add(new Option(fmtTokens(Number(val)), val));
-  }
-  sel.value = val;
-  sel.dataset.ready = "1";
-}
-
 // ---------- API 配置弹层 ----------
 function openApiConfig() {
   $("inPort").value = state.listen_port;
@@ -655,8 +657,6 @@ function openApiConfig() {
   $("chkDsThink").checked = cc.deepseek_thinking !== false;
   // 档位静态兜底表开关：字段缺失按启用（与后端一致）
   $("chkEffortFallback").checked = cc.static_effort_fallback !== false;
-  // Qoder 上下文档位：选项按需拉取（不拖慢面板初始化）
-  fillQoderContext(cc.qoder_context_window || 0);
   const map = cc.model_map || {};
   const entries = Object.entries(map);
   $("mapSummary").textContent = entries.length === 0 ? "（空）" : entries.map(([k,v]) => `${k} → ${v}`).join("\u00A0 \u00A0");
@@ -757,13 +757,8 @@ async function saveApiConfig() {
   const responsesReasoningSummary = $("selSummary").value || "auto";
   const deepseekThinking = $("chkDsThink").checked;
   const staticEffortFallback = $("chkEffortFallback").checked;
-  // 下拉选项尚未填充完成时保持原值，避免把用户设置静默清零
-  const ctxSel = $("selQoderCtx");
-  const qoderContextWindow = ctxSel.dataset.ready === "1"
-    ? (parseInt(ctxSel.value, 10) || 0)
-    : ((state.compat || {}).qoder_context_window || 0);
   try {
-    await api("/api/config/compat", { default_channel: defaultChannel, max_tokens_cap: maxTokensCap, reasoning_effort: reasoningEffort, responses_reasoning_summary: responsesReasoningSummary, deepseek_thinking: deepseekThinking, static_effort_fallback: staticEffortFallback, qoder_context_window: qoderContextWindow, model_map: modelMap });
+    await api("/api/config/compat", { default_channel: defaultChannel, max_tokens_cap: maxTokensCap, reasoning_effort: reasoningEffort, responses_reasoning_summary: responsesReasoningSummary, deepseek_thinking: deepseekThinking, static_effort_fallback: staticEffortFallback, model_map: modelMap });
     toast("模型路由已更新");
     closeApiConfig();
     loadState();

@@ -238,7 +238,7 @@ func TestBuildFeesChannels(t *testing.T) {
 		{Channel: "workbuddyai", Model: "ghost-model", Rate: 9.99},
 	}
 
-	got := buildFeesChannels(models, pricing, []provider.Kind{provider.WorkBuddyAI})
+	got := buildFeesChannels(models, pricing, []provider.Kind{provider.WorkBuddyAI}, nil)
 	if len(got) != 1 {
 		t.Fatalf("want 1 channel, got %d", len(got))
 	}
@@ -273,7 +273,7 @@ func TestBuildFeesChannelsNoPricing(t *testing.T) {
 	models := map[provider.Kind][]provider.ModelInfo{
 		provider.TraeWork: {{ID: "glm-5.2"}, {ID: "kimi-k2.7"}},
 	}
-	got := buildFeesChannels(models, nil, []provider.Kind{provider.TraeWork})
+	got := buildFeesChannels(models, nil, []provider.Kind{provider.TraeWork}, nil)
 	if len(got) != 1 || len(got[0].Models) != 2 {
 		t.Fatalf("模型不应因缺费率而消失: %+v", got)
 	}
@@ -297,7 +297,7 @@ func TestBuildFeesChannelsAbsentCreditsIsNotFree(t *testing.T) {
 		{Channel: "workbuddy", Model: "hy4-preview", Rate: 0, Note: "Free now", Explicit: &explicitTrue}, // 显式 x0.00
 		{Channel: "workbuddy", Model: "glm-5.2", Rate: 0.79, Explicit: &explicitTrue},
 	}
-	rows := buildFeesChannels(models, pricing, []provider.Kind{provider.WorkBuddy})[0].Models
+	rows := buildFeesChannels(models, pricing, []provider.Kind{provider.WorkBuddy}, nil)[0].Models
 	byID := map[string]feesModelRow{}
 	for _, r := range rows {
 		byID[r.Model] = r
@@ -332,7 +332,7 @@ func TestBuildFeesChannelsContextFlag(t *testing.T) {
 			{ID: "deepseek-v4.1-flash", ContextWindow: 1000000, MaxTokens: 128000, ContextFromAPI: false},
 		},
 	}
-	rows := buildFeesChannels(models, nil, []provider.Kind{provider.WorkBuddyAI})[0].Models
+	rows := buildFeesChannels(models, nil, []provider.Kind{provider.WorkBuddyAI}, nil)[0].Models
 	byID := map[string]feesModelRow{}
 	for _, r := range rows {
 		byID[r.Model] = r
@@ -357,7 +357,7 @@ func TestBuildFeesChannelsEfforts(t *testing.T) {
 				SupportedEfforts: []string{"low", "high"}},
 		},
 	}
-	channels := buildFeesChannels(models, nil, []provider.Kind{provider.Qoder, provider.TraeWork})
+	channels := buildFeesChannels(models, nil, []provider.Kind{provider.Qoder, provider.TraeWork}, nil)
 	byCh := map[string][]feesModelRow{}
 	for _, ch := range channels {
 		byCh[ch.Channel] = ch.Models
@@ -379,7 +379,7 @@ func TestBuildFeesChannelsCarriesColor(t *testing.T) {
 	pricing := []provider.ModelPricing{
 		{Channel: "workbuddy", Model: "deepseek-v4.1-flash", Rate: 0.03, Note: "独家优惠", Color: "#FF0000", Explicit: &explicitTrue},
 	}
-	rows := buildFeesChannels(models, pricing, []provider.Kind{provider.WorkBuddy})[0].Models
+	rows := buildFeesChannels(models, pricing, []provider.Kind{provider.WorkBuddy}, nil)[0].Models
 	if len(rows) != 1 {
 		t.Fatalf("want 1 row, got %d", len(rows))
 	}
@@ -451,5 +451,56 @@ func TestResourceDetailNoRefreshTokenStillErrors(t *testing.T) {
 	}
 	if up.refreshCalls.Load() != 0 {
 		t.Error("无 refresh token 时不应尝试刷新")
+	}
+}
+
+// TestBuildFeesChannelsContextWindows 逐模型档位随行透出：可选档位来自上游，
+// 当前选择取逐模型配置（key 与 /v1/models 的 id 同格式）。
+func TestBuildFeesChannelsContextWindows(t *testing.T) {
+	models := map[provider.Kind][]provider.ModelInfo{
+		provider.Qoder: {
+			{ID: "qwen3.8-flash", ContextWindow: 1000000, ContextFromAPI: true,
+				ContextOptions: []int64{200000, 400000, 1000000}},
+			{ID: "minimax-m2.7", ContextWindow: 200000, ContextFromAPI: true,
+				ContextOptions: []int64{200000}},
+		},
+	}
+	got := buildFeesChannels(models, nil, []provider.Kind{provider.Qoder},
+		map[string]int64{"qoder/qwen3.8-flash": 1000000})
+	if len(got) != 1 || len(got[0].Models) != 2 {
+		t.Fatalf("want 1 channel / 2 rows, got %+v", got)
+	}
+	byID := map[string]feesModelRow{}
+	for _, r := range got[0].Models {
+		byID[r.Model] = r
+	}
+	if r := byID["qwen3.8-flash"]; r.ContextChoice != 1000000 || len(r.ContextOptions) != 3 {
+		t.Errorf("已配置模型应带当前档位与全部选项，得到 %+v", r)
+	}
+	if r := byID["minimax-m2.7"]; r.ContextChoice != 0 {
+		t.Errorf("未配置模型当前档位应为 0，得到 %+v", r)
+	}
+}
+
+// TestSetContextWindow 逐模型档位写入/清除配置，模型名需为 channel/model 形式。
+func TestSetContextWindow(t *testing.T) {
+	a, _ := newTestApp(t, provider.Qoder, &fakeUpstream{}, "uid-ctx")
+
+	if err := a.SetContextWindow("qoder/qwen3.8-flash", 1000000); err != nil {
+		t.Fatal(err)
+	}
+	if got := a.cfg.Compat.ContextWindows["qoder/qwen3.8-flash"]; got != 1000000 {
+		t.Fatalf("配置未写入，得到 %v", a.cfg.Compat.ContextWindows)
+	}
+
+	if err := a.SetContextWindow("qoder/qwen3.8-flash", 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, has := a.cfg.Compat.ContextWindows["qoder/qwen3.8-flash"]; has {
+		t.Fatalf("window=0 应清除该项，得到 %v", a.cfg.Compat.ContextWindows)
+	}
+
+	if err := a.SetContextWindow("qwen3.8-flash", 1000000); err == nil {
+		t.Fatal("缺渠道前缀应报错")
 	}
 }

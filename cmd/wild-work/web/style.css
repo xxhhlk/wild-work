@@ -217,6 +217,12 @@ body {
   border: 1px dashed var(--border); cursor: help;
 }
 .fees .rate-note { color: #d97706; font-size: 11px; }
+/* 上下文档位选择：仅上游声明可选档位的模型展示 */
+.fees .ctx-pick {
+  margin-left: 6px; font-size: 11px; padding: 1px 4px; vertical-align: middle;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: var(--card); color: var(--muted); cursor: pointer;
+}
 /* 能力图标：模型 ID 后的小标记，hover 显示文字说明（title） */
 .fees .cap-icons { display: inline-flex; gap: 2px; margin-left: 2px; vertical-align: middle; }
 .fees .cap-icon {

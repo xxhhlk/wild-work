@@ -191,9 +191,8 @@ func TestStaticEffortFallbackEnabled(t *testing.T) {
 	}
 }
 
-// TestQoderContextWindow 上下文档位目标值：缺省 0（跟随上游默认）、负数归一为 0、
-// 环境变量覆盖配置文件。
-func TestQoderContextWindow(t *testing.T) {
+// TestContextWindows 逐模型上下文档位：非法项清洗、环境变量覆盖配置文件。
+func TestContextWindows(t *testing.T) {
 	dir := t.TempDir()
 	fp := filepath.Join(dir, "c.json")
 
@@ -202,35 +201,34 @@ func TestQoderContextWindow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Compat.QoderContextWindow != 0 {
-		t.Fatalf("缺省应为 0，得到 %d", c.Compat.QoderContextWindow)
+	if len(c.Compat.ContextWindows) != 0 {
+		t.Fatalf("缺省应为空，得到 %v", c.Compat.ContextWindows)
 	}
 
-	os.WriteFile(fp, []byte(`{"compat":{"qoder_context_window":1000000}}`), 0o600)
+	// 合法项保留，非法项（缺 /、值非正）清洗掉
+	os.WriteFile(fp, []byte(`{"compat":{"context_windows":{"qoder/qwen3.8-flash":1000000,"bad":200000,"qoder/glm-5.3":0}}}`), 0o600)
 	c, err = Load(fp)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Compat.QoderContextWindow != 1000000 {
-		t.Fatalf("应读到 1000000，得到 %d", c.Compat.QoderContextWindow)
+	if len(c.Compat.ContextWindows) != 1 || c.Compat.ContextWindows["qoder/qwen3.8-flash"] != 1000000 {
+		t.Fatalf("应只保留合法项，得到 %v", c.Compat.ContextWindows)
 	}
 
-	os.WriteFile(fp, []byte(`{"compat":{"qoder_context_window":-1}}`), 0o600)
+	// 环境变量整体覆盖
+	t.Setenv("WILDWORK_CONTEXT_WINDOWS", "qoder/glm-5.3=400000, qoder/qwen3.8-flash=1000000 ,bad")
+	os.WriteFile(fp, []byte(`{"compat":{"context_windows":{"qoder/qwen3.8-flash":200000}}}`), 0o600)
 	c, err = Load(fp)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Compat.QoderContextWindow != 0 {
-		t.Fatalf("负数应归一为 0，得到 %d", c.Compat.QoderContextWindow)
+	if c.Compat.ContextWindows["qoder/qwen3.8-flash"] != 1000000 {
+		t.Fatalf("环境变量应覆盖配置文件，得到 %v", c.Compat.ContextWindows)
 	}
-
-	t.Setenv("WILDWORK_QODER_CONTEXT_WINDOW", "400000")
-	os.WriteFile(fp, []byte(`{"compat":{"qoder_context_window":1000000}}`), 0o600)
-	c, err = Load(fp)
-	if err != nil {
-		t.Fatal(err)
+	if c.Compat.ContextWindows["qoder/glm-5.3"] != 400000 {
+		t.Fatalf("第二个条目应解析，得到 %v", c.Compat.ContextWindows)
 	}
-	if c.Compat.QoderContextWindow != 400000 {
-		t.Fatalf("环境变量应覆盖配置文件，得到 %d", c.Compat.QoderContextWindow)
+	if len(c.Compat.ContextWindows) != 2 {
+		t.Fatalf("非法片段应跳过，得到 %v", c.Compat.ContextWindows)
 	}
 }
