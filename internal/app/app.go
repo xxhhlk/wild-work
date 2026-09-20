@@ -32,6 +32,7 @@ import (
 	"wild-work/internal/reasoning"
 	"wild-work/internal/scheduler"
 	"wild-work/internal/server"
+	"wild-work/internal/systray"
 	"wild-work/internal/upstream"
 )
 
@@ -294,6 +295,9 @@ func (a *App) Stop() {
 
 // Quit 退出整个程序（Web UI“退出”按钮调用）。
 func (a *App) Quit() {
+	// 先摘托盘图标：回收发生在托盘消息循环里，放在停机之后会被 Close 关掉日志、
+	// 也可能被 os.Exit 抢在前面，Windows 任务栏就会留下幽灵图标。
+	systray.Quit(3 * time.Second)
 	a.Stop()
 	os.Exit(0)
 }
