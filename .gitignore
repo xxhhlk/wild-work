@@ -2,6 +2,9 @@
 dist/
 cmd/wild-work/icon.ico
 
+# Go 构建缓存与临时目录（本机构建用，不入版本控制）
+.gotmp/
+
 # 运行时数据（含敏感凭据）
 data/
 auths/
