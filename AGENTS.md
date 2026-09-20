@@ -188,6 +188,9 @@ POST /api/quit                     # 退出程序
 
 ```bash
 # Windows（本机直接构建，或 WSL 交叉编译）
+# exe 文件图标来自 cmd/wild-work/rsrc_windows_amd64.syso（已入库，go build 自动链接）。
+# 换 build/windows/icon.ico 后必须重新生成并提交，否则本地 exe 还是旧图标：
+#   go run github.com/akavel/rsrc@latest -ico build/windows/icon.ico -o cmd/wild-work/rsrc_windows_amd64.syso
 GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "-H windowsgui" -o dist/wild-work.exe ./cmd/wild-work
 
 # macOS（需 macOS 真机或 CI，cgo 必需）
