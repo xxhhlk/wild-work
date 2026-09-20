@@ -147,18 +147,24 @@ func (h *Handler) stickyKey(kind provider.Kind) string { return kind.String() }
 func (h *Handler) pickWithSticky(rt *Runtime) *auth.Auth {
 	const defaultMaxReqs = 50
 
+	// 粘性记录在锁内取值后即释放：reqCount 会被 stickySuccess 并发递增，
+	// 锁外读字段会与写并发（指针本身稳定，字段不稳定）。
 	h.stickyMu.RLock()
-	sticky := h.sticky[h.stickyKey(rt.Kind)]
+	var stickyUID string
+	var stickyCount, stickyMaxReqs int
+	if sticky := h.sticky[h.stickyKey(rt.Kind)]; sticky != nil {
+		stickyUID, stickyCount, stickyMaxReqs = sticky.uid, sticky.reqCount, sticky.maxReqs
+	}
 	h.stickyMu.RUnlock()
 
 	// 尝试粘性路由
-	if sticky != nil && sticky.uid != "" && sticky.reqCount < sticky.maxReqs {
-		acct := rt.Pool.AuthByUID(sticky.uid)
+	if stickyUID != "" && stickyCount < stickyMaxReqs {
+		acct := rt.Pool.AuthByUID(stickyUID)
 		if acct != nil {
-			status, ok := rt.Pool.Status(sticky.uid)
+			status, ok := rt.Pool.Status(stickyUID)
 			if ok && !status.Cooling && !status.Disabled {
 				log.Printf("sticky route platform=%s uid=%s count=%d/%d",
-					rt.Kind, sticky.uid, sticky.reqCount, sticky.maxReqs)
+					rt.Kind, stickyUID, stickyCount, stickyMaxReqs)
 				return acct
 			}
 		}
