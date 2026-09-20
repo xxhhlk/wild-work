@@ -245,8 +245,8 @@ body {
 .switch input:checked + .slider:before { transform: translateX(18px); }
 
 /* 弹层 */
-.overlay { position: fixed; inset: 0; background: rgba(0,0,0,.4); display: flex; align-items: center; justify-content: center; z-index: 100; }
-.modal { background: var(--card); border-radius: 12px; padding: 20px 22px; width: 400px; max-width: 92vw; box-shadow: 0 10px 30px rgba(0,0,0,.2); }
+.overlay { position: fixed; inset: 0; background: rgba(0,0,0,.4); display: flex; align-items: center; justify-content: center; z-index: 100; overflow: auto; padding: 16px 0; }
+.modal { background: var(--card); border-radius: 12px; padding: 20px 22px; width: 400px; max-width: 92vw; box-shadow: 0 10px 30px rgba(0,0,0,.2); max-height: calc(100vh - 32px); overflow-y: auto; margin: auto; flex-shrink: 0; }
 .modal-title { font-size: 16px; font-weight: 600; margin-bottom: 12px; }
 .modal-body { font-size: 14px; color: var(--text); margin-bottom: 14px; word-break: break-all; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
