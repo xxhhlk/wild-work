@@ -156,30 +156,42 @@ func TestProjectReasoningDefaultEffortFromCatalog(t *testing.T) {
 	}
 }
 
-// DeepSeek 多轮一致性：assistant 消息都要带 string 类型的 reasoning_content。
+// DeepSeek 多轮一致性：assistant 消息都要带 string 类型的 reasoning_content，
+// 且 reasoning 存在且非空（部分租户校验 len(reasoning) > 0）。
 func TestProjectReasoningBackfillsReasoningContent(t *testing.T) {
 	src := `{"model":"deepseek-v4-pro","messages":[` +
 		`{"role":"user","content":"hi"},` +
 		`{"role":"assistant","content":"a"},` +
 		`{"role":"assistant","content":"b","reasoning":"trace"},` +
-		`{"role":"assistant","content":"c","reasoning_content":null}` +
+		`{"role":"assistant","content":"c","reasoning_content":null},` +
+		`{"role":"assistant","content":"d","reasoning_content":"rc-text"},` +
+		`{"role":"assistant","content":"e","reasoning":"keep","reasoning_content":""}` +
 		`],"reasoning_effort":"high"}`
 	obj := projectOne(t, src)
 	msgs, _ := obj["messages"].([]any)
-	if len(msgs) != 4 {
+	if len(msgs) != 6 {
 		t.Fatalf("消息数变了: %d", len(msgs))
 	}
-	first, _ := msgs[1].(map[string]any)
-	if rc, ok := first["reasoning_content"].(string); !ok || rc != "" {
-		t.Errorf("无痕迹的 assistant 应补空串，实际 %v", first["reasoning_content"])
+	cases := []struct {
+		idx      int
+		wantRC   string
+		wantReas string
+		desc     string
+	}{
+		{1, "", " ", "无痕迹的 assistant：补空串 + reasoning 补空格占位"},
+		{2, "trace", "trace", "有 reasoning 的 assistant：复制该值，reasoning 原样保留"},
+		{3, "", " ", "reasoning_content=null 视为无：补空串 + reasoning 补空格占位"},
+		{4, "rc-text", "rc-text", "有 reasoning_content 的 assistant：镜像写 reasoning"},
+		{5, "", "keep", "reasoning 已非空：不被空 reasoning_content 覆盖"},
 	}
-	second, _ := msgs[2].(map[string]any)
-	if rc, ok := second["reasoning_content"].(string); !ok || rc != "trace" {
-		t.Errorf("有 reasoning 的 assistant 应复制该值，实际 %v", second["reasoning_content"])
-	}
-	third, _ := msgs[3].(map[string]any)
-	if rc, ok := third["reasoning_content"].(string); !ok || rc != "" {
-		t.Errorf("reasoning_content=null 应视为无并补空串，实际 %v", third["reasoning_content"])
+	for _, c := range cases {
+		msg, _ := msgs[c.idx].(map[string]any)
+		if rc, ok := msg["reasoning_content"].(string); !ok || rc != c.wantRC {
+			t.Errorf("%s：reasoning_content 期望 %q，实际 %v", c.desc, c.wantRC, msg["reasoning_content"])
+		}
+		if r, ok := msg["reasoning"].(string); !ok || r != c.wantReas {
+			t.Errorf("%s：reasoning 期望 %q，实际 %v", c.desc, c.wantReas, msg["reasoning"])
+		}
 	}
 
 	// 非 DeepSeek 模型不动 messages
@@ -187,5 +199,8 @@ func TestProjectReasoningBackfillsReasoningContent(t *testing.T) {
 	msgs, _ = obj["messages"].([]any)
 	if _, has := msgs[0].(map[string]any)["reasoning_content"]; has {
 		t.Error("非 deepseek 模型不应回填 reasoning_content")
+	}
+	if _, has := msgs[0].(map[string]any)["reasoning"]; has {
+		t.Error("非 deepseek 模型不应回填 reasoning")
 	}
 }

@@ -62,13 +62,25 @@ func ensureThinkingEnabled(obj map[string]any) {
 }
 
 // backfillReasoningContent 多轮一致性：让每条 assistant 消息都带 string 类型的
-// reasoning_content（对齐官方 ReasoningContentBackfillRule 的门控 thinkingEnabled || hasTrace）。
+// reasoning_content 与 reasoning（对齐官方 ReasoningContentBackfillRule 的门控
+// thinkingEnabled || hasTrace）。
+//
+// reasoning_content：
 //
 //   - 已有 string 值 → 原样保留，不覆盖；
 //   - 有 reasoning（部分客户端用该字段回传）且 reasoning_content 非 string → 复制过去；
 //   - 两者皆无 → 补空串（第三方客户端不回传推理痕迹时官方也这么做）；
 //   - reasoning_content 为 null / 数字等非 string 值 → 视为「没有」（对齐官方
 //     typeof != "string" 语义），落复制/补空分支。
+//
+// reasoning：镜像归一化，保证存在且非空。部分账号/租户对 thinking 形态校验
+// len(reasoning) > 0（缺失/null/空串 → 400，空白串放行），而官方 CLI 本就给每条
+// assistant 挂上一轮推理文本（itemsToMessages 的 applyPendingReasoning）——
+// 「每条 assistant 的 reasoning 非空」是官方出站形态，非 hack：
+//
+//   - 已是非空 string → 不动；
+//   - 缺失/null/空串 → 写 reasoning_content 的值；两者皆空则补单个空格（该字段是
+//     透传校验位、非内容消费位，空白串对模型上下文无语义影响）。
 func backfillReasoningContent(obj map[string]any) {
 	msgs, ok := obj["messages"].([]any)
 	if !ok || len(msgs) == 0 {
@@ -106,13 +118,22 @@ func backfillReasoningContent(obj map[string]any) {
 		if role, _ := msg["role"].(string); role != "assistant" {
 			continue
 		}
-		if _, ok := msg["reasoning_content"].(string); ok {
-			continue
+		rc, hasRC := msg["reasoning_content"].(string)
+		if !hasRC {
+			if r, ok := msg["reasoning"].(string); ok {
+				rc = r
+			} else {
+				rc = ""
+			}
+			msg["reasoning_content"] = rc
 		}
-		if r, ok := msg["reasoning"].(string); ok {
-			msg["reasoning_content"] = r
+		if r, ok := msg["reasoning"].(string); ok && r != "" {
+			continue // 已非空 → 不覆盖
+		}
+		if rc != "" {
+			msg["reasoning"] = rc
 		} else {
-			msg["reasoning_content"] = ""
+			msg["reasoning"] = " "
 		}
 	}
 }

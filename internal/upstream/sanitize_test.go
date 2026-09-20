@@ -289,6 +289,47 @@ func TestReasoningContentSanitized(t *testing.T) {
 	}
 }
 
+// TestReasoningSanitized reasoning（思考强度镜像字段）与 reasoning_content 同等
+// 净化——deepseek 回填会把 reasoning_content 镜像进 reasoning，漏净化等于绕开出站脱敏。
+func TestReasoningSanitized(t *testing.T) {
+	msgs := []any{
+		map[string]any{
+			"role":      "assistant",
+			"content":   nil,
+			"reasoning": "上文出现过 `" + sanitizeFeatures[0] + "` 键名",
+		},
+	}
+	if !sanitizeMessages(msgs) {
+		t.Fatal("reasoning 中的指纹未被净化")
+	}
+	r := msgs[0].(map[string]any)["reasoning"].(string)
+	if hasFingerprint(r) {
+		t.Fatalf("reasoning 指纹残留: %q", r)
+	}
+}
+
+// 集成：deepseek 回填把 reasoning_content 镜像进 reasoning 后，两字段均无指纹残留。
+func TestPrepareBodySanitizesMirroredReasoning(t *testing.T) {
+	body := []byte(`{"model":"deepseek-v4-pro","messages":[` +
+		`{"role":"assistant","content":"a","reasoning_content":"见 ` + sanitizeFeatures[0] + ` 键"}],` +
+		`"reasoning_effort":"high"}`)
+	out := PrepareBody(body)
+	var obj map[string]any
+	if err := json.Unmarshal(out, &obj); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	msg, _ := obj["messages"].([]any)[0].(map[string]any)
+	for _, k := range []string{"reasoning_content", "reasoning"} {
+		s, ok := msg[k].(string)
+		if !ok || s == "" {
+			t.Fatalf("%s 缺失（回填未生效）", k)
+		}
+		if hasFingerprint(s) {
+			t.Fatalf("%s 指纹残留: %q", k, s)
+		}
+	}
+}
+
 // 集成：完整请求体经 PrepareBody 净化后无残留指纹，且 stream/tool_choice 行为不受影响。
 func TestPrepareBodySanitizesSystem(t *testing.T) {
 	body := []byte(`{"model":"glm-5.2","messages":[` +

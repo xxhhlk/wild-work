@@ -176,7 +176,7 @@ func sanitizeToolCalls(v any) bool {
 	return changed
 }
 
-// sanitizeMessages 净化 messages 中的 content、reasoning_content 与 tool_calls；任一命中返回 true。
+// sanitizeMessages 净化 messages 中的 content、reasoning_content、reasoning 与 tool_calls；任一命中返回 true。
 func sanitizeMessages(messages []any) bool {
 	changed := false
 	for _, msg := range messages {
@@ -197,6 +197,14 @@ func sanitizeMessages(messages []any) bool {
 		if rc, ok := m["reasoning_content"].(string); ok {
 			if s := sanitizeText(rc); s != rc {
 				m["reasoning_content"] = s
+				changed = true
+			}
+		}
+		// reasoning（思考强度镜像字段，见 thinking.go 回填）与 reasoning_content
+		// 同源，漏净化等于绕开出站脱敏。
+		if r, ok := m["reasoning"].(string); ok {
+			if s := sanitizeText(r); s != r {
+				m["reasoning"] = s
 				changed = true
 			}
 		}

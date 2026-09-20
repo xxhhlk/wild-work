@@ -46,8 +46,9 @@ var rewrites = [][2]string{
 	{"11128", "11-128"},
 }
 
-// Messages 脱敏 body 中 messages 的 content / reasoning_content / tool_calls.arguments。
-// body 不可解析时原样返回，绝不阻塞请求（降级语义：宁可发指纹原文也不丢消息）。
+// Messages 脱敏 body 中 messages 的 content / reasoning_content / reasoning /
+// tool_calls.arguments。body 不可解析时原样返回，绝不阻塞请求（降级语义：宁可发
+// 指纹原文也不丢消息）。
 func Messages(body []byte) []byte {
 	if len(body) == 0 {
 		return body
@@ -172,6 +173,12 @@ func cleanMessages(msgs []any) bool {
 		if rc, ok := msg["reasoning_content"].(string); ok {
 			if s := cleanText(rc); s != rc {
 				msg["reasoning_content"] = s
+				changed = true
+			}
+		}
+		if r, ok := msg["reasoning"].(string); ok {
+			if s := cleanText(r); s != r {
+				msg["reasoning"] = s
 				changed = true
 			}
 		}
