@@ -200,12 +200,17 @@ GOOS=darwin GOARCH=arm64 go build -o dist/wild-work-darwin ./cmd/wild-work
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o dist/wild-work-linux ./cmd/wild-work
 ```
 
-构建后核对版本号已进二进制（防止拿到旧文件）：
+构建后核对产物是不是刚编的（防止拿到旧文件）：
 
 ```bash
-# Windows bash 下用 python 字节计数（strings 对 Go 二进制的长串不可靠）
-python -c "b=open('dist/wild-work.exe','rb').read(); print('new:',b.count(b'2.1.0'),'old:',b.count(b'2.0.1'))"
-# 期望：new >= 1 且 old == 0。若旧版本号仍在，说明构建未生效。
+# 首选：看嵌入的 VCS 信息（go 1.18+ 默认写入），比字节计数可靠
+go version -m dist/wild-work.exe | grep -E "vcs.revision|vcs.modified"
+# vcs.revision 应等于 git rev-parse HEAD；带 vcs.modified=true 说明构建时有未提交改动
+
+# 次选：版本号字节计数。旧版本号可能巧合出现在编译器生成的闭包符号名里
+# （如 crypto/tls 的 `.1.2.2.1`），所以「旧版本号出现 0 次」不是必须条件，
+# 只有「新版本号完全没出现」才说明构建没生效
+python -c "b=open('dist/wild-work.exe','rb').read(); print('new:',b.count(b'2.3.1'))"
 ```
 
 ### 发版（tag 触发）
