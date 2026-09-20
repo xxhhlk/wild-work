@@ -28,6 +28,7 @@ import (
 	"wild-work/internal/pool"
 	"wild-work/internal/provider"
 	"wild-work/internal/qoder"
+	"wild-work/internal/qwenwork"
 	"wild-work/internal/scheduler"
 	"wild-work/internal/server"
 	"wild-work/internal/systray"
@@ -96,8 +97,12 @@ func main() {
 	if err != nil {
 		fatal("读取 WorkBuddy 国际版账号目录失败：%v", err)
 	}
-	log.Printf("loaded accounts: workbuddy=%d %s, traework=%d, qoder=%d, workbuddyai=%d from %s",
-		len(wbAuths), cfg.Region, len(trAuths), len(qdAuths), len(wbaAuths), cfg.AuthDir)
+	qwAuths, err := auth.LoadQwenWorkDir(cfg.AuthDir)
+	if err != nil {
+		fatal("读取千问办公账号目录失败：%v", err)
+	}
+	log.Printf("loaded accounts: workbuddy=%d %s, traework=%d, qoder=%d, workbuddyai=%d, qwenwork=%d from %s",
+		len(wbAuths), cfg.Region, len(trAuths), len(qdAuths), len(wbaAuths), len(qwAuths), cfg.AuthDir)
 
 	wbPool := pool.New(filepath.Join(stateDir, "state-workbuddy.json"))
 	for _, a := range wbAuths {
@@ -116,6 +121,10 @@ func main() {
 	for _, a := range wbaAuths {
 		wbaPool.Add(a)
 	}
+	qwPool := pool.New(filepath.Join(stateDir, "state-qwenwork.json"))
+	for _, a := range qwAuths {
+		qwPool.Add(a)
+	}
 
 	wbUp := upstream.New()
 	wbUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
@@ -125,6 +134,8 @@ func main() {
 	qdUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
 	wbaUp := workbuddyai.New()
 	wbaUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
+	qwUp := qwenwork.New()
+	qwUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
 	checkinMinutes, err := config.ParseClockTimes(cfg.Schedule.CheckinTimes)
 	if err != nil {
 		fatal("解析签到时间失败：%v", err)
@@ -140,6 +151,12 @@ func main() {
 	// Keepalive 关闭（token 有效期 365 天，无需每日刷新）。
 	wbaSch := scheduler.New(scheduler.Config{Pool: wbaPool, Upstream: wbaUp, Name: "workbuddyai",
 		CheckinMinutes: checkinMinutes, KeepaliveHours: nil, ActivitiesOnly: true})
+	// 千问办公：无签到活动（每日积分服务端被动发放，无需保活/领取）；
+	// CheckinMinutes=nil + KeepaliveHours=nil（token 由 deviceToken/refresh 按需轮换，
+	// 定时保活反而会与千问办公 App 互踩 —— 见备忘 §7.5 风险 1）。
+	// 余额/费率靠 StartCreditAutoRefresh 循环拉取。
+	qwSch := scheduler.New(scheduler.Config{Pool: qwPool, Upstream: qwUp, Name: "qwenwork",
+		CheckinMinutes: nil, KeepaliveHours: nil})
 
 	runtimes := map[provider.Kind]*server.Runtime{
 		provider.WorkBuddy: {Kind: provider.WorkBuddy, Pool: wbPool, Upstream: wbUp, StaticModels: server.WorkBuddyStaticModels()},
@@ -148,12 +165,14 @@ func main() {
 			NoCooldownOnServerError: true},
 		provider.TraeWork: {Kind: provider.TraeWork, Pool: trPool, Upstream: trUp, StaticModels: server.TraeWorkStaticModels()},
 		provider.Qoder:    {Kind: provider.Qoder, Pool: qdPool, Upstream: qdUp, StaticModels: qoder.StaticModels()},
+		provider.QwenWork: {Kind: provider.QwenWork, Pool: qwPool, Upstream: qwUp, StaticModels: qwenwork.StaticModels()},
 	}
 	appRuntimes := map[provider.Kind]*app.Runtime{
 		provider.WorkBuddy:   {Kind: provider.WorkBuddy, Pool: wbPool, Upstream: wbUp, Scheduler: wbSch},
 		provider.WorkBuddyAI: {Kind: provider.WorkBuddyAI, Pool: wbaPool, Upstream: wbaUp, Scheduler: wbaSch},
 		provider.TraeWork:    {Kind: provider.TraeWork, Pool: trPool, Upstream: trUp, Scheduler: trSch},
 		provider.Qoder:       {Kind: provider.Qoder, Pool: qdPool, Upstream: qdUp, Scheduler: qdSch},
+		provider.QwenWork:    {Kind: provider.QwenWork, Pool: qwPool, Upstream: qwUp, Scheduler: qwSch},
 	}
 
 	appInst, err := app.New(app.Options{
@@ -175,6 +194,7 @@ func main() {
 	qdSch.SetRefreshObserver(func(uid string, ok bool, msg string) { appInst.NotifyRefresh("qoder", uid, ok, msg) })
 	wbaSch.SetCheckinObserver(func(r scheduler.CheckinResult) { appInst.NotifyCheckin("workbuddyai", r) })
 	wbaSch.SetRefreshObserver(func(uid string, ok bool, msg string) { appInst.NotifyRefresh("workbuddyai", uid, ok, msg) })
+	qwSch.SetRefreshObserver(func(uid string, ok bool, msg string) { appInst.NotifyRefresh("qwenwork", uid, ok, msg) })
 
 	// HTTP handler：OpenAI 端点 + Web UI + 管理 API
 	sub, err := fs.Sub(webFS, "web")
@@ -243,6 +263,7 @@ func main() {
 	go trSch.Run(sctx)
 	go qdSch.Run(sctx)
 	go wbaSch.Run(sctx)
+	go qwSch.Run(sctx)
 
 	// 积分自动刷新覆盖全部渠道：
 	// - workbuddyai / qoder 无签到活动，不自动刷就会一直显示旧值或 0；
@@ -250,7 +271,7 @@ func main() {
 	//   其间 token 若在别处被轮换（401）也无法自愈；统一纳入循环才能
 	//   启动即出真实拆分数字，并靠 401 自愈（refreshIfSessionDead）及时恢复。
 	appInst.StartCreditAutoRefresh(sctx, []provider.Kind{
-		provider.WorkBuddy, provider.WorkBuddyAI, provider.TraeWork, provider.Qoder,
+		provider.WorkBuddy, provider.WorkBuddyAI, provider.TraeWork, provider.Qoder, provider.QwenWork,
 	}, app.CreditRefreshInterval)
 
 	// 启动即刷新「模型列表 + 费率」，之后每 30 分钟。

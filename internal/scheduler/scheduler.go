@@ -349,9 +349,10 @@ func (s *Scheduler) checkinOne(uid string) CheckinResult {
 		}
 	} else {
 		_, unusable := provider.Summarize(items)
+		expiring := provider.ExpiringWithin(items, 24*time.Hour)
 		r.Remain, r.HasRemain = usable, true
-		log.Printf("checkin credits platform=%s uid=%s remain=%d unusable=%d", name, uid, usable, unusable)
-		s.cfg.Pool.ReenableIfCredits(uid, usable, unusable)
+		log.Printf("checkin credits platform=%s uid=%s remain=%d expiring=%d unusable=%d", name, uid, usable, expiring, unusable)
+		s.cfg.Pool.ReenableIfCredits(uid, usable, expiring, unusable)
 	}
 	return s.finishCheckin(uid, r)
 }

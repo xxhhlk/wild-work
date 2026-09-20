@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"sync"
+
+	"wild-work/internal/server"
 )
 
 // pipeRW 是一个把响应体写入 io.Pipe 的 ResponseWriter，供内层 handler 使用。
@@ -72,8 +74,8 @@ func (r *innerResult) ReadAll() ([]byte, error) {
 	return io.ReadAll(io.LimitReader(r.Body, maxInnerBody))
 }
 
-// maxInnerBody 内层错误体读取上限（正常流式路径不走这里）。
-const maxInnerBody = 8 << 20
+// maxInnerBody 内层错误体读取上限（正常流式路径不走这里）；请求体上限见 server.MaxRequestBody。
+const maxInnerBody = server.MaxRequestBody
 
 // call 在进程内调用内层 handler（按 path 路由），返回其状态码与响应流。
 //

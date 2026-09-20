@@ -315,3 +315,27 @@ func LoadQoderDir(dir string) ([]*Auth, error) {
 	}
 	return out, nil
 }
+
+// LoadQwenWorkDir 扫描千问办公凭证（qwenwork-*.json）。
+// 文件名前缀不能与 qoder*.json 冲突（LoadQoderDir 的 glob 会先吞掉 qwenwork- 前缀，
+// 故前缀必须以 q 开头但不含 qoder 字样 —— 取 qwenwork- 无冲突）。
+func LoadQwenWorkDir(dir string) ([]*Auth, error) {
+	files, err := filepath.Glob(filepath.Join(dir, "qwenwork-*.json"))
+	if err != nil {
+		return nil, err
+	}
+	var out []*Auth
+	for _, f := range files {
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		a, err := Parse(raw)
+		if err != nil {
+			continue
+		}
+		a.Kind, a.FilePath = "qwenwork", f
+		out = append(out, a)
+	}
+	return out, nil
+}

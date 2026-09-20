@@ -24,12 +24,14 @@ jobs:
             goarch: arm64
             cgo: "1"
             suffix: ""
+            pack_app: true
           - name: macos-amd64
             os: macos-latest
             goos: darwin
             goarch: amd64
             cgo: "1"
             suffix: ""
+            pack_app: true
           - name: linux-amd64
             os: ubuntu-latest
             goos: linux
@@ -69,11 +71,33 @@ jobs:
           OUT="dist/wild-work-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}"
           go build -ldflags "${{ matrix.ldflags }}" -o "$OUT" ./cmd/wild-work
 
+      # macOS：把二进制打成可双击的 .app 并生成 .dmg（脚本见 build/macos/build-app.sh）。
+      # ARCH 必须显式传：runner 架构（arm64）与目标架构（可能 amd64）未必一致。
+      # REQUIRE_DMG=1 → dmg 生成失败即让 job 失败，避免发出不含 dmg 的 release。
+      - name: Package macOS .app + .dmg
+        if: matrix.pack_app
+        env:
+          ARCH: ${{ matrix.goarch }}
+          REQUIRE_DMG: "1"
+        run: bash build/macos/build-app.sh
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
           path: dist/wild-work-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}
+
+      # dmg 单独作为 artifact 上传。release job 会 find 平铺 artifacts/ 下所有文件，
+      # 因此这里不需要改 release 逻辑，dmg 会自动进入 release 资产。
+      # 版本号来自 internal/app/app.go 的 Version 常量，workflow 里拿不到，故用通配符；
+      # 带 goarch 限定，确保只匹配本矩阵项自己那个架构的 dmg。
+      - name: Upload macOS .dmg
+        if: matrix.pack_app
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}-dmg
+          path: dist/WildWork-*-${{ matrix.goarch }}.dmg
+          if-no-files-found: error
 
   release:
     needs: build

@@ -186,6 +186,15 @@ func (c *Client) billingBase(a *auth.Auth) string {
 	return c.BillingBaseCN
 }
 
+// modelsPath 返回模型/定价接口路径：国际版走 /v2/enterprises/personal/models
+// （CN 的 /console/enterprises/personal/models 路径在国际版网关返回 500）。
+func (c *Client) modelsPath(a *auth.Auth) string {
+	if a != nil && a.Region() == "global" {
+		return "/v2/enterprises/personal/models"
+	}
+	return "/console/enterprises/personal/models"
+}
+
 // doJSON 发请求并解信封；HTTP 非 2xx 或业务 code != 0 时返回带 body 片段的 *Error。
 func (c *Client) doJSON(req *http.Request) (json.RawMessage, error) {
 	return c.doJSONWith(c.HTTP, req)
@@ -328,7 +337,7 @@ type catalogModel struct {
 // FetchModels 调上游动态模型接口。
 // 字段名与上游实际返回对齐：maxInputTokens（非 contextWindow）、maxOutputTokens（非 maxTokens）。
 func (c *Client) FetchModels(a *auth.Auth) ([]ModelInfo, error) {
-	url := c.chatBase(a) + "/console/enterprises/personal/models"
+	url := c.chatBase(a) + c.modelsPath(a)
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -573,7 +582,7 @@ func (c *Client) Aggregate(r io.Reader, model string) (map[string]any, error) { 
 // FetchModelPricing 从 /console/enterprises/personal/models 拉取模型积分倍率。
 // 返回全量模型定价（含 credits 字段），不受 cli agent 过滤限制。
 func (c *Client) FetchModelPricing(a *auth.Auth) ([]provider.ModelPricing, error) {
-	url := c.chatBase(a) + "/console/enterprises/personal/models"
+	url := c.chatBase(a) + c.modelsPath(a)
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err

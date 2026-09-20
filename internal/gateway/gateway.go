@@ -209,10 +209,14 @@ var nowUnix = func() int64 { return time.Now().Unix() }
 func parseJSONBody(w http.ResponseWriter, r *http.Request, anthropicShape bool) (map[string]any, bool) {
 	raw, err := readLimited(r, maxInnerBody)
 	if err != nil {
+		status, code := http.StatusBadRequest, "invalid_request"
+		if strings.Contains(err.Error(), "exceeds limit") {
+			status, code = http.StatusRequestEntityTooLarge, "request_too_large"
+		}
 		if anthropicShape {
-			writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", "read body: "+err.Error())
+			writeAnthropicError(w, status, "invalid_request_error", err.Error())
 		} else {
-			writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "read body: "+err.Error())
+			writeOpenAIError(w, status, code, err.Error())
 		}
 		return nil, false
 	}

@@ -1,4 +1,4 @@
-// Package login WorkBuddy CN OAuth 登录（移植自 cmd/login，供 GUI 内嵌使用）。
+// Package login WorkBuddy OAuth 登录（国内版 / 国际版，移植自 cmd/login，供 GUI 内嵌使用）。
 // 无 PKCE（workbuddy 设备流由服务端签发 state）。
 package login
 
@@ -17,16 +17,38 @@ import (
 	"time"
 )
 
-// 上游常量（CN only）。
+// 上游常量（国内版 / 国际版）。
 const (
-	UpstreamBaseCN = "https://copilot.tencent.com"
-	clientUA       = "CLI/2.63.2 CodeBuddy/2.63.2"
-	originReferer  = "https://www.codebuddy.cn"
-
-	endpointAuthState = UpstreamBaseCN + "/v2/plugin/auth/state?platform=CLI"
-	endpointLoginAcct = UpstreamBaseCN + "/v2/plugin/login/account?state="
-	endpointAuthToken = UpstreamBaseCN + "/v2/plugin/auth/token?state="
+	UpstreamBaseCN      = "https://copilot.tencent.com"
+	UpstreamBaseGlobal  = "https://www.workbuddy.ai"
+	clientUA            = "CLI/2.63.2 CodeBuddy/2.63.2"
+	originRefererCN     = "https://www.codebuddy.cn"
+	originRefererGlobal = "https://www.workbuddy.ai"
 )
+
+// Endpoints 一次登录流程用到的上游地址（国内版 / 国际版不同）。
+type Endpoints struct {
+	Base          string // API 基址
+	Origin        string // 请求头 Origin/Referer 与浏览器登录页所在站点
+	DefaultDomain string // token 响应缺 domain 时的兜底（国际版必须非空，否则账号会被判为 CN）
+}
+
+// EndpointsForRegion 按区域返回登录端点：region 为 "global" 时用国际版
+// （www.workbuddy.ai），其余（含空）用国内版（copilot.tencent.com / codebuddy.cn）。
+func EndpointsForRegion(region string) Endpoints {
+	if strings.EqualFold(strings.TrimSpace(region), "global") {
+		return Endpoints{
+			Base:          UpstreamBaseGlobal,
+			Origin:        originRefererGlobal,
+			DefaultDomain: "www.workbuddy.ai",
+		}
+	}
+	return Endpoints{Base: UpstreamBaseCN, Origin: originRefererCN}
+}
+
+func (e Endpoints) authStateURL() string { return e.Base + "/v2/plugin/auth/state?platform=CLI" }
+func (e Endpoints) loginAcctURL() string { return e.Base + "/v2/plugin/login/account?state=" }
+func (e Endpoints) authTokenURL() string { return e.Base + "/v2/plugin/auth/token?state=" }
 
 // ErrPending 表示登录尚未完成（业务 code 非 0，浏览器还没登录完）。
 var ErrPending = errors.New("login pending")
@@ -56,25 +78,25 @@ type apiEnvelope struct {
 }
 
 // commonHeaders 与 CLI 实现一致的请求头。
-func commonHeaders(req *http.Request) {
+func commonHeaders(req *http.Request, ep Endpoints) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/plain, */*")
 	req.Header.Set("X-Requested-With", "XMLHttpRequest")
-	req.Header.Set("Origin", originReferer)
-	req.Header.Set("Referer", originReferer+"/")
+	req.Header.Set("Origin", ep.Origin)
+	req.Header.Set("Referer", ep.Origin+"/")
 	req.Header.Set("User-Agent", clientUA)
 }
 
 // doJSON 发请求并解 {code,msg,data} 信封；code!=0 → error。
-func doJSON(client *http.Client, method, fullURL string, headers func(*http.Request), body io.Reader) (json.RawMessage, error) {
+// bearer 非空时附带 Authorization 头（login/account 需要）。
+func doJSON(client *http.Client, method, fullURL string, ep Endpoints, bearer string, body io.Reader) (json.RawMessage, error) {
 	req, err := http.NewRequest(method, fullURL, body)
 	if err != nil {
 		return nil, err
 	}
-	if headers != nil {
-		headers(req)
-	} else {
-		commonHeaders(req)
+	commonHeaders(req, ep)
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -96,8 +118,8 @@ func doJSON(client *http.Client, method, fullURL string, headers func(*http.Requ
 }
 
 // Start 发起登录流程：POST auth/state 拿 state+授权 URL，state 落盘后返回 URL。
-func Start(client *http.Client, statePath string) (string, error) {
-	data, err := doJSON(client, http.MethodPost, endpointAuthState, nil, bytes.NewReader([]byte("{}")))
+func Start(client *http.Client, statePath string, ep Endpoints) (string, error) {
+	data, err := doJSON(client, http.MethodPost, ep.authStateURL(), ep, "", bytes.NewReader([]byte("{}")))
 	if err != nil {
 		return "", fmt.Errorf("auth state failed: %w", err)
 	}
@@ -121,7 +143,7 @@ func Start(client *http.Client, statePath string) (string, error) {
 // ResolveAuthURL 手动跟随登录页重定向链，返回最终 URL
 // （copilot.tencent.com/login → 301 加斜杠 → www.codebuddy.cn/login/...），
 // 浏览器可直接打开最终地址，跳过中间跳转。
-func ResolveAuthURL(client *http.Client, rawURL string) (string, error) {
+func ResolveAuthURL(client *http.Client, rawURL string, ep Endpoints) (string, error) {
 	noFollow := &http.Client{
 		Timeout:   client.Timeout,
 		Jar:       client.Jar,
@@ -136,7 +158,7 @@ func ResolveAuthURL(client *http.Client, rawURL string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		commonHeaders(req)
+		commonHeaders(req, ep)
 		resp, err := noFollow.Do(req)
 		if err != nil {
 			return "", err
@@ -161,7 +183,7 @@ func ResolveAuthURL(client *http.Client, rawURL string) (string, error) {
 }
 
 // Poll 单次轮询登录状态；未完成返回 ErrPending；成功返回凭证并删除 state 文件。
-func Poll(client *http.Client, statePath string) (Result, error) {
+func Poll(client *http.Client, statePath string, ep Endpoints) (Result, error) {
 	raw, err := os.ReadFile(statePath)
 	if err != nil {
 		return Result{}, fmt.Errorf("read state: %w", err)
@@ -174,7 +196,7 @@ func Poll(client *http.Client, statePath string) (Result, error) {
 	}
 
 	// auth/token 是权威登录状态端点：pending 时业务 code 非 0（"login ing"）
-	tokRaw, errTok := doJSON(client, http.MethodGet, endpointAuthToken+ls.State, nil, nil)
+	tokRaw, errTok := doJSON(client, http.MethodGet, ep.authTokenURL()+ls.State, ep, "", nil)
 	if errTok != nil {
 		if isPending(errTok) {
 			return Result{}, ErrPending
@@ -190,6 +212,10 @@ func Poll(client *http.Client, statePath string) (Result, error) {
 	if err := json.Unmarshal(tokRaw, &tok); err != nil || tok.AccessToken == "" {
 		return Result{}, ErrPending
 	}
+	// 国际版 token 响应若缺 domain，按区域兜底，避免账号被判为 CN 而无法被加载
+	if tok.Domain == "" {
+		tok.Domain = ep.DefaultDomain
+	}
 
 	// login/account 拿 uid/nickname（带 Bearer）
 	var acct struct {
@@ -197,11 +223,7 @@ func Poll(client *http.Client, statePath string) (Result, error) {
 		EnterpriseID string `json:"enterpriseId"`
 		Nickname     string `json:"nickname"`
 	}
-	acctHeaders := func(r *http.Request) {
-		commonHeaders(r)
-		r.Header.Set("Authorization", "Bearer "+tok.AccessToken)
-	}
-	if acctRaw, errAcct := doJSON(client, http.MethodGet, endpointLoginAcct+ls.State, acctHeaders, nil); errAcct == nil {
+	if acctRaw, errAcct := doJSON(client, http.MethodGet, ep.loginAcctURL()+ls.State, ep, tok.AccessToken, nil); errAcct == nil {
 		_ = json.Unmarshal(acctRaw, &acct)
 	}
 	_ = os.Remove(statePath)

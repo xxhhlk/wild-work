@@ -17,9 +17,9 @@ func TestPickHighestCredits(t *testing.T) {
 	p.Add(a1)
 	p.Add(a2)
 	p.Add(a3)
-	p.SetCreditDetail("u1", 100, 0)
-	p.SetCreditDetail("u2", 500, 0)
-	p.SetCreditDetail("u3", 300, 0)
+	p.SetCreditDetail("u1", 100, 0, 0)
+	p.SetCreditDetail("u2", 500, 0, 0)
+	p.SetCreditDetail("u3", 300, 0, 0)
 	got := p.Pick()
 	if got == nil || got.UID != "u2" {
 		t.Fatalf("pick=%+v want u2", got)
@@ -32,8 +32,8 @@ func TestPickSkipsCooling(t *testing.T) {
 	a2 := &auth.Auth{UID: "u2"}
 	p.Add(a1)
 	p.Add(a2)
-	p.SetCreditDetail("u1", 100, 0)
-	p.SetCreditDetail("u2", 50, 0)
+	p.SetCreditDetail("u1", 100, 0, 0)
+	p.SetCreditDetail("u2", 50, 0, 0)
 	p.Cooldown("u1", CoolHard, time.Hour, "test")
 	got := p.Pick()
 	if got == nil || got.UID != "u2" {
@@ -45,7 +45,7 @@ func TestPickExpiredCooldownReturnsToHealthy(t *testing.T) {
 	p := New("")
 	a1 := &auth.Auth{UID: "u1"}
 	p.Add(a1)
-	p.SetCreditDetail("u1", 100, 0)
+	p.SetCreditDetail("u1", 100, 0, 0)
 	p.Cooldown("u1", CoolSoft, time.Millisecond, "429")
 	time.Sleep(5 * time.Millisecond)
 	got := p.Pick()
@@ -67,8 +67,8 @@ func TestPickExcluding(t *testing.T) {
 	p := New("")
 	p.Add(&auth.Auth{UID: "u1"})
 	p.Add(&auth.Auth{UID: "u2"})
-	p.SetCreditDetail("u1", 100, 0)
-	p.SetCreditDetail("u2", 50, 0)
+	p.SetCreditDetail("u1", 100, 0, 0)
+	p.SetCreditDetail("u2", 50, 0, 0)
 	tried := map[string]bool{"u1": true}
 	got := p.PickExcluding(tried)
 	if got == nil || got.UID != "u2" {
@@ -118,7 +118,7 @@ func TestReenableIfCredits(t *testing.T) {
 	p := New("")
 	p.Add(&auth.Auth{UID: "u1"})
 	p.Cooldown("u1", CoolHard, time.Hour, "余额不足")
-	p.ReenableIfCredits("u1", 500, 120)
+	p.ReenableIfCredits("u1", 500, 0, 120)
 	got := p.Pick()
 	if got == nil || got.UID != "u1" {
 		t.Fatalf("should reenable, pick=%+v", got)
@@ -134,7 +134,7 @@ func TestReenableZeroCreditsKeepsCooling(t *testing.T) {
 	p := New("")
 	p.Add(&auth.Auth{UID: "u1"})
 	p.Cooldown("u1", CoolHard, time.Hour, "余额不足")
-	p.ReenableIfCredits("u1", 0, 0)
+	p.ReenableIfCredits("u1", 0, 0, 0)
 	if p.Pick() != nil {
 		t.Fatal("zero credits should stay cooling")
 	}
@@ -144,7 +144,7 @@ func TestReenableDoesNotTouchDisabled(t *testing.T) {
 	p := New("")
 	p.Add(&auth.Auth{UID: "u1"})
 	p.Disable("u1", "session dead")
-	p.ReenableIfCredits("u1", 500, 0)
+	p.ReenableIfCredits("u1", 500, 0, 0)
 	if p.Pick() != nil {
 		t.Fatal("disabled must not auto-reenable")
 	}
@@ -182,7 +182,7 @@ func TestList(t *testing.T) {
 	p := New("")
 	p.Add(&auth.Auth{UID: "u1", Nickname: "nick1"})
 	p.Add(&auth.Auth{UID: "u2"})
-	p.SetCreditDetail("u1", 42, 0)
+	p.SetCreditDetail("u1", 42, 0, 0)
 	p.Cooldown("u2", CoolSoft, time.Minute, "429")
 	list := p.List()
 	if len(list) != 2 {
@@ -257,7 +257,7 @@ func TestLoadLegacyStateMarksCreditsStale(t *testing.T) {
 	}
 
 	// 首刷成功 → 标记清除，数字变为真实拆分
-	p.SetCreditDetail("u1", 2710, 2600)
+	p.SetCreditDetail("u1", 2710, 0, 2600)
 	st, _ = p.Status("u1")
 	if st.CreditsStale {
 		t.Error("SetCreditDetail 后不应再标记 stale")
@@ -267,11 +267,12 @@ func TestLoadLegacyStateMarksCreditsStale(t *testing.T) {
 	}
 }
 
-// TestLoadCurrentStateNotStale 新版格式（version>=2）读入后不标记 stale。
+// TestLoadCurrentStateNotStale 新版格式（version>=stateVersion=3）读入后不标记 stale。
+// v2 文件（无 expiring）按旧版处理置 stale——可用/不可用/临期三者口径需同批刷新。
 func TestLoadCurrentStateNotStale(t *testing.T) {
 	dir := t.TempDir()
 	fp := filepath.Join(dir, "state-traework.json")
-	cur := `{"version":2,"accounts":{"u1":{"credits":2710,"unusable":2600}}}`
+	cur := `{"version":3,"accounts":{"u1":{"credits":2710,"expiring":130,"unusable":2600}}}`
 	if err := os.WriteFile(fp, []byte(cur), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -281,7 +282,45 @@ func TestLoadCurrentStateNotStale(t *testing.T) {
 	if st.CreditsStale {
 		t.Errorf("新版格式不应标记 stale: %+v", st)
 	}
-	if st.Credits != 2710 || st.UnusableCredits != 2600 {
-		t.Errorf("credits=%d unusable=%d want 2710/2600", st.Credits, st.UnusableCredits)
+	if st.Credits != 2710 || st.ExpiringCredits != 130 || st.UnusableCredits != 2600 {
+		t.Errorf("credits=%d expiring=%d unusable=%d want 2710/130/2600", st.Credits, st.ExpiringCredits, st.UnusableCredits)
+	}
+}
+
+// TestPickPrefersExpiring 临期优先：临期>0 的账号即使总余额更低也先被选中，
+// 同组内仍按总可用余额排序；临期烧完（重置为 0）后退回总余额排序。
+func TestPickPrefersExpiring(t *testing.T) {
+	p := New("")
+	p.Add(&auth.Auth{UID: "u1"}) // 总余额最高，但无临期
+	p.Add(&auth.Auth{UID: "u2"}) // 有临期
+	p.Add(&auth.Auth{UID: "u3"}) // 临期更多
+	p.SetCreditDetail("u1", 5000, 0, 0)
+	p.SetCreditDetail("u2", 100, 50, 0)
+	p.SetCreditDetail("u3", 200, 200, 0)
+	if got := p.Pick(); got == nil || got.UID != "u3" {
+		t.Fatalf("pick=%+v want u3 (临期最多)", got)
+	}
+	// u3 临期烧完 → u2 接管
+	p.SetCreditDetail("u3", 200, 0, 0)
+	if got := p.Pick(); got == nil || got.UID != "u2" {
+		t.Fatalf("pick=%+v want u2 (次多临期)", got)
+	}
+	// 全部临期清零 → 退回总余额排序
+	p.SetCreditDetail("u2", 100, 0, 0)
+	if got := p.Pick(); got == nil || got.UID != "u1" {
+		t.Fatalf("pick=%+v want u1 (纯总余额排序)", got)
+	}
+}
+
+// TestPickExpiringZeroBalance 确保临期统计的约束 expiring ≤ credits：
+// credits=0 的账号即使误传 expiring>0 也不会被选中（防御性用例，正常调用方不会这样传）。
+func TestPickExpiringZeroBalance(t *testing.T) {
+	p := New("")
+	p.Add(&auth.Auth{UID: "u1"})
+	p.Add(&auth.Auth{UID: "u2"})
+	p.SetCreditDetail("u1", 0, 0, 0)
+	p.SetCreditDetail("u2", 10, 0, 0)
+	if got := p.Pick(); got == nil || got.UID != "u2" {
+		t.Fatalf("pick=%+v want u2", got)
 	}
 }

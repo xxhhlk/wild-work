@@ -21,12 +21,14 @@ import (
 	"wild-work/internal/config"
 	"wild-work/internal/login"
 	loginqoder "wild-work/internal/login_qoder"
+	loginqwenwork "wild-work/internal/login_qwenwork"
 	logintrae "wild-work/internal/login_trae"
 	"wild-work/internal/login_wbai"
 	"wild-work/internal/platform"
 	"wild-work/internal/pool"
 	"wild-work/internal/provider"
 	"wild-work/internal/qoder"
+	"wild-work/internal/qwenwork"
 	"wild-work/internal/reasoning"
 	"wild-work/internal/scheduler"
 	"wild-work/internal/server"
@@ -34,7 +36,7 @@ import (
 )
 
 // Version 版本号。
-const Version = "2.2.1"
+const Version = "2.3.1"
 
 const (
 	loginTimeout   = 5 * time.Minute
@@ -135,7 +137,7 @@ func (a *App) runtime(kind provider.Kind) *Runtime {
 }
 
 func (a *App) firstRuntime() *Runtime {
-	for _, k := range []provider.Kind{provider.WorkBuddy, provider.WorkBuddyAI, provider.TraeWork, provider.Qoder} {
+	for _, k := range []provider.Kind{provider.WorkBuddy, provider.WorkBuddyAI, provider.TraeWork, provider.Qoder, provider.QwenWork} {
 		if rt := a.runtime(k); rt != nil {
 			return rt
 		}
@@ -167,9 +169,10 @@ func (a *App) allStatuses() []pool.Status {
 // noExplicitCheckinKinds 不支持显式签到（手动按钮）的渠道。
 // Qoder 无签到活动（DailyCheckin 直接报错）；
 // WorkBuddy 国际版改为定时自动对话保活并领取日活奖励（详见 workbuddyai.DailyCheckin），
-// 无需用户手动触发，故也不提供手动签到入口。
+// 无需用户手动触发，故也不提供手动签到入口；
+// 千问办公无签到活动且每日积分服务端被动发放，无需领取/保活。
 func noExplicitCheckin(k provider.Kind) bool {
-	return k == provider.Qoder || k == provider.WorkBuddyAI
+	return k == provider.Qoder || k == provider.WorkBuddyAI || k == provider.QwenWork
 }
 
 func (a *App) findRuntimeAuth(uid string) (*Runtime, *auth.Auth) {
@@ -306,7 +309,8 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 		k = provider.WorkBuddy
 	}
 	switch k {
-	case provider.WorkBuddy, provider.WorkBuddyAI, provider.TraeWork, provider.Qoder:
+	case provider.WorkBuddy, provider.WorkBuddyAI, provider.TraeWork, provider.Qoder, provider.QwenWork:
+		// 这些渠道已有登录编排
 	default:
 		return "", fmt.Errorf("unknown login provider %s", kind)
 	}
@@ -325,6 +329,8 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 		a.loginClient = loginqoder.NewClient()
 	case provider.WorkBuddyAI:
 		a.loginClient = loginwbai.NewClient()
+	case provider.QwenWork:
+		a.loginClient = loginqwenwork.NewClient()
 	default:
 		a.loginClient = login.NewClient()
 	}
@@ -340,10 +346,13 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 		authURL, err = loginqoder.Start(a.loginClient, a.loginStateFP)
 	case provider.WorkBuddyAI:
 		authURL, err = loginwbai.Start(a.loginClient, a.loginStateFP)
+	case provider.QwenWork:
+		authURL, err = loginqwenwork.Start(a.loginClient, a.loginStateFP)
 	default:
-		authURL, err = login.Start(a.loginClient, a.loginStateFP)
+		ep := login.EndpointsForRegion(a.cfg.Region)
+		authURL, err = login.Start(a.loginClient, a.loginStateFP, ep)
 		if err == nil {
-			if resolved, rerr := login.ResolveAuthURL(a.loginClient, authURL); rerr == nil && resolved != "" {
+			if resolved, rerr := login.ResolveAuthURL(a.loginClient, authURL, ep); rerr == nil && resolved != "" {
 				authURL = resolved
 			}
 		}
@@ -362,12 +371,17 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 func (a *App) CancelLogin() error {
 	a.muLogin.Lock()
 	cancel := a.loginCancel
+	kind := a.loginKind
 	a.muLogin.Unlock()
 	if cancel == nil {
 		return errors.New("没有进行中的登录")
 	}
 	cancel()
 	_ = os.Remove(a.loginStateFP)
+	// 千问办公登录附带本机回调 server，取消时一并关闭
+	if kind == provider.QwenWork {
+		loginqwenwork.Shutdown()
+	}
 	log.Printf("登录已取消")
 	return nil
 }
@@ -428,7 +442,18 @@ func (a *App) pollLogin(ctx context.Context) {
 			}
 			continue
 		}
-		r, err := login.Poll(a.loginClient, a.loginStateFP)
+		if a.loginKind == provider.QwenWork {
+			r, err := loginqwenwork.Poll(a.loginClient, a.loginStateFP)
+			if err == nil {
+				a.completeQwenWorkLogin(r)
+				return
+			}
+			if !errors.Is(err, loginqwenwork.ErrPending) {
+				log.Printf("qwenwork login poll failed: %v", err)
+			}
+			continue
+		}
+		r, err := login.Poll(a.loginClient, a.loginStateFP, login.EndpointsForRegion(a.cfg.Region))
 		if err == nil {
 			a.completeLogin(r)
 			return
@@ -460,6 +485,11 @@ func (a *App) completeLogin(r login.Result) {
 			log.Printf("新账号签到失败 %s: %v", r.Nickname, err)
 		} else {
 			log.Printf("新账号签到完成 %s：%s", r.Nickname, res.Msg)
+		}
+		// 积分兑底：签到路径失败（余额查询失败/签到异常）时 pool 内 credits 仍为 0，
+		// 独立刷一次保证新账号首屏正确（幂等：多刷无害）。
+		if _, err := a.RefreshCredits(r.UID); err != nil {
+			log.Printf("workbuddy 新账号积分兑底失败 %s: %v", r.Nickname, err)
 		}
 	})
 }
@@ -532,6 +562,10 @@ func (a *App) completeTraeLogin(r logintrae.Result) {
 		} else {
 			log.Printf("TraeWork 新账号签到完成 %s：%s", r.Nickname, res.Msg)
 		}
+		// 积分兑底（对齐 workbuddy）：签到路径失败时 pool 内 credits 仍为 0
+		if _, err := a.RefreshCredits(r.UID); err != nil {
+			log.Printf("TraeWork 新账号积分兑底失败 %s: %v", r.Nickname, err)
+		}
 	})
 }
 
@@ -550,6 +584,76 @@ func (a *App) completeQoderLogin(r loginqoder.Result) {
 	a.reloadAccounts()
 	a.finishLogin()
 	a.afterAccountAdded(provider.Qoder)
+	// 新账号首次拉取余额（对齐 workbuddyai/qwenwork：qoder 登录后无签到流程，
+	// 不主动刷则面板显示 0 直到下个 auto-refresh 周期）
+	a.safeGo(func() {
+		if remain, err := a.RefreshCredits(r.UID); err != nil {
+			log.Printf("qoder 新账号积分获取失败 %s: %v", r.Nickname, err)
+		} else {
+			log.Printf("qoder 新账号积分获取完成 %s: %d", r.Nickname, remain)
+		}
+	})
+}
+
+// completeQwenWorkLogin 登录成功：写 auth 文件、重载账号池。
+// 千问办公无签到活动（每日积分服务端被动发放），不做首次签到。
+func (a *App) completeQwenWorkLogin(r loginqwenwork.Result) {
+	log.Printf("qwenwork 登录成功 uid=%s nickname=%s expires_in=%d refresh_token=%t",
+		r.UID, r.Nickname, r.ExpiresIn, r.RefreshToken != "")
+	fp, err := loginqwenwork.SaveAuth(a.cfg.AuthDir, r)
+	if err != nil {
+		log.Printf("qwenwork 登录保存凭证失败 uid=%s err=%v", r.UID, err)
+		return
+	}
+	log.Printf("qwenwork 登录凭证已保存 uid=%s file=%s", r.UID, filepath.Base(fp))
+	a.reloadAccounts()
+	a.finishLogin()
+	a.afterAccountAdded(provider.QwenWork)
+	// 首屏初始化（顺序敏感，串行执行）：
+	// 1) 刷新余额 —— 若 Poll 兑换的首个 token 无效（实测 OAuth 兑换 token 调 /user/info
+	//    会 401 invalid-credential），refreshIfSessionDead 会自动换新 token；
+	// 2) 之后再用有效 token 拉昵称兑底（Poll 兑换的 JWT 实测无 username 字段，
+	//    refresh 后的 device_token 才有），写回 auth 文件，否则面板显示 hex uid。
+	a.safeGo(func() {
+		var nickname = r.Nickname
+		if remain, err := a.RefreshCredits(r.UID); err != nil {
+			log.Printf("qwenwork 新账号积分获取失败 %s: %v", r.Nickname, err)
+		} else {
+			log.Printf("qwenwork 新账号积分获取完成 %s: %d", r.Nickname, remain)
+		}
+		if nickname == "" {
+			rt := a.runtime(provider.QwenWork)
+			if rt == nil || rt.Upstream == nil {
+				return
+			}
+			au := rt.Pool.AuthByUID(r.UID)
+			if au == nil {
+				return
+			}
+			qw, ok := rt.Upstream.(*qwenwork.Client)
+			if !ok {
+				return
+			}
+			if nick, nerr := qw.FetchNickname(au); nerr == nil && nick != "" {
+				nickname = nick
+				au.Nickname = nick // AuthByUID 返回池内指针，改字段即生效；SaveAtomic 自带锁
+				_ = au.SaveAtomic()
+				log.Printf("qwenwork 昵称兑底成功 uid=%s nickname=%s", r.UID, nick)
+			} else if nerr != nil {
+				log.Printf("qwenwork 昵称兑底失败 uid=%s err=%v", r.UID, nerr)
+			}
+		}
+	})
+}
+
+// mustLoadQwenWork 重新扫描千问办公凭证目录（错误仅记日志）。
+func mustLoadQwenWork(dir string) []*auth.Auth {
+	auths, err := auth.LoadQwenWorkDir(dir)
+	if err != nil {
+		log.Printf("reload qwenwork accounts: %v", err)
+		return nil
+	}
+	return auths
 }
 
 func (a *App) finishLogin() {
@@ -590,6 +694,14 @@ func (a *App) reloadAccounts() {
 		auths, err := auth.LoadWorkBuddyAiDir(a.cfg.AuthDir)
 		if err != nil {
 			log.Printf("reload workbuddyai accounts: %v", err)
+		} else {
+			rt.Pool.SyncToDir(auths)
+		}
+	}
+	if rt := a.runtime(provider.QwenWork); rt != nil && rt.Pool != nil {
+		auths, err := auth.LoadQwenWorkDir(a.cfg.AuthDir)
+		if err != nil {
+			log.Printf("reload qwenwork accounts: %v", err)
 		} else {
 			rt.Pool.SyncToDir(auths)
 		}
@@ -681,20 +793,22 @@ func (a *App) refreshIfSessionDead(rt *Runtime, au *auth.Auth, err error) bool {
 	return true
 }
 
-// creditTotals 一次上游调用同时取回「可消耗余额」与「不可消耗余额」。
-// 两者同源于 UserResourceDetail 的单次响应：remain 即 pool 路由口径的可消耗余额，
-// 不可消耗部分由条目的 Usable 标记汇总得到（渠道不区分专用池时为 0）。
+// creditTotals 一次上游调用同时取回「可消耗余额」「临期额度」与「不可消耗余额」。
+// 三者同源于 UserResourceDetail 的单次响应：remain 即 pool 路由口径的可消耗余额，
+// 临期额度为其中 24h 内（到期日≤明天）到期的部分，不可消耗部分由条目的 Usable 标记汇总得到
+//（渠道不区分专用池时为 0；渠道不下发到期时间时临期为 0，如 Qoder）。
 // 遇 401 自动刷新 token 并重试一次（见 refreshIfSessionDead）。
-func (a *App) creditTotals(rt *Runtime, au *auth.Auth) (usable, unusable int64, err error) {
+func (a *App) creditTotals(rt *Runtime, au *auth.Auth) (usable, expiring, unusable int64, err error) {
 	remain, items, err := rt.Upstream.UserResourceDetail(au)
 	if err != nil && a.refreshIfSessionDead(rt, au, err) {
 		remain, items, err = rt.Upstream.UserResourceDetail(au)
 	}
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, 0, err
 	}
 	_, unusable = provider.Summarize(items)
-	return remain, unusable, nil
+	expiring = provider.ExpiringWithin(items, 24*time.Hour)
+	return remain, expiring, unusable, nil
 }
 
 // StartCreditAutoRefresh 后台定期刷新指定渠道的账号积分。
@@ -731,13 +845,13 @@ func (a *App) StartCreditAutoRefresh(ctx context.Context, kinds []provider.Kind,
 							log.Printf("credit auto-refresh token save failed platform=%s uid=%s err=%v", k, st.UID, err)
 						}
 					}
-					usable, unusable, err := a.creditTotals(rt, au)
+					usable, expiring, unusable, err := a.creditTotals(rt, au)
 					if err != nil {
 						log.Printf("credit auto-refresh failed platform=%s uid=%s err=%v", k, st.UID, err)
 						continue
 					}
-					rt.Pool.SetCreditDetail(st.UID, usable, unusable)
-					log.Printf("credit auto-refresh platform=%s uid=%s remain=%d unusable=%d", k, st.UID, usable, unusable)
+					rt.Pool.SetCreditDetail(st.UID, usable, expiring, unusable)
+					log.Printf("credit auto-refresh platform=%s uid=%s remain=%d expiring=%d unusable=%d", k, st.UID, usable, expiring, unusable)
 				}
 			}
 		}
@@ -792,13 +906,13 @@ func (a *App) RefreshCredits(uid string) (int64, error) {
 		return 0, fmt.Errorf("unknown account %s", uid)
 	}
 	log.Printf("credits refresh start platform=%s uid=%s", rt.Kind, uid)
-	usable, unusable, err := a.creditTotals(rt, au)
+	usable, expiring, unusable, err := a.creditTotals(rt, au)
 	if err != nil {
 		log.Printf("credits refresh failed platform=%s uid=%s err=%v", rt.Kind, uid, err)
 		return 0, err
 	}
-	rt.Pool.SetCreditDetail(uid, usable, unusable)
-	log.Printf("credits refresh success platform=%s uid=%s remain=%d unusable=%d", rt.Kind, uid, usable, unusable)
+	rt.Pool.SetCreditDetail(uid, usable, expiring, unusable)
+	log.Printf("credits refresh success platform=%s uid=%s remain=%d expiring=%d unusable=%d", rt.Kind, uid, usable, expiring, unusable)
 	return usable, nil
 }
 
@@ -829,8 +943,8 @@ func (a *App) RefreshAll() RefreshSummary {
 				ps.Accounts = append(ps.Accounts, AccountRefresh{UID: st.UID, OK: false, Msg: "no token"})
 				continue
 			}
-			if usable, unusable, err := a.creditTotals(rt, au); err == nil {
-				rt.Pool.SetCreditDetail(st.UID, usable, unusable)
+			if usable, expiring, unusable, err := a.creditTotals(rt, au); err == nil {
+				rt.Pool.SetCreditDetail(st.UID, usable, expiring, unusable)
 				ps.OK++
 				ps.Accounts = append(ps.Accounts, AccountRefresh{UID: st.UID, OK: true, Remain: usable})
 			} else {
@@ -1082,6 +1196,8 @@ type AccountView struct {
 	Nickname string `json:"nickname"`
 	// Credits 本工具可消耗的积分余额（pool 路由依据）。
 	Credits int64 `json:"credits"`
+	// ExpiringCredits 可消耗余额中 24h 内（到期日≤明天）到期的部分，仅面板展示。
+	ExpiringCredits int64 `json:"expiring_credits,omitempty"`
 	// UnusableCredits 账号名下有、但本工具用不了的积分（如 TraeWork ep=1 专用池），
 	// 仅面板展示；0 表示该渠道不区分或没有此类额度。
 	UnusableCredits int64 `json:"unusable_credits"`
@@ -1165,6 +1281,7 @@ func (a *App) accountViews() []AccountView {
 			Group:           a.accountGroup(s.UID),
 			Nickname:        s.Nickname,
 			Credits:         s.Credits,
+			ExpiringCredits: s.ExpiringCredits,
 			UnusableCredits: s.UnusableCredits,
 			CreditsStale:    s.CreditsStale,
 			Cooling:         s.Cooling,
@@ -1562,7 +1679,7 @@ func (a *App) FeesInfo() map[string]any {
 	}
 
 	channels := buildFeesChannels(modelsByKind, cached, []provider.Kind{
-		provider.WorkBuddy, provider.WorkBuddyAI, provider.TraeWork, provider.Qoder,
+		provider.WorkBuddy, provider.WorkBuddyAI, provider.TraeWork, provider.Qoder, provider.QwenWork,
 	})
 
 	result := map[string]any{

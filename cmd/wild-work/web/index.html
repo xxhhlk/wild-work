@@ -40,13 +40,22 @@
   <section class="panel">
     <div class="panel-head">
       <h2>账号管理</h2>
-      <div class="panel-actions">
+      <div class="panel-actions-wrap">
+        <!-- 左组：刷新积分/全部签到，整体靠左 -->
+        <div class="pa-group pa-left">
         <button class="btn primary" id="btnRefreshAll">刷新积分</button>
         <button class="btn" id="btnCheckinAll">全部签到</button>
-        <button class="btn primary" id="btnAddWB">＋ WorkBuddy</button>
-        <button class="btn primary alt wbai" id="btnAddWBAI">＋ WorkBuddy 国际版</button>
-        <button class="btn primary alt" id="btnAddTrae">＋ TraeWork</button>
-        <button class="btn primary alt qoder" id="btnAddQoder">＋ Qoder</button>
+        </div>
+        <!-- 中间弹性空白由 flex:1 撑开 -->
+        <div class="pa-spacer"></div>
+        <!-- 右组：渠道添加三列 grid，整体靠右；末列留白 -->
+        <div class="pa-group pa-right">
+          <button class="btn primary" id="btnAddWB" style="grid-column:1;grid-row:1">＋ WorkBuddy</button>
+          <button class="btn primary alt qoder" id="btnAddQoder" style="grid-column:2;grid-row:1">＋ Qoder</button>
+          <button class="btn primary alt" id="btnAddTrae" style="grid-column:3;grid-row:1">＋ TraeWork</button>
+          <button class="btn primary alt wbai" id="btnAddWBAI" style="grid-column:1;grid-row:2">＋ WorkBuddy 国际版</button>
+          <button class="btn primary alt qwenwork" id="btnAddQwen" style="grid-column:2;grid-row:2">＋ 千问办公</button>
+        </div>
       </div>
     </div>
     <div id="acctList" class="acct-grid"></div>

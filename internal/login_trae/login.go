@@ -100,7 +100,9 @@ func Start(client *http.Client, statePath string) (string, error) {
 		}
 		_ = writeState(statePath, st)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = w.Write([]byte("<html><body style='font-family:sans-serif;padding:24px'>TraeWork 登录已完成，可以关闭此页面。</body></html>"))
+		// 统一回调页：有凭证即成功态（自动关）；无凭证为失败态（展示原因）
+		ok := st.Err == ""
+		_, _ = w.Write([]byte(callbackPage(ok, st.Err)))
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()

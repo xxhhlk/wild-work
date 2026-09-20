@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"wild-work/internal/auth"
 )
@@ -18,6 +19,7 @@ const (
 	WorkBuddyAI Kind = "workbuddyai" // WorkBuddy 国际版（www.workbuddy.ai），与国内版完全独立
 	TraeWork    Kind = "traework"
 	Qoder       Kind = "qoder"
+	QwenWork    Kind = "qwenwork" // 千问办公（gateway.qwenwork.cn + qwenwork.cn）
 )
 
 func (k Kind) String() string { return string(k) }
@@ -193,4 +195,28 @@ func Summarize(items []ResourceItem) (usable, unusable int64) {
 		}
 	}
 	return usable, unusable
+}
+
+// expireLoc 各渠道 ExpireAt 的统一墙钟口径（见各渠道 softRateResetLoc，固定 UTC+8）。
+var expireLoc = time.FixedZone("UTC+8", 8*60*60)
+
+// ExpiringWithin 统计 horizon 时长内到期的**可消耗**积分小计（临期额度）。
+// 仅累计 Usable=true 且 ExpireAt 非空的条目——不可用池本工具消耗不到，
+// 临期与否不影响路由决策，混入会虚高临期值。
+// ExpireAt 是 YYYY-MM-DD 日期粒度（UTC+8 墙钟），精确到小时的 24h 判定无意义，
+// 实际口径为「到期日 ≤ 明天」：今天到期/明天到期都算临期，后天起不算。
+// ExpireAt 为空串（上游未下发，如 Qoder）或不可解析时不计入，调用方无需特判。
+func ExpiringWithin(items []ResourceItem, horizon time.Duration) int64 {
+	deadline := time.Now().In(expireLoc).Add(horizon)
+	var expiring int64
+	for _, it := range items {
+		if !it.Usable || it.ExpireAt == "" {
+			continue
+		}
+		// 日期解析到当天零点（UTC+8），零点落在 deadline 之前即视为临期
+		if t, err := time.ParseInLocation("2006-01-02", it.ExpireAt, expireLoc); err == nil && t.Before(deadline) {
+			expiring += it.Remain
+		}
+	}
+	return expiring
 }

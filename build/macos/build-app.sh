@@ -122,7 +122,9 @@ codesign --verify --deep --strict "$APP" && echo "    签名校验通过"
 # 失败只告警，不影响 .app。注意：先写到临时文件、成功后才 mv 覆盖，
 # 否则一旦创建失败就会把上一次已生成好的 dmg 删掉（曾经的 bug）。
 DMG="dist/$APP_NAME-$VERSION-$ARCH.dmg"
-DMG_TMP="$DMG.tmp"
+# 临时名必须以 .dmg 结尾：hdiutil 会给不含该后缀的目标自动补上 ".dmg"，
+# 若用 "$DMG.tmp" 会实际产出 "$DMG.tmp.dmg"，导致下面的 mv 找不到源文件。
+DMG_TMP="${DMG%.dmg}.tmp.dmg"
 echo "==> 生成 $DMG"
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
@@ -140,6 +142,11 @@ else
     echo "       已保留原有 dmg：${DMG}（未被覆盖）。" >&2
   else
     echo "       .app 已生成，可直接使用；如需 DMG 请在普通终端重跑本脚本。" >&2
+  fi
+  # CI 必须拿到 dmg：REQUIRE_DMG=1 时生成失败即报错退出，避免静默发出不含 dmg 的 release。
+  if [[ "${REQUIRE_DMG:-0}" == "1" ]]; then
+    echo "       REQUIRE_DMG=1，视为致命错误。" >&2
+    exit 1
   fi
 fi
 

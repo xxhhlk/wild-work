@@ -7,6 +7,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 )
@@ -39,10 +40,18 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_, _ = w.Write(raw)
 }
 
-// readLimited 读取请求体（带 8MB 上限，与内层一致）。
+// readLimited 读取请求体（上限与内层共用 server.MaxRequestBody，issue #30）。
+// 超限回 413 而非静默截断——截断后的 JSON 解析失败只会报出误导性的 invalid JSON。
 func readLimited(r *http.Request, limit int64) ([]byte, error) {
 	defer r.Body.Close()
-	return io.ReadAll(io.LimitReader(r.Body, limit))
+	raw, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(raw)) > limit {
+		return nil, fmt.Errorf("request body exceeds limit of %d bytes; please reduce conversation context", limit)
+	}
+	return raw, nil
 }
 
 // sseHeader 设置 SSE 响应头并返回 flush 函数（不可 flush 时返回空操作）。

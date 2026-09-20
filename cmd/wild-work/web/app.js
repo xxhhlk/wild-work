@@ -214,30 +214,37 @@ function renderTopbar() {
 }
 
 // 渠道显示名与 CSS 短类名（后端 group / 费率 channel 均为 provider.Kind）。
-const CH_LABEL = { workbuddy: "WorkBuddy", workbuddyai: "WorkBuddy 国际版", traework: "TraeWork", qoder: "Qoder" };
-const CH_CLASS = { workbuddy: "wb", workbuddyai: "wbai", traework: "trae", qoder: "qoder" };
+const CH_LABEL = { workbuddy: "WorkBuddy", workbuddyai: "WorkBuddy 国际版", traework: "TraeWork", qoder: "Qoder", qwenwork: "千问办公" };
+const CH_CLASS = { workbuddy: "wb", workbuddyai: "wbai", traework: "trae", qoder: "qoder", qwenwork: "qwenwork" };
 const chLabel = (k) => CH_LABEL[k] || "WorkBuddy";
 const chClass = (k) => CH_CLASS[k] || "wb";
 // 不支持显式签到（手动按钮）的渠道：Qoder 无签到活动；
 // WorkBuddy 国际版不提供手动签到，而是自动对话保活领日活奖励。
-const NO_EXPLICIT_CHECKIN = new Set(["qoder", "workbuddyai"]);
+const NO_EXPLICIT_CHECKIN = new Set(["qoder", "workbuddyai", "qwenwork"]);
 const noExplicitCheckin = (g) => NO_EXPLICIT_CHECKIN.has(g);
 // 无手动签到渠道的状态文案：国际版是「自动领日活奖励」，其余（Qoder）为「无签到」。
 const NO_CHECKIN_TAG = { workbuddyai: "自动领日活奖励" };
 const noCheckinText = (g) => NO_CHECKIN_TAG[g] || "无签到";
 
 // creditsText 账号卡片的积分文案。
-// 始终拆成「可用 / 不可用」两个数字：渠道（如 TraeWork）会下发官方客户端专用的
-// 额度池，对本工具是看得见用不了的，混进一个数字会让人误判可用余额。
-// 即使本账号当前没有专用池（不可用=0）也照样显示，与明细 tooltip 的小计口径一致。
+// 拆成「可用 / 不可用 / 临期」三个数字：渠道（如 TraeWork）会下发官方客户端专用的
+// 额度池，对本工具是看得见用不了的，混进一个数字会让人误判可用余额；
+// 临期是可消耗余额中 24h 内（到期日≤明天）到期的部分，提示优先消耗。
+// 不可用仅在 >0 时显示；临期同理，凭空多个灰/红 0 很吵。
 // 旧版本 state 文件（v2.2.0 及之前，无 unusable 字段）读入后 credits_stale=true，
 // 此时不把旧值当真值，改显示「待刷新」；自动刷新首刷成功后即变回真实拆分。
 function creditsText(a) {
   if (a.credits_stale) {
     return `<span class="credit-stale" title="余额口径已过期（旧版本状态文件），正在自动刷新…">待刷新</span>`;
   }
-  return `<span class="credit-num">${a.credits}</span><span>可用积分</span>`
-       + `<span class="credit-sep">/</span><span class="credit-unusable">${a.unusable_credits || 0}</span><span>不可用</span>`;
+  let html = `<span class="credit-num">${a.credits}</span><span>可用积分</span>`;
+  if ((a.expiring_credits || 0) > 0) {
+    html += `<span class="credit-expiring"> (临期${a.expiring_credits})</span>`;
+  }
+  if ((a.unusable_credits || 0) > 0) {
+    html += `<span class="credit-unusable"> (不可用${a.unusable_credits})</span>`;
+  }
+  return html;
 }
 
 function renderAccounts() {
@@ -496,6 +503,7 @@ let pendingChannel = null;
 const NO_CHECKIN_LOGIN_HINT = {
   workbuddyai: "（无需手动签到，定时自动对话保活并领取日活奖励）",
   qoder: "（Qoder 渠道无签到活动，仅 API 转发）",
+  qwenwork: "（每日积分服务端 00:00 自动发放；若浏览器已登录千问办公则全自动完成，否则需扫码一次）",
 };
 function promptLogin(channel) {
   pendingChannel = channel;
@@ -650,6 +658,7 @@ const CHANNEL_PRESETS = {
   traework:    { label: "Codex → traework",          items: ["gpt-5* = traework/glm-5.2", "codex-* = traework/DeepSeek-V4-Pro"] },
   workbuddyai: { label: "Claude Code → workbuddyai", items: ["claude-* = workbuddyai/deepseek-v4.1-flash"] },
   qoder:       { label: "→ qoder",                   items: ["gpt-* = qoder/glm-5.2"] },
+  qwenwork:    { label: "→ qwenwork",                items: ["gpt-* = qwenwork/flash", "claude-* = qwenwork/pro"] },
 };
 
 // renderMapPresets 按当前已接入渠道渲染缺省建议按钮。
@@ -794,6 +803,7 @@ function bind() {
   $("btnAddWBAI").onclick = () => promptLogin("workbuddyai");
   $("btnAddTrae").onclick = () => promptLogin("traework");
   $("btnAddQoder").onclick = () => promptLogin("qoder");
+  $("btnAddQwen").onclick = () => promptLogin("qwenwork");
   $("btnCheckinAll").onclick = checkinAll;
   $("btnRefreshAll").onclick = refreshAll;
   $("btnAddTime").onclick = addTime;
