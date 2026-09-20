@@ -142,7 +142,9 @@ Anthropic 转 `thinking` 内容块（`anthropic_stream.go`）；Responses 转 `r
 能力表来源：`internal/server.publishEffortCaps` 在每次拉取目录后把
 `reasoning.supportedEfforts`/`defaultEffort` 写进 `reasoning.Caps`（远端权威），
 缺失时回落 `catalog.go` 的 realm 静态表；`/v1/models` 用同一份表透出
-`reasoning_supported_efforts` / `reasoning_default_effort` / `supports_reasoning`。
+`reasoning_supported_efforts` / `reasoning_default_effort` / `supports_reasoning`；
+面板费率表（`app.buildFeesChannels`）走同一个 `reasoning.ListingForKind` 入口，把档位随
+`/api/fees` 一并下发（`supported_efforts` / `default_effort`）——面板上看到的档位就是投影会下发的档位。
 
 ## 4. 渠道扩展点
 

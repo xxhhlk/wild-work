@@ -337,3 +337,22 @@ func RealmForKind(kind string) string {
 	}
 	return RealmCN
 }
+
+// SupportsEffortKind 该渠道是否有可验证的思考档位能力（WorkBuddy 双面 + Qoder）。
+// TraeWork 协议没有档位字段，对它声明档位会让客户端发出上游不认的参数。
+func SupportsEffortKind(kind string) bool {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "workbuddy", "workbuddyai", "qoder":
+		return true
+	}
+	return false
+}
+
+// ListingForKind 按渠道取「对外声明的档位」（无档位能力的渠道返回空）。
+// 请求投影与模型列表（/v1/models、面板费率表）共用这一入口，避免两处声明漂移。
+func ListingForKind(kind, model string, remoteEfforts []string, remoteDefault string) ([]string, string) {
+	if !SupportsEffortKind(kind) {
+		return nil, ""
+	}
+	return Caps.Listing(RealmForKind(kind), model, remoteEfforts, remoteDefault)
+}

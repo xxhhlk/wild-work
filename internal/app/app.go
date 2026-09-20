@@ -1088,13 +1088,13 @@ type AccountView struct {
 	// CreditsStale 余额口径不可信（旧版 state 或尚未完成首次成功刷新），UI 显示「待刷新」。
 	CreditsStale   bool   `json:"credits_stale,omitempty"`
 	Cooling        bool   `json:"cooling"`
-	Until           string `json:"until"`
-	Reason          string `json:"reason"`
-	Disabled        bool   `json:"disabled"`
-	ErrCount        int    `json:"err_count"`
-	LastCheckinOK   bool   `json:"last_checkin_ok"`
-	LastCheckinAt   string `json:"last_checkin_at"`
-	LastCheckinMsg  string `json:"last_checkin_msg"`
+	Until          string `json:"until"`
+	Reason         string `json:"reason"`
+	Disabled       bool   `json:"disabled"`
+	ErrCount       int    `json:"err_count"`
+	LastCheckinOK  bool   `json:"last_checkin_ok"`
+	LastCheckinAt  string `json:"last_checkin_at"`
+	LastCheckinMsg string `json:"last_checkin_msg"`
 }
 
 // State Web UI 初始数据。
@@ -1458,6 +1458,10 @@ type feesModelRow struct {
 	SupportsImages    bool `json:"supports_images"`
 	SupportsReasoning bool `json:"supports_reasoning"`
 	SupportsTools     bool `json:"supports_tools"`
+	// 思考档位（与 /v1/models 的 reasoning_supported_efforts 同源）：
+	// 空表示该渠道无档位能力或该模型未被收录，前端不展示档位行。
+	SupportedEfforts []string `json:"supported_efforts,omitempty"`
+	DefaultEffort    string   `json:"default_effort,omitempty"`
 }
 
 // buildFeesChannels 以「渠道 models 列表」为基准组表：
@@ -1497,6 +1501,10 @@ func buildFeesChannels(modelsByKind map[provider.Kind][]provider.ModelInfo,
 				SupportsReasoning: mi.SupportsReasoning,
 				SupportsTools:     mi.SupportsTools,
 			}
+			// 思考档位同样与 /v1/models 同源：走同一个入口，
+			// 面板上看到的档位就是投影时会实际下发的档位。
+			row.SupportedEfforts, row.DefaultEffort = reasoning.ListingForKind(
+				k.String(), mi.ID, mi.SupportedEfforts, mi.DefaultEffort)
 			if p, ok := prices[mi.ID]; ok {
 				row.Priced = p.IsExplicit() // 缺倍率字段（如 auto）不算已定价
 				row.Rate = p.Rate

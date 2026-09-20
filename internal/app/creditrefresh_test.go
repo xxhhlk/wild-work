@@ -345,6 +345,31 @@ func TestBuildFeesChannelsContextFlag(t *testing.T) {
 	}
 }
 
+// 档位与 /v1/models 同源：有档位能力的渠道透出，TraeWork 不透出。
+func TestBuildFeesChannelsEfforts(t *testing.T) {
+	models := map[provider.Kind][]provider.ModelInfo{
+		provider.Qoder: {
+			{ID: "glm-5.3", SupportsReasoning: true,
+				SupportedEfforts: []string{"low", "high", "max"}, DefaultEffort: "max"},
+		},
+		provider.TraeWork: {
+			{ID: "deepseek-v4-pro", SupportsReasoning: true,
+				SupportedEfforts: []string{"low", "high"}},
+		},
+	}
+	channels := buildFeesChannels(models, nil, []provider.Kind{provider.Qoder, provider.TraeWork})
+	byCh := map[string][]feesModelRow{}
+	for _, ch := range channels {
+		byCh[ch.Channel] = ch.Models
+	}
+	if r := byCh["qoder"][0]; len(r.SupportedEfforts) != 3 || r.DefaultEffort != "max" {
+		t.Errorf("Qoder 应透出档位：%+v", r)
+	}
+	if r := byCh["traework"][0]; len(r.SupportedEfforts) != 0 || r.DefaultEffort != "" {
+		t.Errorf("TraeWork 协议无档位字段，不应透出：%+v", r)
+	}
+}
+
 // TestBuildFeesChannelsCarriesColor 促销标签颜色应透传到前端行。
 func TestBuildFeesChannelsCarriesColor(t *testing.T) {
 	explicitTrue := true

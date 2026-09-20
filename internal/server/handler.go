@@ -224,20 +224,10 @@ func (h *Handler) currentReasoningEffort() string {
 // 因此这里只需把面板配置的默认档原样注入，具体能不能用交给渠道层判断。
 // TraeWork 协议没有可验证的思考控制字段，注入默认档只会被上游忽略或报错。
 func (h *Handler) reasoningDefaultFor(k provider.Kind) string {
-	if supportsEffortCaps(k) {
+	if reasoning.SupportsEffortKind(k.String()) {
 		return h.currentReasoningEffort()
 	}
 	return ""
-}
-
-// supportsEffortCaps 该渠道是否有可验证的思考档位能力（投影 + /v1/models 声明）。
-// TraeWork 协议无此字段，不参与。
-func supportsEffortCaps(k provider.Kind) bool {
-	switch k {
-	case provider.WorkBuddy, provider.WorkBuddyAI, provider.Qoder:
-		return true
-	}
-	return false
 }
 
 // CurrentAPIKey 读取当前生效的 API Key（供外层兼容层跟随面板修改）。
@@ -332,13 +322,10 @@ func buildModelEntry(k provider.Kind, mi provider.ModelInfo) map[string]any {
 	if mi.SupportsReasoning {
 		entry["supports_reasoning"] = true
 	}
-	if supportsEffortCaps(k) {
-		realm := reasoning.RealmForKind(k.String())
-		if efforts, def := reasoning.Caps.Listing(realm, mi.ID, mi.SupportedEfforts, mi.DefaultEffort); len(efforts) > 0 {
-			entry["reasoning_supported_efforts"] = efforts
-			if def != "" {
-				entry["reasoning_default_effort"] = def
-			}
+	if efforts, def := reasoning.ListingForKind(k.String(), mi.ID, mi.SupportedEfforts, mi.DefaultEffort); len(efforts) > 0 {
+		entry["reasoning_supported_efforts"] = efforts
+		if def != "" {
+			entry["reasoning_default_effort"] = def
 		}
 	}
 	return entry
@@ -348,7 +335,7 @@ func buildModelEntry(k provider.Kind, mi provider.ModelInfo) map[string]any {
 // 远端值为权威（投影与 /v1/models 共用同一份表）；空结果不覆盖既有能力。
 // 只处理有档位能力的渠道（WorkBuddy 双面 + Qoder）：TraeWork 协议没有该字段。
 func publishEffortCaps(kind provider.Kind, infos []provider.ModelInfo) {
-	if !supportsEffortCaps(kind) {
+	if !reasoning.SupportsEffortKind(kind.String()) {
 		return
 	}
 	caps := make(map[string]reasoning.Cap, len(infos))

@@ -165,6 +165,9 @@ POST /api/quit                     # 退出程序
     R20 时期按源码推的形状少了顶层 `system`、`task_id`、完整 `model_config` 等字段，导致 legacy 端点一直不下发
     `reasoning_content`，被误判成「上游不支持」。改动 Qoder 请求形状前后，必须跑 `TestLiveProbeProductionPath`
     （走 `ChatStream` 全链路，断言 `reasoning_content` 非空）。
+23. **档位「对外声明」只有一处入口（`reasoning.ListingForKind`）**：`/v1/models` 与面板费率表
+    （`/api/fees`）共用它取档位，其中已含「该渠道是否有档位能力」的判断（TraeWork 必须为空）。
+    新增渠道或更换档位来源时只改这一处——两处各写一份判断必然漂移，面板显示的档位就会与实际下发的档位不一致。
 
 ## 7. 平台能力差异表（internal/platform）
 

@@ -218,6 +218,37 @@ func TestCatalogListing(t *testing.T) {
 	}
 }
 
+// 面板费率表与 /v1/models 共用同一入口：无档位能力的渠道必须为空。
+func TestListingForKind(t *testing.T) {
+	if efforts, def := ListingForKind("traework", "deepseek-v4-pro", nil, ""); efforts != nil || def != "" {
+		t.Errorf("TraeWork 协议无档位字段，不应透出：%v / %q", efforts, def)
+	}
+	if efforts, def := ListingForKind("qoder", "glm-5.3", []string{"low", "high", "max"}, "max"); len(efforts) != 3 || def != "max" {
+		t.Errorf("Qoder 应取远端 ladder：%v / %q", efforts, def)
+	}
+	if efforts, _ := ListingForKind("workbuddy", "glm-5.1", nil, ""); len(efforts) != 1 || efforts[0] != "medium" {
+		t.Errorf("国内版应回落静态表（glm-5.1 只认 medium）：%v", efforts)
+	}
+	if efforts, _ := ListingForKind("workbuddyai", "deepseek-v4.1-flash", nil, ""); len(efforts) != 1 || efforts[0] != "high" {
+		t.Errorf("国际版静态表应为单档 high：%v", efforts)
+	}
+}
+
+func TestSupportsEffortKind(t *testing.T) {
+	for _, tc := range []struct {
+		kind string
+		want bool
+	}{
+		{"workbuddy", true}, {"workbuddyai", true}, {"qoder", true},
+		{"WorkBuddy", true}, {" Qoder ", true},
+		{"traework", false}, {"", false}, {"unknown", false},
+	} {
+		if got := SupportsEffortKind(tc.kind); got != tc.want {
+			t.Errorf("SupportsEffortKind(%q) = %v, want %v", tc.kind, got, tc.want)
+		}
+	}
+}
+
 // 预算换算档位（移植 lingma-proxy 分桶）。
 func TestBudgetEffort(t *testing.T) {
 	cases := map[float64]string{

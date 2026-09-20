@@ -317,6 +317,14 @@ function renderFees(fees) {
 
   const UNKNOWN_TIP = "上游未返回，请在客户端自行确认";
 
+  // 思考档位摘要：档位与 /v1/models 同源（上游模型目录的 ladder）。
+  // 未收录档位的模型不展示此行——避免把「未知」写成「不支持」。
+  const effortText = (m) => {
+    if (!m || !m.supported_efforts || m.supported_efforts.length === 0) return "";
+    const def = m.default_effort ? `（默认 ${m.default_effort}）` : "";
+    return `思考档位：${m.supported_efforts.join(" / ")}${def}`;
+  };
+
   // 能力图标：模型 ID 后的小标记，title 属性提供文字描述。
   // 只展示上游明确声明的能力；未声明的（字段缺失或上游返回 false）不显示图标。
   const capIcons = (m) => {
@@ -326,7 +334,11 @@ function renderFees(fees) {
       caps.push(`<span class="cap-icon cap-img" title="支持图像输入（多模态视觉）：可直接发送图片给该模型">👁</span>`);
     }
     if (m.supports_reasoning) {
-      caps.push(`<span class="cap-icon cap-reason" title="支持思考/推理模式：回复前会进行推理；上游是否回吐思考链（reasoning_content）因渠道而异">🧠</span>`);
+      const effort = effortText(m);
+      const tip = effort
+        ? `支持思考/推理模式；${effort}`
+        : "支持思考/推理模式：回复前会进行推理；上游是否回吐思考链（reasoning_content）因渠道而异";
+      caps.push(`<span class="cap-icon cap-reason" title="${esc(tip)}">🧠</span>`);
     }
     if (m.supports_tools) {
       caps.push(`<span class="cap-icon cap-tool" title="支持函数/工具调用（tool_calls）">🔧</span>`);
@@ -362,6 +374,8 @@ function renderFees(fees) {
     }
     const ct = capText(m);
     if (ct) parts.push(ct);
+    const et = effortText(m);
+    if (et) parts.push(et);
     return parts.join("\n");
   };
 
