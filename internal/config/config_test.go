@@ -190,3 +190,47 @@ func TestStaticEffortFallbackEnabled(t *testing.T) {
 		t.Fatal("环境变量应覆盖配置文件")
 	}
 }
+
+// TestQoderContextWindow 上下文档位目标值：缺省 0（跟随上游默认）、负数归一为 0、
+// 环境变量覆盖配置文件。
+func TestQoderContextWindow(t *testing.T) {
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "c.json")
+
+	os.WriteFile(fp, []byte(`{}`), 0o600)
+	c, err := Load(fp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Compat.QoderContextWindow != 0 {
+		t.Fatalf("缺省应为 0，得到 %d", c.Compat.QoderContextWindow)
+	}
+
+	os.WriteFile(fp, []byte(`{"compat":{"qoder_context_window":1000000}}`), 0o600)
+	c, err = Load(fp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Compat.QoderContextWindow != 1000000 {
+		t.Fatalf("应读到 1000000，得到 %d", c.Compat.QoderContextWindow)
+	}
+
+	os.WriteFile(fp, []byte(`{"compat":{"qoder_context_window":-1}}`), 0o600)
+	c, err = Load(fp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Compat.QoderContextWindow != 0 {
+		t.Fatalf("负数应归一为 0，得到 %d", c.Compat.QoderContextWindow)
+	}
+
+	t.Setenv("WILDWORK_QODER_CONTEXT_WINDOW", "400000")
+	os.WriteFile(fp, []byte(`{"compat":{"qoder_context_window":1000000}}`), 0o600)
+	c, err = Load(fp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Compat.QoderContextWindow != 400000 {
+		t.Fatalf("环境变量应覆盖配置文件，得到 %d", c.Compat.QoderContextWindow)
+	}
+}

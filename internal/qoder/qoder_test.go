@@ -446,3 +446,95 @@ func TestBuildAgentBodyReasoningFields(t *testing.T) {
 		t.Errorf("未表达档位时不应下发 enable_thinking，实际 %v", p)
 	}
 }
+
+// mustAgentBody 构造请求体并解回 map（测试辅助）。
+func mustAgentBody(t *testing.T, msgs []map[string]any, meta modelMeta) map[string]any {
+	t.Helper()
+	raw, err := buildAgentBodyMeta(msgs, meta, nil, reasoningSpec{})
+	if err != nil {
+		t.Fatalf("buildAgentBodyMeta: %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	return body
+}
+
+// TestParseContextOptions 上游 context_config → 升序去重的档位列表。
+func TestParseContextOptions(t *testing.T) {
+	raw := json.RawMessage(`{"1M":{"token_count":1000000},"200K":{"token_count":200000,"is_default":true},"400K":{"token_count":400000}}`)
+	got := parseContextOptions(raw)
+	want := []int64{200000, 400000, 1000000}
+	if len(got) != len(want) {
+		t.Fatalf("档位 = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("档位[%d] = %d, want %d（应升序）", i, got[i], want[i])
+		}
+	}
+	if opts := parseContextOptions(nil); opts != nil {
+		t.Errorf("无 context_config 应为空，得到 %v", opts)
+	}
+	if opts := parseContextOptions(json.RawMessage(`{}`)); len(opts) != 0 {
+		t.Errorf("空对象应为空，得到 %v", opts)
+	}
+}
+
+// TestPickContextWindow 按目标值就近取不超过它的最高档。
+func TestPickContextWindow(t *testing.T) {
+	meta := modelMeta{DefaultContextWindow: 200000, ContextOptions: []int64{200000, 400000, 1000000}}
+	cases := []struct {
+		target, want int64
+		reason       string
+	}{
+		{0, 200000, "未选档位跟随上游默认"},
+		{1000000, 1000000, "精确命中最大档"},
+		{400000, 400000, "精确命中中间档"},
+		{300000, 200000, "介于两档之间取下限档"},
+		{100000, 200000, "低于最小档回落默认"},
+	}
+	for _, c := range cases {
+		if got := pickContextWindow(meta, c.target); got != c.want {
+			t.Errorf("target=%d: got %d, want %d（%s）", c.target, got, c.want, c.reason)
+		}
+	}
+	if got := pickContextWindow(modelMeta{DefaultContextWindow: 200000}, 1000000); got != 200000 {
+		t.Errorf("上游未声明档位时应回落默认档，得到 %d", got)
+	}
+}
+
+// TestBuildAgentBodyHonorsContextWindow 用户选定档位投影到 parameters.context_length，
+// 且不改变 model_config.max_input_tokens（上游单次输入上限，另一字段）。
+func TestBuildAgentBodyHonorsContextWindow(t *testing.T) {
+	meta := modelMeta{
+		Key: "qfmodel", DisplayName: "Qwen3.8-Flash", IsVL: true,
+		MaxInputTokens: 180000, MaxOutputTokens: 32000,
+		DefaultContextWindow: 200000, ContextOptions: []int64{200000, 400000, 1000000},
+	}
+	msgs := []map[string]any{{"role": "user", "content": "hi"}}
+	defer SetContextWindow(0)
+
+	SetContextWindow(0)
+	body := mustAgentBody(t, msgs, meta)
+	if got := body["parameters"].(map[string]any)["context_length"]; got != float64(200000) {
+		t.Errorf("未选档位应发上游默认档 200000，得到 %v", got)
+	}
+	if got := body["model_config"].(map[string]any)["max_input_tokens"]; got != float64(180000) {
+		t.Errorf("max_input_tokens 应保持上游原值 180000，得到 %v", got)
+	}
+
+	SetContextWindow(1000000)
+	body = mustAgentBody(t, msgs, meta)
+	if got := body["parameters"].(map[string]any)["context_length"]; got != float64(1000000) {
+		t.Errorf("选 1M 应发 1M，得到 %v", got)
+	}
+
+	narrow := meta
+	narrow.ContextOptions = []int64{200000, 400000}
+	body = mustAgentBody(t, msgs, narrow)
+	if got := body["parameters"].(map[string]any)["context_length"]; got != float64(400000) {
+		t.Errorf("模型不支持 1M 时应就近取 400K，得到 %v", got)
+	}
+}

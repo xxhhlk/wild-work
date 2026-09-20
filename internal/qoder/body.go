@@ -9,6 +9,7 @@ package qoder
 
 import (
 	"encoding/json"
+	"sync/atomic"
 	"time"
 )
 
@@ -42,12 +43,42 @@ type reasoningSpec struct {
 // modelMeta 上游模型元数据：model_config 与 parameters 的取值来源。
 // 由 FetchModels 从上游模型目录填充；零值字段在构造请求体时回落默认值。
 type modelMeta struct {
-	Key                  string // 上游 model key（如 qfmodel）
-	DisplayName          string // 目录里的 display_name（如 Qwen3.8-Flash）
-	IsVL                 bool   // is_vl
-	MaxInputTokens       int64  // max_input_tokens
-	MaxOutputTokens      int64  // max_output_tokens（→ parameters.max_tokens）
-	DefaultContextWindow int64  // 默认上下文窗口（→ parameters.context_length，>0 才下发）
+	Key                  string  // 上游 model key（如 qfmodel）
+	DisplayName          string  // 目录里的 display_name（如 Qwen3.8-Flash）
+	IsVL                 bool    // is_vl
+	MaxInputTokens       int64   // max_input_tokens
+	MaxOutputTokens      int64   // max_output_tokens（→ parameters.max_tokens）
+	DefaultContextWindow int64   // 上游标了 is_default 的档位
+	ContextOptions       []int64 // 上游允许的全部窗口档位（升序）
+}
+
+// contextWindowTarget 用户选定的上下文窗口目标值（0 = 跟随上游默认档）。
+// 面板热更新，请求构造时读取。
+var contextWindowTarget atomic.Int64
+
+// SetContextWindow 设置上下文窗口目标值；0 表示跟随上游 is_default 档。
+func SetContextWindow(n int64) {
+	if n < 0 {
+		n = 0
+	}
+	contextWindowTarget.Store(n)
+}
+
+// pickContextWindow 按目标值从模型可选档位里取不超过目标的最高档；
+// 目标为 0、无可用档位或目标低于最小档时回落上游 is_default 档。
+func pickContextWindow(meta modelMeta, target int64) int64 {
+	if target > 0 {
+		best := int64(0)
+		for _, opt := range meta.ContextOptions {
+			if opt <= target && opt > best {
+				best = opt
+			}
+		}
+		if best > 0 {
+			return best
+		}
+	}
+	return meta.DefaultContextWindow
 }
 
 // buildAgentBody 构造请求体（无模型元数据时的兼容入口，元数据按默认值补）。
@@ -67,7 +98,7 @@ func buildAgentBody(messages []map[string]any, modelKey string, tools []any, spe
 //	parameters.reasoning_effort          = spec.Effort     （仅非空时写）
 //	parameters.enable_thinking           = spec.Enabled    （仅非空时写）
 //	parameters.max_tokens                = meta.MaxOutputTokens（恒下发）
-//	parameters.context_length            = meta.DefaultContextWindow（已知才写）
+//	parameters.context_length            = 用户目标档位就近取值，回落 meta.DefaultContextWindow（>0 才写）
 //
 // 注意 1：developer 角色必须改写为 system。
 // 注意 2：桌面端把 system 文本块**同时**放在顶层 system 与 messages[0]
@@ -123,8 +154,8 @@ func buildAgentBodyMeta(messages []map[string]any, meta modelMeta, tools []any, 
 		params["reasoning_effort"] = spec.Effort
 		params["enable_thinking"] = spec.Enabled
 	}
-	if meta.DefaultContextWindow > 0 {
-		params["context_length"] = meta.DefaultContextWindow
+	if cw := pickContextWindow(meta, contextWindowTarget.Load()); cw > 0 {
+		params["context_length"] = cw
 	}
 
 	base := map[string]any{

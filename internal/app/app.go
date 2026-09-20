@@ -1126,8 +1126,9 @@ func (a *App) ServerRunning() bool {
 // reasoningEffort 为空表示不注入默认档；reasoningSummary 为空按 auto 处理；
 // deepseekThinking 控制 WorkBuddy 上游 DeepSeek 系的 thinking 开关字段与回填；
 // staticEffortFallback 控制档位静态兜底表（上游未声明档位时是否用内置表补齐）；
+// qoderContextWindow 控制 Qoder 请求下发的上下文窗口档位（0 = 跟随上游默认档）；
 // 非法取值直接报错（不写盘）。
-func (a *App) SetCompat(defaultChannel string, maxTokensCap int, modelMap map[string]string, reasoningEffort, reasoningSummary string, deepseekThinking, staticEffortFallback bool) error {
+func (a *App) SetCompat(defaultChannel string, maxTokensCap int, modelMap map[string]string, reasoningEffort, reasoningSummary string, deepseekThinking, staticEffortFallback bool, qoderContextWindow int64) error {
 	if modelMap == nil {
 		modelMap = map[string]string{}
 	}
@@ -1155,6 +1156,10 @@ func (a *App) SetCompat(defaultChannel string, maxTokensCap int, modelMap map[st
 	a.cfg.Compat.ResponsesReasoningSummary = summary
 	a.cfg.Compat.DeepseekThinking = &deepseekThinking
 	a.cfg.Compat.StaticEffortFallback = &staticEffortFallback
+	if qoderContextWindow < 0 {
+		qoderContextWindow = 0
+	}
+	a.cfg.Compat.QoderContextWindow = qoderContextWindow
 	err = config.Save(a.cfg, a.cfgPath)
 	a.mu.Unlock()
 	if err != nil {
@@ -1172,8 +1177,10 @@ func (a *App) SetCompat(defaultChannel string, maxTokensCap int, modelMap map[st
 	upstream.SetDeepseekThinking(deepseekThinking)
 	// 档位静态兜底表开关作用于档位层（包级开关），立即生效。
 	reasoning.SetStaticEffortFallback(staticEffortFallback)
-	log.Printf("模型名路由配置已更新：default_channel=%q max_tokens_cap=%d reasoning_effort=%q responses_reasoning_summary=%q deepseek_thinking=%v static_effort_fallback=%v model_map=%d 条",
-		defaultChannel, maxTokensCap, effort, summary, deepseekThinking, staticEffortFallback, len(modelMap))
+	// Qoder 上下文档位目标值作用于请求体构造（包级开关），立即生效。
+	qoder.SetContextWindow(qoderContextWindow)
+	log.Printf("模型名路由配置已更新：default_channel=%q max_tokens_cap=%d reasoning_effort=%q responses_reasoning_summary=%q deepseek_thinking=%v static_effort_fallback=%v qoder_context_window=%d model_map=%d 条",
+		defaultChannel, maxTokensCap, effort, summary, deepseekThinking, staticEffortFallback, qoderContextWindow, len(modelMap))
 	return nil
 }
 
@@ -1242,8 +1249,10 @@ type State struct {
 		// DeepseekThinking WorkBuddy 上游 DeepSeek 系思考改写开关（默认 true）
 		DeepseekThinking bool `json:"deepseek_thinking"`
 		// StaticEffortFallback 档位静态兜底表开关（默认 true）
-		StaticEffortFallback bool     `json:"static_effort_fallback"`
-		Channels             []string `json:"channels"` // 可用渠道列表（供 UI 下拉）
+		StaticEffortFallback bool `json:"static_effort_fallback"`
+		// QoderContextWindow Qoder 上下文窗口档位目标值（0 = 跟随上游默认档）
+		QoderContextWindow int64    `json:"qoder_context_window"`
+		Channels           []string `json:"channels"` // 可用渠道列表（供 UI 下拉）
 	} `json:"compat"`
 }
 
@@ -1267,6 +1276,7 @@ func (a *App) GetState() State {
 	st.Compat.ResponsesReasoningSummary = a.cfg.Compat.ResponsesReasoningSummary
 	st.Compat.DeepseekThinking = a.cfg.DeepseekThinkingEnabled()
 	st.Compat.StaticEffortFallback = a.cfg.StaticEffortFallbackEnabled()
+	st.Compat.QoderContextWindow = a.cfg.Compat.QoderContextWindow
 	st.Compat.ModelMap = a.cfg.Compat.ModelMap
 	if st.Compat.ModelMap == nil {
 		st.Compat.ModelMap = map[string]string{}
@@ -1277,6 +1287,26 @@ func (a *App) GetState() State {
 	sort.Strings(st.Compat.Channels)
 	st.Accounts = a.accountViews()
 	return st
+}
+
+// QoderContextOptions 汇总 Qoder 各模型声明的可选窗口档位（升序去重），供面板下拉。
+// 数据来自与 /v1/models 同一份渠道模型清单（内部有 TTL 缓存）。
+func (a *App) QoderContextOptions() []int64 {
+	if a.handler == nil {
+		return nil
+	}
+	seen := map[int64]bool{}
+	var out []int64
+	for _, mi := range a.handler.ChannelModels()[provider.Qoder] {
+		for _, o := range mi.ContextOptions {
+			if o > 0 && !seen[o] {
+				seen[o] = true
+				out = append(out, o)
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
 }
 
 func (a *App) accountViews() []AccountView {
@@ -1508,6 +1538,13 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	})
+	mux.HandleFunc("GET /api/config/qoder_context_options", func(w http.ResponseWriter, r *http.Request) {
+		opts := a.QoderContextOptions()
+		if opts == nil {
+			opts = []int64{}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"options": opts})
+	})
 	mux.HandleFunc("POST /api/config/compat", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			DefaultChannel            string            `json:"default_channel"`
@@ -1517,6 +1554,7 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 			ResponsesReasoningSummary string            `json:"responses_reasoning_summary"`
 			DeepseekThinking          *bool             `json:"deepseek_thinking"`
 			StaticEffortFallback      *bool             `json:"static_effort_fallback"`
+			QoderContextWindow        int64             `json:"qoder_context_window"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		// 字段缺失（旧版前端/第三方调用）按启用处理，避免静默关掉该能力。
@@ -1528,7 +1566,7 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		if req.StaticEffortFallback != nil {
 			staticEffortFallback = *req.StaticEffortFallback
 		}
-		if err := a.SetCompat(req.DefaultChannel, req.MaxTokensCap, req.ModelMap, req.ReasoningEffort, req.ResponsesReasoningSummary, deepseekThinking, staticEffortFallback); err != nil {
+		if err := a.SetCompat(req.DefaultChannel, req.MaxTokensCap, req.ModelMap, req.ReasoningEffort, req.ResponsesReasoningSummary, deepseekThinking, staticEffortFallback, req.QoderContextWindow); err != nil {
 			apiError(w, http.StatusBadRequest, err.Error())
 			return
 		}

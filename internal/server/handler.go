@@ -320,11 +320,17 @@ func (h *Handler) modelList() []map[string]any {
 func buildModelEntry(k provider.Kind, mi provider.ModelInfo) map[string]any {
 	id := k.String() + "/" + mi.ID
 	entry := map[string]any{"id": id, "object": "model", "created": 1753600000, "owned_by": k.String()}
-	if mi.ContextWindow > 0 {
+	// 只透出上游声明的容量：硬编码估算值（ContextFromAPI=false）不当作真实值，
+	// 与面板「未知」的口径保持一致，避免客户端按错误预算裁剪上下文。
+	if mi.ContextFromAPI && mi.ContextWindow > 0 {
 		entry["context_length"] = mi.ContextWindow
 	}
-	if mi.MaxTokens > 0 {
+	if mi.ContextFromAPI && mi.MaxTokens > 0 {
 		entry["max_output_tokens"] = mi.MaxTokens
+	}
+	// 上游声明的可选上下文档位（Qoder context_config），供客户端/面板选择。
+	if len(mi.ContextOptions) > 0 {
+		entry["context_options"] = mi.ContextOptions
 	}
 	entry["architecture"] = map[string]any{
 		"input_modalities": mi.InputModalities(),

@@ -92,6 +92,11 @@ type ModelInfo struct {
 	// false 表示是硬编码估算/占位（如渠道不返回该字段），
 	// 消费方（面板/API）不应把估值当作真实容量展示。
 	ContextFromAPI bool
+	// ContextOptions 上游声明的可选上下文窗口档位（升序去重）。
+	// 与 ContextWindow 的区别：后者是「本工具当前会用的值」，
+	// 前者是上游允许选的全部档位（Qoder 的 context_config）。
+	// 空表示上游未声明可选档位。
+	ContextOptions []int64
 	// 以下能力字段均为「已确认为 true」才置 true；数据缺失时保持 false（未知）。
 	// 未知与「明确不支持」在语义上不同，但对消费方（/v1/models 声明、UI 图标）
 	// 的处理一致：不声明该能力。需要区分时由各渠道自行记录来源。

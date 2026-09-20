@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -114,6 +115,30 @@ func parseDefaultContextWindow(raw json.RawMessage) int64 {
 	return 0
 }
 
+// parseContextOptions 从 context_config 取全部可选窗口档位，升序去重。
+// 形状：{"1M":{"token_count":1000000},"200K":{"token_count":200000,"is_default":true},...}
+func parseContextOptions(raw json.RawMessage) []int64 {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var cfg map[string]struct {
+		TokenCount int64 `json:"token_count"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return nil
+	}
+	seen := make(map[int64]bool, len(cfg))
+	out := make([]int64, 0, len(cfg))
+	for _, v := range cfg {
+		if v.TokenCount > 0 && !seen[v.TokenCount] {
+			seen[v.TokenCount] = true
+			out = append(out, v.TokenCount)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
 // containsEffort 档位成员判定。
 func containsEffort(efforts []string, want string) bool {
 	want = strings.ToLower(strings.TrimSpace(want))
@@ -199,6 +224,7 @@ func (c *Client) FetchModels(a *auth.Auth) ([]provider.ModelInfo, error) {
 			name = m.Key
 		}
 		mm[name] = m.Key
+		opts := parseContextOptions(m.ContextConfig)
 		metas[m.Key] = modelMeta{
 			Key:                  m.Key,
 			DisplayName:          m.DisplayName,
@@ -206,12 +232,13 @@ func (c *Client) FetchModels(a *auth.Auth) ([]provider.ModelInfo, error) {
 			MaxInputTokens:       m.MaxInputTokens,
 			MaxOutputTokens:      m.MaxOutputTokens,
 			DefaultContextWindow: parseDefaultContextWindow(m.ContextConfig),
+			ContextOptions:       opts,
 		}
 		caps := parseThinkingConfig(m.ThinkingConfig)
 		mi := provider.ModelInfo{
-			ID:            name,
-			Name:          m.DisplayName,
-			ContextWindow: 180000,
+			ID:             name,
+			Name:           m.DisplayName,
+			ContextOptions: opts,
 			// is_vl 即上游的视觉能力声明；is_reasoning 为思考模式。
 			SupportsImages:    m.IsVL,
 			SupportsReasoning: m.IsReasoning,
@@ -223,9 +250,15 @@ func (c *Client) FetchModels(a *auth.Auth) ([]provider.ModelInfo, error) {
 			mi.DefaultEffort = caps.DefaultEffort
 		}
 		mi.ReasoningCanDisable = caps.SupportsDisable
-		if m.MaxInputTokens > 0 {
+		// 上下文窗口对外展示的是上游允许的最大档位：max_input_tokens 是单次输入
+		// 上限（目录里多为 180000），与可选的上下文窗口档位不是同一个量。
+		switch {
+		case len(opts) > 0:
+			mi.ContextWindow = opts[len(opts)-1]
+			mi.ContextFromAPI = true
+		case m.MaxInputTokens > 0:
 			mi.ContextWindow = m.MaxInputTokens
-			mi.ContextFromAPI = true // 接口真实返回
+			mi.ContextFromAPI = true
 		}
 		out = append(out, mi)
 	}

@@ -58,7 +58,7 @@ func TestModelEntryContract(t *testing.T) {
 
 // TestModelEntryTextOnly 不支持图像的模型只声明 text 模态。
 func TestModelEntryTextOnly(t *testing.T) {
-	mi := provider.ModelInfo{ID: "text-model", ContextWindow: 1000}
+	mi := provider.ModelInfo{ID: "text-model", ContextWindow: 1000, ContextFromAPI: true}
 	entry := buildModelEntry(provider.WorkBuddy, mi)
 
 	arch, _ := entry["architecture"].(map[string]any)
@@ -75,5 +75,25 @@ func TestModelEntryTextOnly(t *testing.T) {
 	}
 	if _, has := entry["max_output_tokens"]; has {
 		t.Error("MaxTokens 为 0 时不应输出 max_output_tokens")
+	}
+}
+
+// TestModelEntryOmitsEstimatedCapacity 硬编码估算的容量不外溢到 /v1/models，
+// 与面板「未知」口径一致；上游声明的可选档位照常透出。
+func TestModelEntryOmitsEstimatedCapacity(t *testing.T) {
+	mi := provider.ModelInfo{ID: "est-model", ContextWindow: 180000, MaxTokens: 32000}
+	entry := buildModelEntry(provider.Qoder, mi)
+	if _, has := entry["context_length"]; has {
+		t.Errorf("估算值不应输出 context_length，得到 %v", entry["context_length"])
+	}
+	if _, has := entry["max_output_tokens"]; has {
+		t.Errorf("估算值不应输出 max_output_tokens，得到 %v", entry["max_output_tokens"])
+	}
+
+	mi = provider.ModelInfo{ID: "opt-model", ContextOptions: []int64{200000, 400000, 1000000}}
+	entry = buildModelEntry(provider.Qoder, mi)
+	opts, ok := entry["context_options"].([]int64)
+	if !ok || len(opts) != 3 || opts[2] != 1000000 {
+		t.Errorf("context_options 应透传，得到 %v", entry["context_options"])
 	}
 }

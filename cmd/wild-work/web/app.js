@@ -602,6 +602,25 @@ async function toggleAutostart() {
   } catch (e) { toast(e.message); loadState(); }
 }
 
+// fillQoderContext 填充 Qoder 上下文档位下拉。
+// 选项来自上游模型目录（后端汇总），打开对话框时拉一次；
+// 配置值不在选项里时补一项，否则 select.value 赋值失败会退回默认档，保存时把设置悄悄改掉。
+async function fillQoderContext(current) {
+  const sel = $("selQoderCtx");
+  let opts = [];
+  try {
+    opts = (await api("/api/config/qoder_context_options")).options || [];
+  } catch (e) { opts = []; }
+  sel.innerHTML = [`<option value="0">跟随上游默认档</option>`]
+    .concat(opts.map(n => `<option value="${n}">${fmtTokens(n)}</option>`)).join("");
+  const val = String(current || 0);
+  if (val !== "0" && ![...sel.options].some(o => o.value === val)) {
+    sel.add(new Option(fmtTokens(Number(val)), val));
+  }
+  sel.value = val;
+  sel.dataset.ready = "1";
+}
+
 // ---------- API 配置弹层 ----------
 function openApiConfig() {
   $("inPort").value = state.listen_port;
@@ -636,6 +655,8 @@ function openApiConfig() {
   $("chkDsThink").checked = cc.deepseek_thinking !== false;
   // 档位静态兜底表开关：字段缺失按启用（与后端一致）
   $("chkEffortFallback").checked = cc.static_effort_fallback !== false;
+  // Qoder 上下文档位：选项按需拉取（不拖慢面板初始化）
+  fillQoderContext(cc.qoder_context_window || 0);
   const map = cc.model_map || {};
   const entries = Object.entries(map);
   $("mapSummary").textContent = entries.length === 0 ? "（空）" : entries.map(([k,v]) => `${k} → ${v}`).join("\u00A0 \u00A0");
@@ -736,8 +757,13 @@ async function saveApiConfig() {
   const responsesReasoningSummary = $("selSummary").value || "auto";
   const deepseekThinking = $("chkDsThink").checked;
   const staticEffortFallback = $("chkEffortFallback").checked;
+  // 下拉选项尚未填充完成时保持原值，避免把用户设置静默清零
+  const ctxSel = $("selQoderCtx");
+  const qoderContextWindow = ctxSel.dataset.ready === "1"
+    ? (parseInt(ctxSel.value, 10) || 0)
+    : ((state.compat || {}).qoder_context_window || 0);
   try {
-    await api("/api/config/compat", { default_channel: defaultChannel, max_tokens_cap: maxTokensCap, reasoning_effort: reasoningEffort, responses_reasoning_summary: responsesReasoningSummary, deepseek_thinking: deepseekThinking, static_effort_fallback: staticEffortFallback, model_map: modelMap });
+    await api("/api/config/compat", { default_channel: defaultChannel, max_tokens_cap: maxTokensCap, reasoning_effort: reasoningEffort, responses_reasoning_summary: responsesReasoningSummary, deepseek_thinking: deepseekThinking, static_effort_fallback: staticEffortFallback, qoder_context_window: qoderContextWindow, model_map: modelMap });
     toast("模型路由已更新");
     closeApiConfig();
     loadState();

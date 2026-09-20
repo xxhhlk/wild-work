@@ -253,6 +253,12 @@ func main() {
 	reasoning.SetStaticEffortFallback(cfg.StaticEffortFallbackEnabled())
 	log.Printf("思考控制：static_effort_fallback=%v（上游目录未下发档位能力时是否用内置表补齐）",
 		cfg.StaticEffortFallbackEnabled())
+	// Qoder 上下文窗口档位（请求体构造用包级开关；面板保存 compat 时会热更新）
+	qoder.SetContextWindow(cfg.Compat.QoderContextWindow)
+	if cfg.Compat.QoderContextWindow > 0 {
+		log.Printf("Qoder 上下文窗口：目标 %d tokens（按模型可选档位就近取不超过它的最高档）",
+			cfg.Compat.QoderContextWindow)
+	}
 	appInst.SetHandler(inner)
 	appInst.SetRootHandler(mux)
 	compat.SetAPIKeySource(inner.CurrentAPIKey) // 面板改 API-Key 后，兼容层立即跟随

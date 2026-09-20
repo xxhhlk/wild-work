@@ -342,6 +342,8 @@ func (c *Client) FetchModels(a *auth.Auth) ([]provider.ModelInfo, error) {
 			ID:            m.Key,
 			Name:          displayName(m),
 			ContextWindow: ctx,
+			// 兜底值不算「上游声明」：缺失时面板显示未知、/v1/models 不输出该字段。
+			ContextFromAPI: m.MaxInputTokens > 0,
 			// 能力：/api/chat-modes 声明三档均 is_reasoning/is_vl（pro 声明 is_vl=false），
 			// 实测 pro 路由 glm-5.2 思考可选；工具调用三档实测均支持。
 			SupportsImages:    m.Key != "pro",

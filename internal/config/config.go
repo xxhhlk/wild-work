@@ -169,6 +169,12 @@ type Config struct {
 		// 并参与就近降级（见 internal/reasoning/catalog.go）；
 		// false：只认上游目录下发值，未下发的模型不降级（实测对比用）。
 		StaticEffortFallback *bool `json:"static_effort_fallback"`
+		// QoderContextWindow Qoder 上下文窗口档位目标值（token 数）。
+		// 0 / 未设置（默认）：用上游模型目录里标了 is_default 的那档；
+		// >0：按该值从上游允许的档位里取不超过它的最高档
+		// （如选 1000000，支持 1M 的模型发 1M，只到 200K 的模型发 200K）。
+		// 仅 Qoder 生效：其它渠道的协议里没有可选的上下文档位。
+		QoderContextWindow int64 `json:"qoder_context_window"`
 	} `json:"compat"`
 
 	// 解析后
@@ -357,6 +363,11 @@ func applyEnv(c *Config) {
 			c.Compat.StaticEffortFallback = &b
 		}
 	}
+	if v := os.Getenv("WILDWORK_QODER_CONTEXT_WINDOW"); v != "" {
+		if n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64); err == nil {
+			c.Compat.QoderContextWindow = n
+		}
+	}
 }
 
 // parseBoolLoose 宽松布尔解析（环境变量用）：1/true/yes/on 与 0/false/no/off。
@@ -390,6 +401,9 @@ func (c *Config) normalize() error {
 	}
 	if c.Compat.MaxTokensCap < 0 {
 		c.Compat.MaxTokensCap = 0 // 负数视为「不限制」，避免误用导致 max_tokens 被置 0
+	}
+	if c.Compat.QoderContextWindow < 0 {
+		c.Compat.QoderContextWindow = 0 // 负数视为「跟随上游默认档」
 	}
 	// 思考强度默认档：归一化为标准档位（"" 表示不注入）；非法取值在加载阶段就报错
 	effort, err := reasoning.ParseDefault(c.Compat.ReasoningEffort)
