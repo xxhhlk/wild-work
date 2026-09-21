@@ -202,6 +202,9 @@ POST /api/quit                     # 退出程序
     与 body 其余字段（model_config / system / tools / parameters / chat_context / session_type）全部无关**。
     实测矩阵与取证方法见 `docs/千问办公QwenWork逆向对比备忘.md` §10。
     改本渠道请求形状前后必须跑 `TestLiveProbeReasoning`（`-tags live`，走 `ChatStream` 全链路）。
+    **本渠道刻意不投影任何思考字段**：千问办公官方客户端本身没有思考控制设置（无档位/开关 UI），
+    抓包确认其请求体也不带 `reasoning_effort` / `enable_thinking` —— 这是符合官方行为、**不是缺口**，
+    不要为它补档位投影（用户 2026-09-22 确认）。
 
 ## 7. 平台能力差异表（internal/platform）
 
