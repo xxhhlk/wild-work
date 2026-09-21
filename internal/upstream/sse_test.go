@@ -109,6 +109,42 @@ func TestPrepareBodyMaxCompletionTokensInvalidUntranslated(t *testing.T) {
 	}
 }
 
+// Responses 协议别名 max_output_tokens：正整数继承为 max_tokens；null/0
+// （客户端用「未设置」表达）一律删除，不再透传给上游触发整数下限校验（11133）。
+func TestPrepareBodyMaxOutputTokensConverged(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want any // nil 表示不应出现 max_tokens
+	}{
+		{"正整数继承", `{"max_output_tokens":8192,"messages":[{"role":"user","content":"x"}]}`, float64(8192)},
+		{"null 删除", `{"max_output_tokens":null,"messages":[{"role":"user","content":"x"}]}`, nil},
+		{"0 删除", `{"max_output_tokens":0,"messages":[{"role":"user","content":"x"}]}`, nil},
+		{"显式 max_tokens 优先", `{"max_tokens":32000,"max_output_tokens":8192,"messages":[{"role":"user","content":"x"}]}`, float64(32000)},
+		{"max_tokens 为 null 时由别名顶替", `{"max_tokens":null,"max_output_tokens":8192,"messages":[{"role":"user","content":"x"}]}`, float64(8192)},
+		{"max_tokens 为 0 时由别名顶替", `{"max_tokens":0,"max_output_tokens":8192,"messages":[{"role":"user","content":"x"}]}`, float64(8192)},
+		{"max_completion_tokens 优先于 max_output_tokens", `{"max_completion_tokens":16000,"max_output_tokens":8192,"messages":[{"role":"user","content":"x"}]}`, float64(16000)},
+		{"非整数值删除", `{"max_output_tokens":8.5,"messages":[{"role":"user","content":"x"}]}`, nil},
+	}
+	for _, c := range cases {
+		out := PrepareBody([]byte(c.src))
+		var m map[string]any
+		json.Unmarshal(out, &m)
+		if _, has := m["max_output_tokens"]; has {
+			t.Errorf("%s: alias should be dropped", c.name)
+		}
+		if c.want == nil {
+			if v, has := m["max_tokens"]; has {
+				t.Errorf("%s: max_tokens 不应出现，得到 %v", c.name, v)
+			}
+			continue
+		}
+		if m["max_tokens"] != c.want {
+			t.Errorf("%s: max_tokens=%v want %v", c.name, m["max_tokens"], c.want)
+		}
+	}
+}
+
 // 缺失时补 stream_options include_usage；显式带了则不覆盖。
 func TestPrepareBodyStreamOptionsDefault(t *testing.T) {
 	out := PrepareBody([]byte(`{"model":"glm-5.2","messages":[]}`))

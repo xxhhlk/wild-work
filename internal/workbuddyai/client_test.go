@@ -269,3 +269,37 @@ func TestPrepareBodyClampsEffortByGlobalRealm(t *testing.T) {
 		}
 	}
 }
+
+// 输出上限三别名收敛在国际版同样生效：null/0 形态透传会被上游按整数下限拒掉
+// （实测 11133 param=max_output_tokens）。
+func TestPrepareBodyConvergesOutputLimits(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want any
+	}{
+		{"max_output_tokens 正整数继承", `{"max_output_tokens":8192}`, float64(8192)},
+		{"max_output_tokens null 删除", `{"max_output_tokens":null}`, nil},
+		{"max_tokens null 时不透传", `{"max_tokens":null}`, nil},
+		{"显式 max_tokens 优先", `{"max_tokens":32000,"max_output_tokens":8192}`, float64(32000)},
+	}
+	for _, c := range cases {
+		out := PrepareBody([]byte(`{"model":"gpt-5.6-luna","messages":[],` + c.src[1:]))
+		var obj map[string]any
+		if err := json.Unmarshal(out, &obj); err != nil {
+			t.Fatalf("%s: unmarshal: %v", c.name, err)
+		}
+		if _, has := obj["max_output_tokens"]; has {
+			t.Errorf("%s: 别名不应透传", c.name)
+		}
+		if c.want == nil {
+			if v, has := obj["max_tokens"]; has {
+				t.Errorf("%s: max_tokens 不应出现，得到 %v", c.name, v)
+			}
+			continue
+		}
+		if obj["max_tokens"] != c.want {
+			t.Errorf("%s: max_tokens=%v want %v", c.name, obj["max_tokens"], c.want)
+		}
+	}
+}

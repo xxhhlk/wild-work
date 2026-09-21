@@ -27,18 +27,10 @@ func prepareBodyInner(src []byte) []byte {
 		return src
 	}
 	obj["stream"] = true
-	// max_completion_tokens → max_tokens 翻译（吸收 PR #116，Closes #117）：
-	// OpenAI 规范里 max_tokens 已 deprecated、max_completion_tokens 是新字段
-	// （o-series 起引入）；DeepSeek Harness 等新客户端只发别名。WorkBuddy 上游
-	//（CN /v2 与 global /console 同源，见 context_catalog「两区是同一套 API 的两次
-	// 部署」实测结论）只认 max_tokens——别名透传会被上游忽略后回落默认输出上限
-	//（实测 32000），长流任务被截。
-	//   - 显式 max_tokens 存在 → 原样保留（显式优先，别名只删不译）；
-	//   - 别名值为 0/null/负数/非数值 → 不翻译（0/null 语义是「未设置」，走上游
-	//     默认；负数是非法值，翻译等于把垃圾搬进 max_tokens）；
-	//   - 翻译后删别名字段（上游 Go struct 未知字段宽松，但留着徒增 body 体积与
-	//     排障噪音）。
-	translateMaxCompletionTokens(obj)
+	// 输出上限字段收敛（吸收 PR #116，Closes #117）：上游只认正整数 max_tokens，
+	// 别名透传要么被忽略后回落默认上限（长流被截），要么被上游按参数校验拒绝
+	//（实测 11133 param=max_output_tokens）。见 NormalizeOutputLimits。
+	NormalizeOutputLimits(obj)
 	// stream_options 仅当 body 未显式带时补 {include_usage: true}（D7）：
 	// 官方 CLI 流式必发该字段，上游据此在末帧返回 usage 用量；显式带则不覆盖。
 	if _, has := obj["stream_options"]; !has {
@@ -73,38 +65,65 @@ func prepareBodyInner(src []byte) []byte {
 	return out
 }
 
-// translateMaxCompletionTokens 把 OpenAI 别名 max_completion_tokens 翻译为上游
-// 认的 max_tokens（吸收 PR #116）。调用点在 PrepareBodyOptWithEffortsAndDefault
-// 管线 stream 强制之后（同一预处理管线挂载，任务书 prompt-too-long §3）。
-// 规则：显式 max_tokens 优先（别名只删）；别名非正数值（0/null/负数）不翻译；
-// 非数值别名（字符串等畸形）不翻译（原样透传由上游报 11101 参数错）。
-// 两域同口径：CN /v2 与 global /console 是同一套 API（见 context_catalog 文件头
-// 实测结论），翻译不分 realm——global 域上游同样只认 max_tokens。
-func translateMaxCompletionTokens(obj map[string]any) {
-	alias, has := obj["max_completion_tokens"]
-	delete(obj, "max_completion_tokens") // 无论翻译与否，别名一律删（见上方注释）
-	if !has {
+// NormalizeOutputLimits 把出站请求的输出上限收敛为「至多一个正整数 max_tokens」，
+// 并删除全部别名（max_completion_tokens / max_output_tokens）。调用点在预处理管线
+// 的 stream 强制之后（同一管线挂载，任务书 prompt-too-long §3）。
+//
+// OpenAI 规范里 max_tokens 已 deprecated：新客户端用 max_completion_tokens
+// （o-series 起），走 Responses 协议的客户端用 max_output_tokens，且常以
+// null 表示「未设置」。WorkBuddy 上游（CN /v2 与 global /console 同源）只认
+// max_tokens——别名透传会被忽略后回落默认输出上限（实测 32000），长流任务被截；
+// 显式带 null/0 的形态更会被上游的整数下限校验直接拒掉（11133
+// param=max_output_tokens），故这类形态一律删除而不是原样转发。
+//
+//   - max_tokens 为正整数 → 保留（显式优先，别名只删不译，整数去整后回写，
+//     避免 1.28e5 科学计数法/小数尾巴进上游 body）；
+//   - max_tokens 缺失或非正（0/null/负数/非整数/非数值）→ 删除该键，改由别名顶替；
+//   - 别名按 max_completion_tokens → max_output_tokens 顺序取首个正整数值；
+//   - 三者都没有正整数值 → 不写 max_tokens，走上游默认。
+//
+// 两域同口径：CN /v2 与 global /console 是同一套 API 的两次部署，翻译不分 realm。
+func NormalizeOutputLimits(obj map[string]any) {
+	var alias int64
+	hasAlias := false
+	for _, k := range []string{"max_completion_tokens", "max_output_tokens"} {
+		v, has := obj[k]
+		delete(obj, k) // 无论翻译与否，别名一律删（上游 Go struct 未知字段宽松，留着徒增噪音）
+		if !has || hasAlias {
+			continue
+		}
+		if n, ok := positiveInt64(v); ok {
+			alias, hasAlias = n, true
+		}
+	}
+	if n, ok := positiveInt64(obj["max_tokens"]); ok {
+		obj["max_tokens"] = n
 		return
 	}
-	if _, explicit := obj["max_tokens"]; explicit {
-		return // 显式 max_tokens 优先：别名只删不译
+	delete(obj, "max_tokens")
+	if hasAlias {
+		obj["max_tokens"] = alias
 	}
-	// json.Unmarshal 数字 → float64（整数去整后回写，避免 1.28e5 科学计数法/小数尾
-	// 巴进上游 body）；其他数值类型防御性兼容（int 家族——手构造 map 的调用方）。
-	switch v := alias.(type) {
+}
+
+// positiveInt64 取正整数值。json.Unmarshal 的数字是 float64，需去整；int 家族为
+// 手构造 map 的调用方防御性兼容。非正/非整/非数值一律视为「没有」。
+func positiveInt64(v any) (int64, bool) {
+	switch n := v.(type) {
 	case float64:
-		if v > 0 && v == float64(int64(v)) {
-			obj["max_tokens"] = int64(v)
+		if n > 0 && n == float64(int64(n)) {
+			return int64(n), true
 		}
 	case int64:
-		if v > 0 {
-			obj["max_tokens"] = v
+		if n > 0 {
+			return n, true
 		}
 	case int:
-		if v > 0 {
-			obj["max_tokens"] = int64(v)
+		if n > 0 {
+			return int64(n), true
 		}
 	}
+	return 0, false
 }
 
 // normalizeRoles 把 messages 里的 developer 角色归一为 system。

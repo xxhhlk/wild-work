@@ -32,7 +32,7 @@ func prepareBodyInner(src []byte) []byte {
 		return src
 	}
 	obj["stream"] = true
-	translateMaxCompletionTokensWBAI(obj)
+	upstream.NormalizeOutputLimits(obj)
 	if _, has := obj["stream_options"]; !has {
 		obj["stream_options"] = map[string]any{"include_usage": true}
 	}
@@ -125,31 +125,6 @@ func normalizeToolChoice(obj map[string]any) {
 		}
 	default:
 		delete(obj, "tool_choice")
-	}
-}
-
-func translateMaxCompletionTokensWBAI(obj map[string]any) {
-	alias, has := obj["max_completion_tokens"]
-	delete(obj, "max_completion_tokens")
-	if !has {
-		return
-	}
-	if _, explicit := obj["max_tokens"]; explicit {
-		return
-	}
-	switch v := alias.(type) {
-	case float64:
-		if v > 0 && v == float64(int64(v)) {
-			obj["max_tokens"] = int64(v)
-		}
-	case int64:
-		if v > 0 {
-			obj["max_tokens"] = v
-		}
-	case int:
-		if v > 0 {
-			obj["max_tokens"] = int64(v)
-		}
 	}
 }
 
