@@ -255,8 +255,8 @@ func (c *Client) chatStreamOnce(a *auth.Auth, prepared []byte) (rc io.ReadCloser
 	if resp.StatusCode >= 400 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		resp.Body.Close()
-		log.Printf("workbuddyai chat_stream uid=%s: upstream %d %s body=%s",
-			a.UID, resp.StatusCode, Classify(resp.StatusCode, string(raw)), provider.LogBody(string(raw)))
+		log.Printf("workbuddyai chat_stream uid=%s: upstream %d %s body=%s req=%s",
+			a.UID, resp.StatusCode, Classify(resp.StatusCode, string(raw)), provider.LogBody(string(raw)), provider.LogParams(prepared))
 		return nil, resp.StatusCode, raw, nil
 	}
 	return resp.Body, resp.StatusCode, nil, nil

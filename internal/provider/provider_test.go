@@ -47,6 +47,30 @@ func TestLogBody(t *testing.T) {
 	}
 }
 
+func TestLogParams(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.6-luna","stream":true,"max_tokens":32000,` +
+		`"thinking":{"type":"enabled"},"messages":[{"role":"user","content":"hi"}],` +
+		`"tools":[{"type":"function","function":{"name":"t"}}],"user":"u-1","instructions":"` + strings.Repeat("x", 300) + `"}`)
+	got := LogParams(body)
+	for _, unwanted := range []string{"messages", "tools", "function"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("参数摘要不应含 %q：%s", unwanted, got)
+		}
+	}
+	for _, want := range []string{`"max_tokens":32000`, `"thinking":{"type":"enabled"}`, `"stream":true`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("参数摘要缺少 %s：%s", want, got)
+		}
+	}
+	if !strings.Contains(got, "...") {
+		t.Errorf("超长字符串应截断：%s", got)
+	}
+
+	if got := LogParams([]byte("{broken")); got != "{broken" {
+		t.Errorf("非 JSON 应原样返回，得到 %q", got)
+	}
+}
+
 func TestSummarizeExpiring(t *testing.T) {
 	items := []ResourceItem{
 		{Remain: 100, Usable: true, ExpireAt: timeNow().Format("2006-01-02")},

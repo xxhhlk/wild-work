@@ -3,6 +3,7 @@
 package provider
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -93,6 +94,38 @@ func LogBody(s string) string {
 	return s[:keep] +
 		fmt.Sprintf("\n...[log body truncated: %d bytes omitted]...\n", len(s)-2*keep) +
 		s[len(s)-keep:]
+}
+
+// LogParams 生成出站请求体的参数摘要（剔除对话内容与工具定义，其余原样保留），
+// 供上游 4xx 时比对「上游报的参数名」与「我们实际下发的值」。无法解析时按原文
+// 交给 LogBody 截断。
+func LogParams(body []byte) string {
+	var obj map[string]any
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return LogBody(string(body))
+	}
+	for _, k := range []string{"messages", "input", "tools", "functions"} {
+		delete(obj, k)
+	}
+	for k, v := range obj {
+		switch t := v.(type) {
+		case []any:
+			obj[k] = fmt.Sprintf("len=%d", len(t))
+		case map[string]any:
+			if b, err := json.Marshal(t); err == nil {
+				obj[k] = json.RawMessage(LogBody(string(b)))
+			}
+		case string:
+			if len(t) > 200 {
+				obj[k] = t[:200] + "..."
+			}
+		}
+	}
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return LogBody(string(body))
+	}
+	return string(out)
 }
 
 // ModelInfo 动态/静态模型信息。
