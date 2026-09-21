@@ -227,7 +227,7 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		resp.Body.Close()
 		log.Printf("qwenwork chat_stream uid=%s: upstream %d body=%s",
-			a.UID, resp.StatusCode, truncate(string(raw), 200))
+			a.UID, resp.StatusCode, provider.LogBody(string(raw)))
 		return nil, resp.StatusCode, raw, nil
 	}
 	return resp.Body, resp.StatusCode, nil, nil

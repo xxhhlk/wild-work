@@ -82,6 +82,19 @@ func (e *Error) Error() string {
 	return fmt.Sprintf("upstream %s (http %d): %s", e.Kind, e.Status, e.Msg)
 }
 
+// LogBody 供日志记录上游错误响应原文：整段保留，仅在超长（WAF 拦截页等非
+// 信封响应）时去掉中段，头尾都留——排障要看的 extError 明细在响应尾部，
+// 只留头部等于没留。
+func LogBody(s string) string {
+	const keep = 8 << 10
+	if len(s) <= 2*keep {
+		return s
+	}
+	return s[:keep] +
+		fmt.Sprintf("\n...[log body truncated: %d bytes omitted]...\n", len(s)-2*keep) +
+		s[len(s)-keep:]
+}
+
 // ModelInfo 动态/静态模型信息。
 type ModelInfo struct {
 	ID            string

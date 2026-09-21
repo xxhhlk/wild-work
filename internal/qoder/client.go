@@ -328,7 +328,7 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		resp.Body.Close()
 		log.Printf("qoder chat_stream uid=%s model=%s: upstream %d body=%s",
-			a.UID, modelKey, resp.StatusCode, truncate(string(raw), 200))
+			a.UID, modelKey, resp.StatusCode, provider.LogBody(string(raw)))
 		return nil, resp.StatusCode, raw, nil
 	}
 	return resp.Body, resp.StatusCode, nil, nil

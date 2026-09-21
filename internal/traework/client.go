@@ -168,7 +168,7 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		resp.Body.Close()
 		kind := Classify(resp.StatusCode, string(raw))
-		log.Printf("traework chat_stream uid=%s: upstream %d %s body=%s", a.UID, resp.StatusCode, kind, truncate(string(raw), 200))
+		log.Printf("traework chat_stream uid=%s: upstream %d %s body=%s", a.UID, resp.StatusCode, kind, provider.LogBody(string(raw)))
 		return nil, resp.StatusCode, raw, nil
 	}
 	return resp.Body, resp.StatusCode, nil, nil

@@ -299,7 +299,7 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 		resp.Body.Close()
 		kind := Classify(resp.StatusCode, string(raw))
 		log.Printf("chat_stream uid=%s: upstream %d %s body=%s",
-			a.UID, resp.StatusCode, kind, truncate(string(raw), 200))
+			a.UID, resp.StatusCode, kind, provider.LogBody(string(raw)))
 		return nil, resp.StatusCode, raw, nil
 	}
 	return resp.Body, resp.StatusCode, nil, nil
