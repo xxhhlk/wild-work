@@ -869,3 +869,88 @@ JWT 仅作快照优化。
 - 失败请求（424）也扣费（179K 探测失败仍扣 ~5）——上游已消耗推理资源。
 - 扣费数值与 tokens 非线性对应，存在按次结算/折扣波动，精确计费模型未逆向。
 - 本轮探测总消耗 ≈ 40 积分。
+
+---
+
+## 10. 修正：推理 body 必须带 `business.product`（2026-09-21，wire 级实证）
+
+### 10.1 现象
+
+wild-work 的 qwenwork 渠道推理**恒失败**：HTTP 200 + SSE 外层
+`{"code":"503","message":"Model catalog unavailable"}`。
+
+而目录接口 `GET /api/v2/model/list` 正常（3 档）、账号积分与 `UserResource` 正常、
+JWT 未过期 —— 鉴权与网关路由都通，只有推理业务层在查「模型目录」时失败。
+
+### 10.2 取证方法（可复现）
+
+千问办公 1.1.0 与 Qoder CN 同架构：主进程 spawn 的是
+`@qoder-ai/qoder-agent-sdk/dist/_worker/qoder-worker-runtime.obf.mjs`，stdio 走
+`control_request` / `session_message` / `fetch_job_token`，且客户端设了
+`NODE_TLS_REJECT_UNAUTHORIZED=0`。所以直接复用 Qoder 的 stdio MITM 打法：
+
+```
+_spy/qwenwork-stdio-mitm/   worker-shim.mjs + http-spy.mjs + install/uninstall-mitm.ps1
+```
+
+**关键补充**：worker 用 undici `request()` 直调，**不走 `globalThis.fetch`** —— 只钩 fetch
+抓不到。`http-spy.mjs` 因此加了第四层：包 `tls.connect`/`net.connect` 返回的 socket，
+在 `write` 上取明文请求字节（TLS 之下即明文），并包
+`on`/`addListener`/`once`/`prependListener` 把响应也抓下来。
+
+> ⚠️ 坑：chunk 分帧。请求头是 string chunk、body 是 Buffer chunk，shim 在 string chunk
+> 后补的 `\n` 会让「按 Content-Length 切片」**偏移 1 字节**，base64 从中段起变乱码
+> （表现为「前 94% 是合法 JSON、尾部烂掉」）。切 body 前必须先剥掉这个 artefact。
+
+body 是 QwenWorkEncoding —— 与 `internal/qoder/encoding.go` **同一张 64 字符表、同一
+3 段旋转**（`Encode=1`，`=` 填充映射为 `$`）。解码器：`_spy/decode-qwenwork-body.py`。
+
+### 10.3 结论：唯一必需的形状字段
+
+10 个真实请求全部解码后，用 `_spy/qwenwork-replay.py` 做变量矩阵
+（每次换新 `requestId`，避免命中服务端幂等缓存）：
+
+| 变体 | body | 请求头 | 结果 |
+|---|---|---|---|
+| V5 | 极简（model/messages/stream/ids） | wild-work 现有 9 个 | **503** |
+| V3 | 极简 | 官方 28 个全套 | **503** |
+| V6 | 极简 + `Encode=1` 编码 | 官方全套 | **503** |
+| V2 | 官方全字段（明文） | 官方全套 | 200 |
+| V4 | 官方全字段（明文） | **wild-work 9 个** | **200** |
+| V1 | 官方全字段（编码） | 官方全套 | 200 |
+
+→ **请求头完全无关**；`Encode=1` 与编码**也可以省**（明文即可）。
+
+逐字段二分（极简 body + 官方字段子集）：`business` 单独一项 → 200；
+再往下 `business.product` **单独一项 → 200**，`business.type` 单独 → 503，`{}` → 503。
+
+**根因**：上游按 `business.product` 选择「模型目录」，缺省即 `Model catalog unavailable`。
+官方客户端始终发 `business.product = "qoder_work"`。
+
+### 10.4 对 §2.4 / §2.5 的更正
+
+- §2.4「极简头 → 200」**仍然成立**（V4 = 极简头 + 完整 body → 200）；但该矩阵是在
+  **完整 body** 下做的，因此看不出 body 侧的必填项。
+- §2.5「仅有 `messages` → 200」**应作废**：那大概率就是该表自己标注的**服务端幂等/缓存**
+  命中（同一签名重复提交）。换新 `requestId` 后极简 body 恒 503。
+- §1.1「请求体明文 JSON，不带 `Encode=1`」**正确**，无需改。
+
+### 10.5 顺带取到的权威值
+
+- 端点未变：`POST /algo/api/v2/service/pro/sse/agent_chat_generation?FetchKeys=llm_model_result&AgentId=agent_common`
+- 签名 payload 实测：`{version:"v1", requestId:<uuid4>, info:<AES 密文>, cosyVersion:"1.1.52", ideVersion:""}`。
+  版本号仍不校验（Go 侧用 `1.1.18`/`0.1.8` 同样 200），故**不改 cosy.go**。
+- 官方 body 完整字段集：`request_id` / `request_set_id` / `chat_record_id` / `session_id` /
+  `stream` / `chat_task="FREE_INPUT"` / `chat_context` / `is_reply` / `is_retry` / `source=1` /
+  `version="3"` / `agent_id="agent_common"` / `task_id="common"` / `session_type="qoder_work"` /
+  `aliyun_user_type=""` / `model_config` / `system` / `messages` / `tools` / `parameters` / `business`。
+- 上游响应头 `X-Model-Name: qwork-openai-chat-mode-pool`、`X-Provider-Name: maas-openai`；
+  `delta.reasoning_content` 正常下发（三档实测：flash 855 字 / qwen3.8-max 419 字 / pro 149 字）。
+
+### 10.6 落地
+
+- `internal/qwenwork/client.go::prepareChatBody` 注入 `business.{product,type}`
+  （客户端自带 business 时**只补缺失键**，不覆盖）；
+- 常量 `BusinessProduct` / `BusinessType` 在 `internal/qwenwork/constants.go`；
+- 回归测试 `TestPrepareChatBody` / `TestPrepareChatBodyKeepsClientBusiness`；
+- 端到端护栏 `TestLiveProbeReasoning`（`-tags live`，走 `ChatStream` 全链路）。

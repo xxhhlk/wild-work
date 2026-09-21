@@ -88,6 +88,17 @@ func TestPrepareChatBody(t *testing.T) {
 	if obj["stream"] != true {
 		t.Fatal("stream 未强制 true")
 	}
+	// business.product 是模型目录选路键：缺省 → 上游 503 Model catalog unavailable
+	biz, _ := obj["business"].(map[string]any)
+	if biz == nil {
+		t.Fatal("business 未补全")
+	}
+	if biz["product"] != BusinessProduct {
+		t.Fatalf("business.product = %v, want %q", biz["product"], BusinessProduct)
+	}
+	if biz["type"] != BusinessType {
+		t.Fatalf("business.type = %v, want %q", biz["type"], BusinessType)
+	}
 
 	// 旧 key 兼容映射
 	in2 := []byte(`{"model":"qwork-advanced","messages":[]}`)
@@ -105,6 +116,32 @@ func TestPrepareChatBody(t *testing.T) {
 	json.Unmarshal(out3, &obj3)
 	if obj3["model"] != "pro" {
 		t.Fatalf("auto 应映射 pro, got %v", obj3["model"])
+	}
+}
+
+// TestPrepareChatBodyKeepsClientBusiness 客户端自带 business 时只补缺失键，
+// 不覆盖其取值——上游按 business.product 选模型目录，硬覆盖会把调用方
+// 显式指定的产品线打回默认。
+func TestPrepareChatBodyKeepsClientBusiness(t *testing.T) {
+	c := New()
+	in := []byte(`{"model":"flash","messages":[],"business":{"product":"other_product","id":"abc"}}`)
+	out, err := c.prepareChatBody(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(out, &obj); err != nil {
+		t.Fatal(err)
+	}
+	biz, _ := obj["business"].(map[string]any)
+	if biz["product"] != "other_product" {
+		t.Fatalf("客户端 business.product 被覆盖: %v", biz["product"])
+	}
+	if biz["id"] != "abc" {
+		t.Fatalf("客户端 business.id 丢失: %v", biz["id"])
+	}
+	if biz["type"] != BusinessType {
+		t.Fatalf("缺失的 business.type 未补全: %v", biz["type"])
 	}
 }
 

@@ -233,7 +233,8 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 	return resp.Body, resp.StatusCode, nil, nil
 }
 
-// prepareChatBody 解析客户端 OpenAI body，补 request_id/session_id、映射 model key。
+// prepareChatBody 解析客户端 OpenAI body，补 request_id/session_id、business、
+// 映射 model key。
 // 服务端无状态：messages 由调用方携带全量历史（本渠道不做改写，developer 角色实测可接受）。
 // 注意：server 层正常会把 model 去前缀后传入，但防御性兼容「qwenwork/flash」带前缀形式。
 // 另：x-model-key 决定实际路由（优先级高于 body model），缺省或非法档位 → 上游包 403
@@ -255,6 +256,20 @@ func (c *Client) prepareChatBody(body []byte) ([]byte, error) {
 	}
 	if s, _ := obj["session_id"].(string); strings.TrimSpace(s) == "" {
 		obj["session_id"] = uuid4()
+	}
+	// business.product 是「模型目录」的选路键：缺省 → 503 Model catalog unavailable。
+	// 这是与 Qoder 渠道最关键的一处形状差异（Qoder 无此字段），见 constants.go。
+	// 客户端若自带 business 则只补缺失键，不覆盖其取值。
+	biz, _ := obj["business"].(map[string]any)
+	if biz == nil {
+		biz = map[string]any{}
+		obj["business"] = biz
+	}
+	if s, _ := biz["product"].(string); strings.TrimSpace(s) == "" {
+		biz["product"] = BusinessProduct
+	}
+	if s, _ := biz["type"].(string); strings.TrimSpace(s) == "" {
+		biz["type"] = BusinessType
 	}
 	// stream 强制 true：上游为 SSE-only 端点（非流式由 Stream/Aggregate 聚合实现）
 	obj["stream"] = true

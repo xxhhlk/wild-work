@@ -4,7 +4,9 @@
 //
 // 协议要点（2026-09 实测，见 docs/千问办公QwenWork逆向对比备忘.md）：
 //   - 推理/模型列表走 COSY 签名（RSA_PKCS1 包 16 字符 AES key + AES-128-CBC 身份 + MD5），
-//     与 internal/qoder 的 cosy.go 同构；请求体明文 JSON（不带 Encode=1）。
+//     与 internal/qoder 的 cosy.go 同构；请求体明文 JSON（不带 Encode=1，实测可省）。
+//   - **推理 body 必须带 business.product="qoder_work"**（模型目录选路键），否则恒 503
+//     "Model catalog unavailable"——即使 HTTP 200。这是本渠道唯一的必填「形状」字段。
 //   - 余额/费率/账单走网页域 qwenwork.cn，纯 Bearer token（COSY 打它反而 401）。
 //   - 推理必需 request_id / session_id；错误以 HTTP 200 + SSE 外层 statusCodeValue>=400 返回。
 //   - 服务端无状态：多轮对话必须由客户端携带全量 messages（session_id 不承载上下文）。
@@ -38,6 +40,18 @@ const (
 
 // ChannelName 费率面板中的渠道标识。
 const ChannelName = "qwenwork"
+
+// BusinessProduct 请求体 business.product 的取值。
+//
+// 上游按它选择「模型目录」：**缺省时推理端点恒返回 HTTP 200 + envelope
+// `{"code":"503","message":"Model catalog unavailable"}`**，与请求头集合、
+// 以及 body 的其余字段（model_config / system / tools / parameters /
+// chat_context / session_type …）全部无关。只补 business.product 即恢复 200。
+// 实测矩阵见 docs/千问办公QwenWork逆向对比备忘.md。
+const BusinessProduct = "qoder_work"
+
+// BusinessType business.type 取值，与桌面客户端一致（不参与目录选路）。
+const BusinessType = "agent"
 
 // staticModelKeys 客户端模型名 → 上游 model key。
 // key 即 /api/v2/model/list 与 /api/chat-modes 的档位 key（两处 price_factor 一致）。

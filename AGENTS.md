@@ -171,6 +171,13 @@ POST /api/quit                     # 退出程序
     （`/api/fees`）共用它取档位，其中已含「该渠道是否有档位能力」的判断（TraeWork 必须为空）。
     新增渠道或更换档位来源时只改这一处——两处各写一份判断必然漂移，面板显示的档位就会与实际下发的档位不一致。
 
+24. **千问办公推理 body 必须带 `business.product`**（`internal/qwenwork/constants.go::BusinessProduct`）：
+    上游按它选「模型目录」，缺省时推理端点恒回 HTTP 200 + envelope
+    `{"code":"503","message":"Model catalog unavailable"}`，且**与请求头集合、与 `Encode=1`/body 编码、
+    与 body 其余字段（model_config / system / tools / parameters / chat_context / session_type）全部无关**。
+    实测矩阵与取证方法见 `docs/千问办公QwenWork逆向对比备忘.md` §10。
+    改本渠道请求形状前后必须跑 `TestLiveProbeReasoning`（`-tags live`，走 `ChatStream` 全链路）。
+
 ## 7. 平台能力差异表（internal/platform）
 
 | 能力 | Windows | macOS | Linux |
