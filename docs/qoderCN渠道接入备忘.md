@@ -127,6 +127,30 @@ prompt 为「9 球称 3 次找异常球」多步推理题。
 4. ⚠️ `xhigh` 档在该模型上思考极长（180s 未结束）。这不是投影错误而是上游行为，
    但意味着**客户端选最高档可能撞超时**（本渠道 client timeout 180s）。
 
+### internal/qoder（QoderWork）同步实测并修复（2026-09-22）
+
+`internal/qoder` 的投影与 QoderCN 同构，**同一缺陷同样存在**，本次一并修复。
+它与 QoderCN 打**同一上游目录**（同 14 个模型、同 `qfmodel` = `qwen3.8-flash` ladder `[low medium xhigh]`），
+账号可复用同一份 `qoder-<uid>.json` —— `auth.LoadQoderDir` 只排除 `qodercn-` / `qodercom-` 前缀，
+两个渠道的凭据副本互不干扰。
+
+| 请求形态 | 状态 | 总耗时 | 思考 | 正文 | 结论 |
+| --- | --- | --- | --- | --- | --- |
+| 只发 `is_reasoning=false`（**不带** `enable_thinking`） | 200 | **3m0s 截断** | 流内 1793 个 reasoning 块 / 608KB | 0 块 | ❌ 同缺陷复现 |
+| 同形态，**修复后**（body 恒写 `enable_thinking=false`） | 200 | **36.7s** | **0 块** | 5744 字 | ✅ 修复有效 |
+| `is_reasoning=true` + `reasoning_effort=none` + `enable_thinking=false` | 200 | 48.2s | **0 块** | 4358 字 | ✅ 官方关闭形态有效 |
+
+复现/验证命令（`auths/` 下需有 `qoder-<uid>.json`）：
+
+```bash
+WILDWORK_PROBE_CASES=1,12 go test -tags live ./internal/qoder/ -run TestLiveProbeEffort -v
+```
+
+- 用例 1 走 `buildAgentBody` 产出的 `reasoningSpec{Enabled:false, Effort:""}` —— 正是
+  「客户端不带任何 reasoning 字段」的**生产默认形态**（`ModeDefault` 的投影结果），
+  所以这条缺陷在普通调用上就会命中，不是边角场景。
+- 用例 12 是官方桌面版关闭形态，用来把变量隔离到「有没有 `enable_thinking`」这一项。
+
 **保守守卫保留**：模型未声明 `thinking_config`（如 `auto` / `qwen3.7-max`）时仍只翻开关、
 不下发档位字段 —— 与「面板 / `/v1/models` 不声明该模型档位」严格对齐；
 上游没声明合法档位集合，发任意档位等于赌它认。

@@ -430,8 +430,10 @@ func TestBuildAgentBodyReasoningFields(t *testing.T) {
 		t.Errorf("关闭时 parameters = %v, want none/false", body.Parameters)
 	}
 
-	// 未表达档位：parameters 仍恒下发（只带 max_tokens），但不带思考字段。
-	// 依据：桌面版 A6e() 里 h 始终非空，至少写 max_tokens。
+	// 未表达档位：parameters 恒下发，reasoning_effort 不下发（不打扰上游默认档），
+	// 但 enable_thinking **必须下发且为 false** —— 它是关闭思考的必要字段。
+	// 依据：桌面版 A6e() 里 h 始终非空（至少写 max_tokens），且 enable_thinking
+	// 与 is_reasoning 同源恒写；实测缺它时上游关不掉思考（见 live_probe 用例 1）。
 	raw, _ = buildAgentBody(msgs, "qfmodel", nil, reasoningSpec{})
 	var plain map[string]any
 	_ = json.Unmarshal(raw, &plain)
@@ -442,8 +444,8 @@ func TestBuildAgentBodyReasoningFields(t *testing.T) {
 	if _, has := p["reasoning_effort"]; has {
 		t.Errorf("未表达档位时不应下发 reasoning_effort，实际 %v", p)
 	}
-	if _, has := p["enable_thinking"]; has {
-		t.Errorf("未表达档位时不应下发 enable_thinking，实际 %v", p)
+	if v, has := p["enable_thinking"]; !has || v != false {
+		t.Errorf("未表达档位时 enable_thinking 必须为 false（关闭思考的必要字段），实际 has=%v v=%v", has, v)
 	}
 }
 

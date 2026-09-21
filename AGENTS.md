@@ -188,9 +188,13 @@ POST /api/quit                     # 退出程序
       **关不掉思考**，反而思考爆炸（3127 个 reasoning 块 / 1.06MB，180s 未收尾、正文 0 块）；
       补上 `enable_thinking=false` 后同一请求 53.6s 收尾、reasoning 块 0、正文 5196 字。
       守门测试：`TestBuildAgentBodyReasoningFields`（含「未表达时 enable_thinking 必须为 false」）。
-    - ⚠️ **`internal/qoder`（QoderWork 渠道）的投影与上述两个渠道同构，但该问题尚未在它上面实测**
-      （同一上游端点，行为大概率一致）。它目前同样只在档位非空时写 `enable_thinking`；
-      改它之前先跑一次 `go test -tags live ./internal/qoder/ -run TestLiveProbeEffort -v` 确认。
+    - **`internal/qoder`（QoderWork 渠道）已同样实测并修复**（2026-09-22；与 QoderCN 同一上游目录、
+      同 14 个模型、同 `qfmodel` = qwen3.8-flash ladder `[low medium xhigh]`）：只发 `is_reasoning=false`
+      而缺 `enable_thinking` 时 **1793 个 reasoning 块 / 608KB、180s 超时截断、content 0 块**；
+      同模型同 prompt 补上 `enable_thinking=false`（官方关闭形态）后 48.2s 收尾、reasoning 块 0、
+      正文 4358 字。三处投影现均恒写 `enable_thinking`。
+      复现/验证：`WILDWORK_PROBE_CASES=1,12 go test -tags live ./internal/qoder/ -run TestLiveProbeEffort -v`
+      （用例 1 = 缺陷形态，用例 12 = 官方关闭形态；修复后用例 1 应正常收尾、reasoning 块 0）。
 
 24. **千问办公推理 body 必须带 `business.product`**（`internal/qwenwork/constants.go::BusinessProduct`）：
     上游按它选「模型目录」，缺省时推理端点恒回 HTTP 200 + envelope

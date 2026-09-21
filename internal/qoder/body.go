@@ -107,9 +107,12 @@ func buildAgentBody(messages []map[string]any, modelKey string, tools []any, spe
 //
 //	model_config.is_reasoning            = spec.Enabled
 //	parameters.reasoning_effort          = spec.Effort     （仅非空时写）
-//	parameters.enable_thinking           = spec.Enabled    （仅非空时写）
+//	parameters.enable_thinking           = spec.Enabled    （**恒写**，与 is_reasoning 同源）
 //	parameters.max_tokens                = meta.MaxOutputTokens（恒下发）
 //	parameters.context_length            = 用户目标档位就近取值，回落 meta.DefaultContextWindow（>0 才写）
+//
+// ⚠️ enable_thinking 必须恒写，不能只在档位非空时写 —— 详见 buildAgentBodyMeta
+// 里 parameters 构造处的实测说明（缺它时上游关不掉思考）。
 //
 // 注意 1：developer 角色必须改写为 system。
 // 注意 2：桌面端把 system 文本块**同时**放在顶层 system 与 messages[0]
@@ -160,11 +163,19 @@ func buildAgentBodyMeta(messages []map[string]any, meta modelMeta, tools []any, 
 	requestSetID := uuid4()
 
 	// parameters 恒下发（A6e() 里 h 始终非空，至少带 max_tokens）。
+	//
+	// enable_thinking 与 model_config.is_reasoning **同源且恒下发**（不只档位非空时）：
+	// 2026-09-22 实测（qwen3.8-flash，QoderCN 真实账号；本渠道与它同一上游目录、
+	// 同一 qfmodel ladder），只发 is_reasoning=false 而**不带** enable_thinking 时
+	// 上游关不掉思考 —— 流里照样吐 3127 个 reasoning 块（1.06MB），180s 都没结束、
+	// content 一块没有；补上 enable_thinking=false 后同一请求 43.96s 正常收尾、
+	// reasoning 块 0、正文 4797 字。
+	// 复现与判读见 live_probe_test.go：用例 1（关不掉）vs 用例 12（能关掉）。
 	params := map[string]any{"max_tokens": maxOutput}
 	if spec.Effort != "" {
 		params["reasoning_effort"] = spec.Effort
-		params["enable_thinking"] = spec.Enabled
 	}
+	params["enable_thinking"] = spec.Enabled
 	if cw := pickContextWindow(meta, contextWindowFor(meta.ClientName)); cw > 0 {
 		params["context_length"] = cw
 	}
