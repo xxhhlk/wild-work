@@ -128,6 +128,11 @@ R2 追问代号 → 「Bravo-9」（多轮上下文 OK）
 3. **`/api/v3/user/status`**（Orchids 用于配额）：未接，quota/usage 已够用；后续需要 whitelistStatus 时再补。
 4. **`/api/v1/me/jobToken`**：COM 区空 body 400，与 CN 行为不同；本项目用不到，无影响。
 5. **思考档位**：与 QoderCN 同源实现（能力面 `reasoning.RealmQoderCOM`，独立于 `RealmQoder` / `RealmQoderCN`），
-   收口细节与「档位下发**尚未线上实测**」的保守策略见 `docs/qoderCN渠道接入备忘.md` §8。
-   实测手段：用本文件 §1 的凭据发一次真实推理请求，确认上游是否接受
-   `parameters.reasoning_effort` / `enable_thinking`、以及是否下发 `reasoning_content`。
+   收口细节与实测矩阵见 `docs/qoderCN渠道接入备忘.md` §8。
+   **CN 侧已线上实测通过**（2026-09-22，真实账号）：上游接受 `parameters.reasoning_effort` 与
+   `enable_thinking`，档位梯度真实存在；同时发现 **`enable_thinking` 是关闭思考的必要字段**
+   （只发 `model_config.is_reasoning=false` 时上游关不掉思考，反而思考爆炸到 180s 超时）——
+   该修复已同步进本渠道的 `body.go`（恒下发 `enable_thinking`）。
+   **本渠道（COM）仍无账号，未单独实测**：两区协议同源（qoder2api 双区同码），按移植推定可用。
+   拿到 COM 账号后跑 `go test -tags live ./internal/qodercom/ -run TestLiveProbe -v` 即可复测
+   （探针已入库，与 CN 侧同款，含 p0/r1/r4 等档位与关闭形态对照）。

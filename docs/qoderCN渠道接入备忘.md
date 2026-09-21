@@ -99,17 +99,37 @@ QoderCN 此前**未声明档位能力**：`reasoning.SupportsEffortKind("qodercn
 同名模型 ladder 未必相同，甚至同一个模型在一个面有 ladder、另一个面只有开关。
 一旦串味就会按错 ladder 降级，把上游不认的档位发出去。
 
-### ⚠️ 尚未线上实测
+### ✅ 已线上实测（2026-09-22，真实 QoderCN 账号）
 
-`parameters.reasoning_effort` / `enable_thinking` 是否被 QoderCN 上游接受**没有实测数据**
-（本机无 QoderCN 账号）。因此 `reasoningSpecFor` 采取保守策略：
+跑 `go test -tags live ./internal/qodercn/ -run TestLiveProbe -v`（账号 `auths/qodercn-<uid>.json`）。
+探测模型 `qwen3.8-flash`：ladder `[low medium xhigh]`、默认档 `medium`、可显式关闭；
+prompt 为「9 球称 3 次找异常球」多步推理题。
 
-- 模型**未声明** `thinking_config` → 只翻 `model_config.is_reasoning`，**不下发**档位字段
-  （与「面板不声明该模型档位」严格对齐，行为与改动前一致）；
-- 模型**声明了** ladder → 按 ladder 就近降级后下发。
+| 请求形态（model_config + parameters） | 状态 | 总耗时 | 思考 | 正文 | 结论 |
+| --- | --- | --- | --- | --- | --- |
+| 只发 `is_reasoning=false`（**不带** `enable_thinking`） | 200 | **180s 截断** | 流内 3127 个 reasoning 块 / 1.06MB | 0 块 | ❌ **关不掉思考**，反而思考爆炸 |
+| `is_reasoning=false` + `enable_thinking=false` | 200 | 53.6s | **0 块** | 5196 字 | ✅ 真关掉了 |
+| `is_reasoning=false` + `reasoning_effort=none` + `enable_thinking=false` | 200 | 42.3s | **0 字** | 5253 字 | ✅ 真关掉了 |
+| `is_reasoning=true` + `reasoning_effort=low` + `enable_thinking=true` | 200 | 50.0s | 2206 字 | 2097 字 | ✅ |
+| `is_reasoning=true` + `reasoning_effort=medium` + `enable_thinking=true` | 200 | 80.8s | 2502 字 | 3218 字 | ✅（`reasoning_tokens: 1956`）|
+| `is_reasoning=true` + `reasoning_effort=xhigh` + `enable_thinking=true` | 200 | **180s 截断** | 流内 2869 个 reasoning 块 / 971KB | 0 块 | 最高档思考极长，会撞客户端超时 |
 
-实测确认上游认这两个字段后，可放开为与 `internal/qoder` 一致（未知模型也原样透传档位）。
-验证方式：登录 QoderCN 账号后跑一次真实请求，看上游是否 400、以及 `reasoning_content` 是否下发。
+**四条结论**：
+
+1. **上游接受** `parameters.reasoning_effort` 与 `parameters.enable_thinking`，档位梯度真实存在
+   （low 2206 字 < medium 2502 字 < xhigh 超时截断）。原先「保守策略」的顾虑（上游可能不认）不成立。
+2. ⚠️ **`enable_thinking` 是关闭思考的必要字段**：只发 `model_config.is_reasoning=false` 时
+   上游**关不掉**思考，而且思考量比开启时更大（3127 块 vs 543 块），180s 都收不了尾。
+   这直接决定 `body.go` 必须**恒下发** `enable_thinking`（与 `is_reasoning` 同源），
+   不能只在档位非空时写 —— 见该文件 parameters 构造处的注释与 `live_probe_test.go` 的 p0/r4。
+3. 上游模型目录**确实返回 `thinking_config`**：14 个 enabled 模型里 11 个带配置、9 个有 effort
+   ladder、7 个可显式关闭。档位能力有上游依据，不是本地猜的。
+4. ⚠️ `xhigh` 档在该模型上思考极长（180s 未结束）。这不是投影错误而是上游行为，
+   但意味着**客户端选最高档可能撞超时**（本渠道 client timeout 180s）。
+
+**保守守卫保留**：模型未声明 `thinking_config`（如 `auto` / `qwen3.7-max`）时仍只翻开关、
+不下发档位字段 —— 与「面板 / `/v1/models` 不声明该模型档位」严格对齐；
+上游没声明合法档位集合，发任意档位等于赌它认。
 
 ### 验证
 

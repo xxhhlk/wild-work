@@ -178,10 +178,19 @@ POST /api/quit                     # 退出程序
       `Catalog.SetRemote` 是「整桶替换」（`remote[realm] = bucket`），共用面时后拉到的渠道会整份覆盖
       先拉到的，而三者模型目录互不相通（同名模型 ladder 未必相同）→ 按错 ladder 降级发非法档位。
       守门测试：`TestQoderRealmIsolation`（各包另有投影侧隔离用例）。
-    - **QoderCN / QoderCOM 的档位下发尚未线上实测**（上游是否认 `parameters.reasoning_effort` 未知）：
-      这两个渠道的 `reasoningSpecFor` 采用保守策略——模型未声明 `thinking_config` 时只翻
-      `model_config.is_reasoning`、不下发档位字段，与「面板/`/v1/models` 不声明该模型档位」严格对齐。
-      实测确认后可按 `internal/qoder` 放开（该包对未知模型也原样透传档位）。
+    - **QoderCN / QoderCOM 的档位下发已线上实测**（2026-09-22，QoderCN 真实账号）：上游接受
+      `parameters.reasoning_effort` 与 `parameters.enable_thinking`，档位梯度真实存在
+      （low 2206 字 < medium 2502 字 < xhigh 180s 超时截断）。**保守守卫保留**：模型未声明
+      `thinking_config` 时只翻 `model_config.is_reasoning`、不下发档位字段，与「面板/`/v1/models`
+      不声明该模型档位」严格对齐。完整实测矩阵见 `docs/qoderCN渠道接入备忘.md` §8。
+    - ⚠️ **`parameters.enable_thinking` 必须恒下发**（与 `model_config.is_reasoning` 同源），
+      不能只在档位非空时写：实测只发 `is_reasoning=false` 而缺 `enable_thinking` 时上游
+      **关不掉思考**，反而思考爆炸（3127 个 reasoning 块 / 1.06MB，180s 未收尾、正文 0 块）；
+      补上 `enable_thinking=false` 后同一请求 53.6s 收尾、reasoning 块 0、正文 5196 字。
+      守门测试：`TestBuildAgentBodyReasoningFields`（含「未表达时 enable_thinking 必须为 false」）。
+    - ⚠️ **`internal/qoder`（QoderWork 渠道）的投影与上述两个渠道同构，但该问题尚未在它上面实测**
+      （同一上游端点，行为大概率一致）。它目前同样只在档位非空时写 `enable_thinking`；
+      改它之前先跑一次 `go test -tags live ./internal/qoder/ -run TestLiveProbeEffort -v` 确认。
 
 24. **千问办公推理 body 必须带 `business.product`**（`internal/qwenwork/constants.go::BusinessProduct`）：
     上游按它选「模型目录」，缺省时推理端点恒回 HTTP 200 + envelope

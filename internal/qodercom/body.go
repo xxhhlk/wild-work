@@ -22,7 +22,11 @@ import (
 //
 //	model_config.is_reasoning     = spec.Enabled
 //	parameters.reasoning_effort   = spec.Effort   （仅非空时写）
-//	parameters.enable_thinking    = spec.Enabled  （仅非空档位时写，与 is_reasoning 同源）
+//	parameters.enable_thinking    = spec.Enabled  （**恒写**，与 is_reasoning 同源）
+//
+// ⚠️ enable_thinking 必须恒写，不能只在档位非空时写：2026-09-22 在 QoderCN 侧实测，
+// 只发 is_reasoning=false 而缺 enable_thinking 时上游关不掉思考（实测数据见下方
+// parameters 构造处与 live_probe_test.go 的 p0/r4）。QoderCOM 协议同源，按同一投影处理。
 //
 // 注意：developer 角色必须改写为 system。
 func buildAgentBody(messages []map[string]any, mc *ModelEntry, tools []any, spec reasoningSpec, maxTokens int, userType string) ([]byte, error) {
@@ -61,12 +65,19 @@ func buildAgentBody(messages []map[string]any, mc *ModelEntry, tools []any, spec
 	now := time.Now()
 	newUUID := uuid4()
 
-	// parameters 恒下发（至少带 max_tokens）；档位与开关同源写入。
+	// parameters 恒下发（至少带 max_tokens）。
+	//
+	// enable_thinking 与 model_config.is_reasoning **同源且恒下发**（不只档位非空时）：
+	// 2026-09-22 在 QoderCN 侧实测（qwen3.8-flash，真实账号），只发 is_reasoning=false
+	// 而**不带** enable_thinking 时上游关不掉思考 —— 流里照样吐 3127 个 reasoning 块
+	// （1.06MB），180s 都没结束、content 一块没有；补上 enable_thinking=false 后同一
+	// 请求 53.6s 正常收尾、reasoning 块 0、正文 5196 字。QoderCOM 协议同源，按同一投影处理。
+	// 复现与判读见 live_probe_test.go：p0/r1（关不掉）vs r4/p4（能关掉）。
 	params := map[string]any{"max_tokens": maxTokens}
 	if spec.Effort != "" {
 		params["reasoning_effort"] = spec.Effort
-		params["enable_thinking"] = spec.Enabled
 	}
+	params["enable_thinking"] = spec.Enabled
 
 	base := map[string]any{
 		"request_id":       newUUID,

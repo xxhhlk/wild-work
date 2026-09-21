@@ -395,13 +395,33 @@ func TestBuildAgentBodyReasoningFields(t *testing.T) {
 		t.Errorf("关闭形态错：%v", params)
 	}
 
-	// 未给档位：不下发档位字段
+	// 未给档位：不下发 reasoning_effort（不打扰上游默认档），
+	// 但 enable_thinking **必须恒下发**并与 is_reasoning 同源 ——
+	// 2026-09-22 在 QoderCN 侧实测：缺它时上游关不掉思考（只发 is_reasoning=false 无效）。
 	body = decode(t, reasoningSpec{Enabled: true})
 	params, _ = body["parameters"].(map[string]any)
 	if _, has := params["reasoning_effort"]; has {
 		t.Errorf("无档位时不该下发 reasoning_effort：%v", params)
 	}
+	if params["enable_thinking"] != true {
+		t.Errorf("无档位（开思考）时 enable_thinking 必须恒为 true：%v", params)
+	}
 	if params["max_tokens"] != float64(32768) {
 		t.Errorf("max_tokens 默认值被破坏：%v", params["max_tokens"])
+	}
+
+	// 未表达（Enabled=false 且无档位）是最常见的默认形态：必须同时下发
+	// enable_thinking=false，否则上游关不掉思考（实测思考爆炸到 180s 超时）。
+	body = decode(t, reasoningSpec{})
+	params, _ = body["parameters"].(map[string]any)
+	if params["enable_thinking"] != false {
+		t.Errorf("未表达时 enable_thinking 必须为 false（否则上游关不掉思考）：%v", params)
+	}
+	if _, has := params["reasoning_effort"]; has {
+		t.Errorf("未表达时不该下发 reasoning_effort：%v", params)
+	}
+	mcfg, _ = body["model_config"].(map[string]any)
+	if mcfg["is_reasoning"] != false {
+		t.Errorf("未表达时 is_reasoning 应为 false：%v", mcfg)
 	}
 }
