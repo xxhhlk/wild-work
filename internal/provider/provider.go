@@ -19,8 +19,10 @@ const (
 	WorkBuddy   Kind = "workbuddy"
 	WorkBuddyAI Kind = "workbuddyai" // WorkBuddy 国际版（www.workbuddy.ai），与国内版完全独立
 	TraeWork    Kind = "traework"
-	Qoder       Kind = "qoder"
-	QwenWork    Kind = "qwenwork" // 千问办公（gateway.qwenwork.cn + qwenwork.cn）
+	Qoder       Kind = "qoder"      // QoderWork（qoder.com.cn，移植自 qoderwork2api）
+	QoderCN     Kind = "qodercn"    // QoderCN（qoder.com.cn，移植自 qoder2api，独立渠道）
+	QoderCOM    Kind = "qodercom"   // QoderCOM 国际版（qoder.com / qoder.sh，移植自 qodercn）
+	QwenWork    Kind = "qwenwork"   // 千问办公（gateway.qwenwork.cn + qwenwork.cn）
 )
 
 func (k Kind) String() string { return string(k) }

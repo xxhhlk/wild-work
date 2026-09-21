@@ -295,8 +295,37 @@ func LoadTraeDir(dir string) ([]*Auth, error) {
 }
 
 // LoadQoderDir 扫描 QoderWork 凭证（qoder-*.json / qoderwork-*.json）。
+// 注意：qodercn-*.json / qodercom-*.json 也被 qoder*.json 的 glob 命中，需排除（各自归独立加载器）。
 func LoadQoderDir(dir string) ([]*Auth, error) {
 	files, err := filepath.Glob(filepath.Join(dir, "qoder*.json"))
+	if err != nil {
+		return nil, err
+	}
+	var out []*Auth
+	for _, f := range files {
+		// 排除 QoderCN / QoderCOM 渠道的凭证（独立渠道，不混入）
+		base := filepath.Base(f)
+		if strings.HasPrefix(base, "qodercn-") || strings.HasPrefix(base, "qodercom-") {
+			continue
+		}
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		a, err := Parse(raw)
+		if err != nil {
+			continue
+		}
+		a.Kind, a.FilePath = "qoder", f
+		out = append(out, a)
+	}
+	return out, nil
+}
+
+// LoadQoderCNDir 扫描 QoderCN 凭证（qodercn-*.json，独立渠道）。
+// 注意 glob 边界：qodercn- 前缀不会被 LoadQoderCOMDir（qodercom-*）命中，互不干扰。
+func LoadQoderCNDir(dir string) ([]*Auth, error) {
+	files, err := filepath.Glob(filepath.Join(dir, "qodercn-*.json"))
 	if err != nil {
 		return nil, err
 	}
@@ -310,7 +339,29 @@ func LoadQoderDir(dir string) ([]*Auth, error) {
 		if err != nil {
 			continue
 		}
-		a.Kind, a.FilePath = "qoder", f
+		a.Kind, a.FilePath = "qodercn", f
+		out = append(out, a)
+	}
+	return out, nil
+}
+
+// LoadQoderCOMDir 扫描 QoderCOM 凭证（qodercom-*.json，独立渠道，国际版）。
+func LoadQoderCOMDir(dir string) ([]*Auth, error) {
+	files, err := filepath.Glob(filepath.Join(dir, "qodercom-*.json"))
+	if err != nil {
+		return nil, err
+	}
+	var out []*Auth
+	for _, f := range files {
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		a, err := Parse(raw)
+		if err != nil {
+			continue
+		}
+		a.Kind, a.FilePath = "qodercom", f
 		out = append(out, a)
 	}
 	return out, nil

@@ -214,15 +214,17 @@ function renderTopbar() {
 }
 
 // 渠道显示名与 CSS 短类名（后端 group / 费率 channel 均为 provider.Kind）。
-const CH_LABEL = { workbuddy: "WorkBuddy", workbuddyai: "WorkBuddy 国际版", traework: "TraeWork", qoder: "Qoder", qwenwork: "千问办公" };
-const CH_CLASS = { workbuddy: "wb", workbuddyai: "wbai", traework: "trae", qoder: "qoder", qwenwork: "qwenwork" };
+const CH_LABEL = { workbuddy: "WorkBuddyCN", workbuddyai: "WorkBuddyAI", traework: "TraeWork", qoder: "Qoder", qodercn: "QoderCN", qodercom: "QoderCOM", qwenwork: "千问办公" };
+const CH_CLASS = { workbuddy: "wb", workbuddyai: "wbai", traework: "trae", qoder: "qoder", qodercn: "qodercn", qodercom: "qodercom", qwenwork: "qwenwork" };
 const chLabel = (k) => CH_LABEL[k] || "WorkBuddy";
 const chClass = (k) => CH_CLASS[k] || "wb";
-// 不支持显式签到（手动按钮）的渠道：Qoder 无签到活动；
-// WorkBuddy 国际版不提供手动签到，而是自动对话保活领日活奖励。
+// 不支持显式签到（手动按钮）的渠道：
+// 旧 Qoder 渠道无签到活动（qoder.DailyCheckin 直接返回错误，见 internal/qoder/client.go）；
+// WorkBuddy 国际版不提供手动签到，而是自动对话保活领日活奖励；千问办公无签到活动。
+// QoderCN / QoderCOM 已实现签到（campaigns 主路径），保留手动按钮。
 const NO_EXPLICIT_CHECKIN = new Set(["qoder", "workbuddyai", "qwenwork"]);
 const noExplicitCheckin = (g) => NO_EXPLICIT_CHECKIN.has(g);
-// 无手动签到渠道的状态文案：国际版是「自动领日活奖励」，其余（Qoder）为「无签到」。
+// 无手动签到渠道的状态文案：国际版是「自动领日活奖励」，千问办公为「无签到」。
 const NO_CHECKIN_TAG = { workbuddyai: "自动领日活奖励" };
 const noCheckinText = (g) => NO_CHECKIN_TAG[g] || "无签到";
 
@@ -523,7 +525,6 @@ let pendingChannel = null;
 // 无手动签到渠道的登录提示差异文案（国际版会自动领日活奖励）。
 const NO_CHECKIN_LOGIN_HINT = {
   workbuddyai: "（无需手动签到，定时自动对话保活并领取日活奖励）",
-  qoder: "（Qoder 渠道无签到活动，仅 API 转发）",
   qwenwork: "（每日积分服务端 00:00 自动发放；若浏览器已登录千问办公则全自动完成，否则需扫码一次）",
 };
 function promptLogin(channel) {
@@ -680,7 +681,8 @@ const CHANNEL_PRESETS = {
   workbuddy:   { label: "Claude Code → workbuddy",  items: ["claude-* = workbuddy/glm-5.2", "claude-sonnet-* = workbuddy/kimi-k2.7"] },
   traework:    { label: "Codex → traework",          items: ["gpt-5* = traework/glm-5.2", "codex-* = traework/DeepSeek-V4-Pro"] },
   workbuddyai: { label: "Claude Code → workbuddyai", items: ["claude-* = workbuddyai/deepseek-v4.1-flash"] },
-  qoder:       { label: "→ qoder",                   items: ["gpt-* = qoder/glm-5.2"] },
+  qodercn:     { label: "→ qodercn",                 items: ["gpt-* = qodercn/glm-5.3"] },
+  qodercom:    { label: "→ qodercom",                items: ["gpt-* = qodercom/glm-5.3"] },
   qwenwork:    { label: "→ qwenwork",                items: ["gpt-* = qwenwork/flash", "claude-* = qwenwork/pro"] },
 };
 
@@ -826,7 +828,8 @@ function bind() {
   $("btnAddWB").onclick = () => promptLogin("workbuddy");
   $("btnAddWBAI").onclick = () => promptLogin("workbuddyai");
   $("btnAddTrae").onclick = () => promptLogin("traework");
-  $("btnAddQoder").onclick = () => promptLogin("qoder");
+  $("btnAddQoderCN").onclick = () => promptLogin("qodercn");
+  $("btnAddQoderCOM").onclick = () => promptLogin("qodercom");
   $("btnAddQwen").onclick = () => promptLogin("qwenwork");
   $("btnCheckinAll").onclick = checkinAll;
   $("btnRefreshAll").onclick = refreshAll;

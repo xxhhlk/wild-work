@@ -21,6 +21,8 @@ import (
 	"wild-work/internal/config"
 	"wild-work/internal/login"
 	loginqoder "wild-work/internal/login_qoder"
+	loginqodercn "wild-work/internal/login_qodercn"
+	loginqodercom "wild-work/internal/login_qodercom"
 	loginqwenwork "wild-work/internal/login_qwenwork"
 	logintrae "wild-work/internal/login_trae"
 	"wild-work/internal/login_wbai"
@@ -28,6 +30,8 @@ import (
 	"wild-work/internal/pool"
 	"wild-work/internal/provider"
 	"wild-work/internal/qoder"
+	"wild-work/internal/qodercn"
+	"wild-work/internal/qodercom"
 	"wild-work/internal/qwenwork"
 	"wild-work/internal/reasoning"
 	"wild-work/internal/scheduler"
@@ -138,7 +142,7 @@ func (a *App) runtime(kind provider.Kind) *Runtime {
 }
 
 func (a *App) firstRuntime() *Runtime {
-	for _, k := range []provider.Kind{provider.WorkBuddy, provider.WorkBuddyAI, provider.TraeWork, provider.Qoder, provider.QwenWork} {
+	for _, k := range []provider.Kind{provider.WorkBuddy, provider.WorkBuddyAI, provider.TraeWork, provider.Qoder, provider.QoderCN, provider.QoderCOM, provider.QwenWork} {
 		if rt := a.runtime(k); rt != nil {
 			return rt
 		}
@@ -172,6 +176,7 @@ func (a *App) allStatuses() []pool.Status {
 // WorkBuddy 国际版改为定时自动对话保活并领取日活奖励（详见 workbuddyai.DailyCheckin），
 // 无需用户手动触发，故也不提供手动签到入口；
 // 千问办公无签到活动且每日积分服务端被动发放，无需领取/保活。
+// QoderCN / QoderCOM 已实现签到（campaigns 主路径），支持手动按钮。
 func noExplicitCheckin(k provider.Kind) bool {
 	return k == provider.Qoder || k == provider.WorkBuddyAI || k == provider.QwenWork
 }
@@ -306,14 +311,14 @@ func (a *App) Quit() {
 // 账号操作
 // ---------------------------------------------------------------------------
 
-// StartLoginFor 发起指定渠道登录：workbuddy / workbuddyai / traework / qoder。
+// StartLoginFor 发起指定渠道登录：workbuddy / workbuddyai / traework / qoder / qodercn。
 func (a *App) StartLoginFor(kind string) (string, error) {
 	k := provider.Kind(strings.TrimSpace(kind))
 	if k == "" {
 		k = provider.WorkBuddy
 	}
 	switch k {
-	case provider.WorkBuddy, provider.WorkBuddyAI, provider.TraeWork, provider.Qoder, provider.QwenWork:
+	case provider.WorkBuddy, provider.WorkBuddyAI, provider.TraeWork, provider.Qoder, provider.QoderCN, provider.QoderCOM, provider.QwenWork:
 		// 这些渠道已有登录编排
 	default:
 		return "", fmt.Errorf("unknown login provider %s", kind)
@@ -331,6 +336,10 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 		a.loginClient = logintrae.NewClient()
 	case provider.Qoder:
 		a.loginClient = loginqoder.NewClient()
+	case provider.QoderCN:
+		a.loginClient = loginqodercn.NewClient()
+	case provider.QoderCOM:
+		a.loginClient = loginqodercom.NewClient()
 	case provider.WorkBuddyAI:
 		a.loginClient = loginwbai.NewClient()
 	case provider.QwenWork:
@@ -348,6 +357,10 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 		authURL, err = logintrae.Start(a.loginClient, a.loginStateFP)
 	case provider.Qoder:
 		authURL, err = loginqoder.Start(a.loginClient, a.loginStateFP)
+	case provider.QoderCN:
+		authURL, err = loginqodercn.Start(a.loginClient, a.loginStateFP)
+	case provider.QoderCOM:
+		authURL, err = loginqodercom.Start(a.loginClient, a.loginStateFP)
 	case provider.WorkBuddyAI:
 		authURL, err = loginwbai.Start(a.loginClient, a.loginStateFP)
 	case provider.QwenWork:
@@ -432,6 +445,28 @@ func (a *App) pollLogin(ctx context.Context) {
 			}
 			if !errors.Is(err, loginqoder.ErrPending) {
 				log.Printf("qoder login poll failed: %v", err)
+			}
+			continue
+		}
+		if a.loginKind == provider.QoderCN {
+			r, err := loginqodercn.Poll(a.loginClient, a.loginStateFP)
+			if err == nil {
+				a.completeQoderCNLogin(r)
+				return
+			}
+			if !errors.Is(err, loginqodercn.ErrPending) {
+				log.Printf("qodercn login poll failed: %v", err)
+			}
+			continue
+		}
+		if a.loginKind == provider.QoderCOM {
+			r, err := loginqodercom.Poll(a.loginClient, a.loginStateFP)
+			if err == nil {
+				a.completeQoderCOMLogin(r)
+				return
+			}
+			if !errors.Is(err, loginqodercom.ErrPending) {
+				log.Printf("qodercom login poll failed: %v", err)
 			}
 			continue
 		}
@@ -599,6 +634,90 @@ func (a *App) completeQoderLogin(r loginqoder.Result) {
 	})
 }
 
+// completeQoderCNLogin 登录成功：生成机器指纹、写 auth 文件、重载账号池、首次签到。
+func (a *App) completeQoderCNLogin(r loginqodercn.Result) {
+	log.Printf("qodercn 登录成功 uid=%s nickname=%s expires_in=%d refresh_token=%t", r.UID, r.Nickname, r.ExpiresIn, r.RefreshToken != "")
+	au := &auth.Auth{Kind: "qodercn", AccessToken: r.AccessToken, RefreshToken: r.RefreshToken, UID: r.UID, Nickname: r.Nickname}
+	qodercn.EnsureFingerprint(au)
+	fp, err := loginqodercn.SaveAuth(a.cfg.AuthDir, r, au.MachineID, au.MachineToken, au.MachineType)
+	if err != nil {
+		log.Printf("qodercn 登录保存凭证失败 uid=%s err=%v", r.UID, err)
+		return
+	}
+	au.FilePath = fp // 回填落盘路径，后续 SaveAtomic（显示名回填）依赖它
+	log.Printf("qodercn 登录凭证已保存 uid=%s file=%s", r.UID, filepath.Base(fp))
+	a.reloadAccounts()
+	a.finishLogin()
+	a.afterAccountAdded(provider.QoderCN)
+	// 新账号首次拉取余额 + 实测 userType + 回填显示名。
+	// 设备流响应里无 nickname，显示名（邮箱/昵称）只能从 userinfo 拿：
+	// 拉到后写回 au.Nickname 并 SaveAtomic 落盘，面板即显示真实用户名。
+	a.safeGo(func() {
+		if rt := a.runtime(provider.QoderCN); rt != nil {
+			if cu, ok := rt.Upstream.(*qodercn.Client); ok {
+				if name, _, err := cu.FetchUserInfo(au); err != nil {
+					log.Printf("qodercn 新账号 userType 实测失败 %s: %v", r.UID, err)
+				} else if name != "" && au.Nickname == "" {
+					au.Nickname = name
+					if err := au.SaveAtomic(); err != nil {
+						log.Printf("qodercn 显示名回写失败 %s: %v", r.UID, err)
+					} else {
+						log.Printf("qodercn 显示名已回填 %s: %s", r.UID, name)
+						a.reloadAccounts() // 池内 nickname 刷新，面板即时可见
+					}
+				}
+			}
+		}
+		if remain, err := a.RefreshCredits(r.UID); err != nil {
+			log.Printf("qodercn 新账号积分获取失败 %s: %v", r.Nickname, err)
+		} else {
+			log.Printf("qodercn 新账号积分获取完成 %s: %d", r.Nickname, remain)
+		}
+	})
+}
+
+// completeQoderCOMLogin 登录成功：生成机器指纹、写 auth 文件、重载账号池、首次签到（仅 campaigns）。
+func (a *App) completeQoderCOMLogin(r loginqodercom.Result) {
+	log.Printf("qodercom 登录成功 uid=%s nickname=%s expires_in=%d refresh_token=%t", r.UID, r.Nickname, r.ExpiresIn, r.RefreshToken != "")
+	au := &auth.Auth{Kind: "qodercom", AccessToken: r.AccessToken, RefreshToken: r.RefreshToken, UID: r.UID, Nickname: r.Nickname}
+	qodercom.EnsureFingerprint(au)
+	fp, err := loginqodercom.SaveAuth(a.cfg.AuthDir, r, au.MachineID, au.MachineToken, au.MachineType)
+	if err != nil {
+		log.Printf("qodercom 登录保存凭证失败 uid=%s err=%v", r.UID, err)
+		return
+	}
+	au.FilePath = fp // 回填落盘路径，后续 SaveAtomic（显示名回填）依赖它
+	log.Printf("qodercom 登录凭证已保存 uid=%s file=%s", r.UID, filepath.Base(fp))
+	a.reloadAccounts()
+	a.finishLogin()
+	a.afterAccountAdded(provider.QoderCOM)
+	// 新账号首次拉取余额 + 实测 userType + 回填显示名。
+	// 设备流响应里无 nickname，显示名（邮箱/昵称）只能从 userinfo 拿：
+	// 拉到后写回 au.Nickname 并 SaveAtomic 落盘，面板即显示真实用户名。
+	a.safeGo(func() {
+		if rt := a.runtime(provider.QoderCOM); rt != nil {
+			if cu, ok := rt.Upstream.(*qodercom.Client); ok {
+				if name, _, err := cu.FetchUserInfo(au); err != nil {
+					log.Printf("qodercom 新账号 userType 实测失败 %s: %v", r.UID, err)
+				} else if name != "" && au.Nickname == "" {
+					au.Nickname = name
+					if err := au.SaveAtomic(); err != nil {
+						log.Printf("qodercom 显示名回写失败 %s: %v", r.UID, err)
+					} else {
+						log.Printf("qodercom 显示名已回填 %s: %s", r.UID, name)
+						a.reloadAccounts() // 池内 nickname 刷新，面板即时可见
+					}
+				}
+			}
+		}
+		if remain, err := a.RefreshCredits(r.UID); err != nil {
+			log.Printf("qodercom 新账号积分获取失败 %s: %v", r.Nickname, err)
+		} else {
+			log.Printf("qodercom 新账号积分获取完成 %s: %d", r.Nickname, remain)
+		}
+	})
+}
+
 // completeQwenWorkLogin 登录成功：写 auth 文件、重载账号池。
 // 千问办公无签到活动（每日积分服务端被动发放），不做首次签到。
 func (a *App) completeQwenWorkLogin(r loginqwenwork.Result) {
@@ -690,6 +809,22 @@ func (a *App) reloadAccounts() {
 		auths, err := auth.LoadQoderDir(a.cfg.AuthDir)
 		if err != nil {
 			log.Printf("reload qoder accounts: %v", err)
+		} else {
+			rt.Pool.SyncToDir(auths)
+		}
+	}
+	if rt := a.runtime(provider.QoderCN); rt != nil && rt.Pool != nil {
+		auths, err := auth.LoadQoderCNDir(a.cfg.AuthDir)
+		if err != nil {
+			log.Printf("reload qodercn accounts: %v", err)
+		} else {
+			rt.Pool.SyncToDir(auths)
+		}
+	}
+	if rt := a.runtime(provider.QoderCOM); rt != nil && rt.Pool != nil {
+		auths, err := auth.LoadQoderCOMDir(a.cfg.AuthDir)
+		if err != nil {
+			log.Printf("reload qodercom accounts: %v", err)
 		} else {
 			rt.Pool.SyncToDir(auths)
 		}
@@ -800,7 +935,7 @@ func (a *App) refreshIfSessionDead(rt *Runtime, au *auth.Auth, err error) bool {
 // creditTotals 一次上游调用同时取回「可消耗余额」「临期额度」与「不可消耗余额」。
 // 三者同源于 UserResourceDetail 的单次响应：remain 即 pool 路由口径的可消耗余额，
 // 临期额度为其中 24h 内（到期日≤明天）到期的部分，不可消耗部分由条目的 Usable 标记汇总得到
-//（渠道不区分专用池时为 0；渠道不下发到期时间时临期为 0，如 Qoder）。
+// （渠道不区分专用池时为 0；渠道不下发到期时间时临期为 0，如 Qoder）。
 // 遇 401 自动刷新 token 并重试一次（见 refreshIfSessionDead）。
 func (a *App) creditTotals(rt *Runtime, au *auth.Auth) (usable, expiring, unusable int64, err error) {
 	remain, items, err := rt.Upstream.UserResourceDetail(au)
@@ -1766,7 +1901,7 @@ func (a *App) FeesInfo() map[string]any {
 	}
 
 	channels := buildFeesChannels(modelsByKind, cached, []provider.Kind{
-		provider.WorkBuddy, provider.WorkBuddyAI, provider.TraeWork, provider.Qoder, provider.QwenWork,
+		provider.WorkBuddy, provider.WorkBuddyAI, provider.TraeWork, provider.Qoder, provider.QoderCN, provider.QoderCOM, provider.QwenWork,
 	}, a.cfg.Compat.ContextWindows)
 
 	result := map[string]any{

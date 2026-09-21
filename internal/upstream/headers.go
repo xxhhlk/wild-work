@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http"
+	"time"
 
 	"wild-work/internal/auth"
 )
@@ -14,6 +15,7 @@ const (
 	clientUA            = "CLI/2.63.2 CodeBuddy/2.63.2"
 	originRefererCN     = "https://www.codebuddy.cn"
 	originRefererGlobal = "https://www.workbuddy.ai"
+	defaultClientVer    = "5.5.4"
 )
 
 func originRefererFor(a *auth.Auth) string {
@@ -62,7 +64,8 @@ func ChatHeaders(req *http.Request, a *auth.Auth) {
 	} else {
 		req.Header.Set("X-No-Department-Info", "1")
 	}
-	req.Header.Set("X-Product", "SaaS")
+	injectAttribution(req, a)
+	injectConversationHeaders(req, newMessageID())
 }
 
 // BillingHeaders billing 接口请求头。
@@ -94,6 +97,37 @@ func RefreshHeaders(req *http.Request, a *auth.Auth) {
 	req.Header.Set("X-Auth-Refresh-Source", "plugin")
 }
 
+// injectAttribution 注入用量归属头——使上游调用记录显示为 WorkBuddy 桌面端。
+func injectAttribution(req *http.Request, a *auth.Auth) {
+	req.Header.Set("X-Agent-Purpose", "conversation")
+	req.Header.Set("X-IDE-Name", "WorkBuddy")
+	req.Header.Set("X-IDE-Type", "WorkBuddy")
+	req.Header.Set("X-IDE-Version", defaultClientVer)
+	req.Header.Set("X-Product", "WorkBuddy")
+}
+
+// injectConversationHeaders 注入会话头族（X-Conversation-Request-ID / B3 链路）。
+func injectConversationHeaders(req *http.Request, messageID string) {
+	cid := newMessageID()
+	req.Header.Set("X-Conversation-Request-ID", cid)
+	req.Header.Set("X-Conversation-Message-ID", messageID)
+	req.Header.Set("X-Request-ID", messageID)
+	req.Header.Set("X-Root-Request-ID", cid)
+	req.Header.Set("X-B3-TraceId", messageID)
+	req.Header.Set("X-B3-SpanId", messageID[:16])
+	req.Header.Set("X-B3-Sampled", "1")
+}
+
+func newMessageID() string {
+	var b [16]byte
+	n := time.Now().UnixNano()
+	for i := 0; i < 8; i++ {
+		b[i] = byte(n >> (i * 8))
+		b[15-i] = byte(n >> ((7 - i) * 8))
+	}
+	return hex.EncodeToString(b[:])
+}
+
 func acceptLanguageFor(a *auth.Auth) string {
 	if a != nil && a.Region() == "global" {
 		return "en-US"
@@ -101,8 +135,7 @@ func acceptLanguageFor(a *auth.Auth) string {
 	return "zh-CN"
 }
 
-// injectAccountStableHeaders 注入按 uid 稳定派生的 X-Machine-ID / X-Session-ID
-//（sha256("wb2a:"+purpose+":"+uid)[:18]，36 hex）。跨重启固定、账号间互异。
+// injectAccountStableHeaders 注入按 uid 稳定派生的 X-Machine-ID / X-Session-ID（36 hex）。
 func injectAccountStableHeaders(req *http.Request, a *auth.Auth) {
 	if a == nil || a.UID == "" {
 		return

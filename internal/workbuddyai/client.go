@@ -5,6 +5,7 @@ package workbuddyai
 import (
 	"bytes"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -89,7 +90,31 @@ func chatHeaders(req *http.Request, a *auth.Auth) {
 		req.Header.Set("X-No-Enterprise-Id", "1")
 	}
 	req.Header.Set("X-Domain", wbaiDomain)
-	req.Header.Set("X-Product", "SaaS")
+	injectAttributionWBAI(req)
+	// 会话头族
+	mid := newMessageIDWBAI()
+	req.Header.Set("X-Conversation-Request-ID", mid)
+	req.Header.Set("X-Conversation-Message-ID", mid)
+	req.Header.Set("X-Request-ID", mid)
+	req.Header.Set("X-Root-Request-ID", mid)
+}
+
+func injectAttributionWBAI(req *http.Request) {
+	req.Header.Set("X-Agent-Purpose", "conversation")
+	req.Header.Set("X-IDE-Name", "WorkBuddy")
+	req.Header.Set("X-IDE-Type", "WorkBuddy")
+	req.Header.Set("X-IDE-Version", "5.5.4")
+	req.Header.Set("X-Product", "WorkBuddy")
+}
+
+func newMessageIDWBAI() string {
+	var b [16]byte
+	n := time.Now().UnixNano()
+	for i := 0; i < 8; i++ {
+		b[i] = byte(n >> (i * 8))
+		b[15-i] = byte(n >> ((7 - i) * 8))
+	}
+	return hex.EncodeToString(b[:])
 }
 
 // billingHeaders 余额 / 签到接口头。

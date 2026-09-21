@@ -92,6 +92,10 @@ body {
 .btn.primary.alt:hover { background: #0e7490; }
 .btn.primary.alt.qoder { background: #7c3aed; border-color: #7c3aed; }
 .btn.primary.alt.qoder:hover { background: #6d28d9; }
+.btn.primary.alt.qodercn { background: #6d28d9; border-color: #6d28d9; }
+.btn.primary.alt.qodercn:hover { background: #5b21b6; }
+.btn.primary.alt.qodercom { background: #b45309; border-color: #b45309; }
+.btn.primary.alt.qodercom:hover { background: #92400e; }
 .btn.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
 .btn.danger:hover { background: #b91c1c; }
 .btn.small { padding: 5px 10px; font-size: 13px; }
@@ -142,6 +146,8 @@ body {
 .badge.wbai { background: #0d9488; }
 .badge.trae { background: #0891b2; }
 .badge.qoder { background: #7c3aed; }
+.badge.qodercn { background: #6d28d9; }
+.badge.qodercom { background: #b45309; }
 
 .tag { font-size: 10px; padding: 2px 7px; border-radius: 10px; white-space: nowrap; }
 .tag.bad { background: #fee2e2; color: var(--danger); }
@@ -201,6 +207,8 @@ body {
 .fees .ch-header.wbai td { color: #0d9488; }
 .fees .ch-header.trae td { color: #0891b2; }
 .fees .ch-header.qoder td { color: #7c3aed; }
+.fees .ch-header.qodercn td { color: #6d28d9; }
+.fees .ch-header.qodercom td { color: #b45309; }
 .btn.alt.wbai { background: #0d9488; border-color: #0d9488; color: #fff; }
 .fees .note { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
 .fees td.dim { color: var(--muted); font-size: 12px; }
