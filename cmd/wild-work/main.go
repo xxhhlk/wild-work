@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -48,6 +49,7 @@ func main() {
 	// 工作目录：便携/CLI 形态固定为 exe 所在目录，保证相对路径配置（./auths ./data）稳定。
 	// macOS .app bundle 内该目录只读、且随 app 替换被清空，故改用系统数据目录（见 workDir）。
 	_ = os.Chdir(workDir())
+	wd, _ := os.Getwd()
 
 	cfgPath := "config.json"
 	cfg, err := config.Load(cfgPath)
@@ -240,6 +242,7 @@ func main() {
 	mux := http.NewServeMux()
 	compat.Routes(mux) // POST /v1/responses · /v1/messages · /v1/messages/count_tokens
 	mux.Handle("/", inner)
+	log.Printf("wild-work revision=%s 数据目录=%s", buildRevision(), wd)
 	if compat != nil {
 		log.Printf("三接口兼容层已启用：default_channel=%q max_tokens_cap=%d reasoning_effort=%q responses_reasoning_summary=%q model_map=%d 条",
 			cfg.Compat.DefaultChannel, cfg.Compat.MaxTokensCap, cfg.Compat.ReasoningEffort,
@@ -393,6 +396,24 @@ func workDir() string {
 		}
 	}
 	return dir
+}
+
+// buildRevision 构建时嵌入的 VCS 提交号（未启用 VCS stamping 的构建返回 unknown）。
+// 落日志的用途：现场排障时一眼看出跑的是哪次构建，避免拿旧二进制对已修的 bug 复现。
+func buildRevision() string {
+	bi, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "unknown"
+	}
+	for _, s := range bi.Settings {
+		if s.Key == "vcs.revision" {
+			if len(s.Value) > 12 {
+				return s.Value[:12]
+			}
+			return s.Value
+		}
+	}
+	return "unknown"
 }
 
 func displayHost(cfg *config.Config) string {
