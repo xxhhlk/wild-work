@@ -270,6 +270,16 @@ func TestListingForKind(t *testing.T) {
 	if efforts, _ := ListingForKind("workbuddyai", "deepseek-v4.1-flash", nil, ""); len(efforts) != 1 || efforts[0] != "high" {
 		t.Errorf("国际版静态表应为单档 high：%v", efforts)
 	}
+	// QoderCN / QoderCOM 与 Qoder 同源：能力只取远端 thinking_config，静态表刻意留空。
+	if efforts, def := ListingForKind("qodercn", "qwen3.8-max", []string{"low", "medium", "xhigh"}, "medium"); len(efforts) != 3 || def != "medium" {
+		t.Errorf("QoderCN 应取远端 ladder：%v / %q", efforts, def)
+	}
+	if efforts, def := ListingForKind("qodercom", "qwen3.8-max", []string{"low", "medium", "xhigh"}, "medium"); len(efforts) != 3 || def != "medium" {
+		t.Errorf("QoderCOM 应取远端 ladder：%v / %q", efforts, def)
+	}
+	if efforts, def := ListingForKind("qodercn", "qwen3.8-max", nil, ""); efforts != nil || def != "" {
+		t.Errorf("QoderCN 无静态表，远端未声明时不应暴露档位：%v / %q", efforts, def)
+	}
 }
 
 func TestSupportsEffortKind(t *testing.T) {
@@ -278,11 +288,101 @@ func TestSupportsEffortKind(t *testing.T) {
 		want bool
 	}{
 		{"workbuddy", true}, {"workbuddyai", true}, {"qoder", true},
-		{"WorkBuddy", true}, {" Qoder ", true},
-		{"traework", false}, {"", false}, {"unknown", false},
+		{"qodercn", true}, {"qodercom", true},
+		{"WorkBuddy", true}, {" Qoder ", true}, {"QoderCN", true},
+		{"traework", false}, {"qwenwork", false}, {"", false}, {"unknown", false},
 	} {
 		if got := SupportsEffortKind(tc.kind); got != tc.want {
 			t.Errorf("SupportsEffortKind(%q) = %v, want %v", tc.kind, got, tc.want)
+		}
+	}
+}
+
+// 凡声明「有档位能力」的渠道，RealmForKind 必须给它一个专属面，
+// 不得落进 RealmCN——落进去就会把 WorkBuddy 国内版的档位表写脏
+// （能力表按 realm 分桶，cn 面同时服务真实国内版渠道）。
+func TestEffortKindHasOwnRealm(t *testing.T) {
+	for _, kind := range []string{"workbuddyai", "qoder", "qodercn", "qodercom"} {
+		if got := RealmForKind(kind); got == RealmCN {
+			t.Errorf("渠道 %s 声明有档位能力，却落进 RealmCN（会污染国内版档位表）", kind)
+		}
+	}
+	// 三个 Qoder 渠道必须各占一个面（SetRemote 是整桶替换，共用面会互相覆盖）。
+	seen := map[string]string{}
+	for _, kind := range []string{"qoder", "qodercn", "qodercom"} {
+		realm := RealmForKind(kind)
+		if prev, dup := seen[realm]; dup {
+			t.Errorf("渠道 %s 与 %s 共用 realm %s：SetRemote 整桶替换会让二者互相覆盖", kind, prev, realm)
+		}
+		seen[realm] = kind
+	}
+}
+
+// 三个 Qoder 面互不串味：同名模型在不同面各挂不同 ladder，查找/降级/默认档都必须只认自己那份。
+func TestQoderRealmIsolation(t *testing.T) {
+	old := Caps
+	Caps = NewCatalog()
+	defer func() { Caps = old }()
+
+	Caps.SetRemote(RealmQoder, map[string]Cap{"probe-shared": {Efforts: []string{"low"}}})
+	Caps.SetRemote(RealmQoderCN, map[string]Cap{"probe-shared": {
+		Efforts: []string{"low", "medium", "xhigh"}, DefaultEffort: "medium",
+	}})
+	Caps.SetRemote(RealmQoderCOM, map[string]Cap{"probe-shared": {SupportsDisable: true}})
+
+	if got := Caps.Clamp(RealmQoder, "probe-shared", "ultra"); got != "low" {
+		t.Errorf("Qoder 面 ladder 被污染：ultra → %q, want low", got)
+	}
+	if got := Caps.Clamp(RealmQoderCN, "probe-shared", "ultra"); got != "xhigh" {
+		t.Errorf("QoderCN 面 ladder 被污染：ultra → %q, want xhigh", got)
+	}
+	if d := Caps.DefaultEffort(RealmQoderCN, "probe-shared"); d != "medium" {
+		t.Errorf("QoderCN 默认档 = %q, want medium", d)
+	}
+	if d := Caps.DefaultEffort(RealmQoder, "probe-shared"); d != "" {
+		t.Errorf("Qoder 面不该凭空多出默认档：%q", d)
+	}
+	if cap, ok := Caps.Lookup(RealmQoderCOM, "probe-shared"); !ok || !cap.SupportsDisable || len(cap.Efforts) != 0 {
+		t.Errorf("QoderCOM 面能力错乱：%+v ok=%v", cap, ok)
+	}
+	// 三面都不得把能力漏进国内版面。
+	if _, ok := Caps.Lookup(RealmCN, "probe-shared"); ok {
+		t.Error("Qoder 的能力漏进了 RealmCN（会污染 WorkBuddy 国内版）")
+	}
+	if Caps.HasRemote(RealmCN) {
+		t.Error("写入 Qoder 面后 RealmCN 不应有远端能力（否则 ensureEffortCaps 会饿死国内版）")
+	}
+}
+
+// ParseThinkingConfig 三种形态：完整 ladder + 可关闭、只有开关、缺失/非法。
+func TestParseThinkingConfig(t *testing.T) {
+	full := ParseThinkingConfig(json.RawMessage(`{"disabled":{"description":"Disable thinking"},` +
+		`"enabled":{"is_default":true,"efforts":{"low":{},"medium":{"is_default":true},"xhigh":{}}}}`))
+	if len(full.Efforts) != 3 || full.Efforts[0] != "low" || full.Efforts[2] != "xhigh" {
+		t.Errorf("ladder 应升序解析：%v", full.Efforts)
+	}
+	if full.DefaultEffort != "medium" || !full.SupportsDisable {
+		t.Errorf("默认档/可关闭标记错：%q %v", full.DefaultEffort, full.SupportsDisable)
+	}
+	// 只有 enabled、没有 disabled 节点 → 不可显式关闭
+	noDisable := ParseThinkingConfig(json.RawMessage(`{"enabled":{"efforts":{"low":{},"high":{"is_default":true}}}}`))
+	if noDisable.SupportsDisable || noDisable.DefaultEffort != "high" {
+		t.Errorf("无 disabled 节点时不该声明可关闭：%+v", noDisable)
+	}
+	// 只有 disabled、没有 ladder → 只有开关能力
+	switchOnly := ParseThinkingConfig(json.RawMessage(`{"disabled":{"description":"x"}}`))
+	if len(switchOnly.Efforts) != 0 || !switchOnly.SupportsDisable {
+		t.Errorf("只有开关的模型解析错：%+v", switchOnly)
+	}
+	// 默认档不在 ladder 里 → 丢弃（不宣称不支持的默认档）
+	bad := ParseThinkingConfig(json.RawMessage(`{"enabled":{"efforts":{"low":{"is_default":true}}}}`))
+	if bad.DefaultEffort != "low" {
+		t.Errorf("默认档应命中 ladder：%+v", bad)
+	}
+	// 缺失/非法/空 → 零值（未知），调用方据此不暴露档位、不降级
+	for _, raw := range []string{"", "null", "{}", "{oops", `"str"`} {
+		if got := ParseThinkingConfig(json.RawMessage(raw)); len(got.Efforts) != 0 || got.SupportsDisable || got.DefaultEffort != "" {
+			t.Errorf("ParseThinkingConfig(%q) 应为零值：%+v", raw, got)
 		}
 	}
 }

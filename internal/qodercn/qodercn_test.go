@@ -8,6 +8,7 @@ import (
 
 	"wild-work/internal/auth"
 	"wild-work/internal/provider"
+	"wild-work/internal/reasoning"
 )
 
 func TestNormalizeModelName(t *testing.T) {
@@ -238,7 +239,7 @@ func TestBuildAgentBodyShape(t *testing.T) {
 	mc := &ModelEntry{Key: "gmodel", DisplayName: "GLM-5.3", MaxInputTokens: 180000}
 	raw, err := buildAgentBody(
 		[]map[string]any{{"role": "developer", "content": "sys"}, {"role": "user", "content": "hi"}},
-		mc, nil, true, 0, "personal_standard")
+		mc, nil, reasoningSpec{Enabled: true}, 0, "personal_standard")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,5 +283,162 @@ func TestClassifyOrder(t *testing.T) {
 	}
 	if got := Classify(401, `{"code":"TOKEN_EXPIRE"}`); got != provider.ErrSessionDead {
 		t.Errorf("TOKEN_EXPIRE should be session dead, got %v", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 思考档位：能力解析 → 投影 → body 字段（realm 为 RealmQoderCN）
+// ---------------------------------------------------------------------------
+
+// toModelInfos 必须把上游 thinking_config 的 ladder 带进 provider.ModelInfo，
+// 否则 /v1/models 与面板看不到档位（能力表也就无从写入）。
+func TestToModelInfosCarriesThinkingCaps(t *testing.T) {
+	dyn := []ModelEntry{
+		{
+			Key: "gmodel", DisplayName: "GLM-5.3", Enable: true, IsReasoning: true,
+			ThinkingConfig: json.RawMessage(`{"disabled":{"description":"x"},` +
+				`"enabled":{"efforts":{"low":{},"high":{"is_default":true}}}}`),
+		},
+		{Key: "nomodel", DisplayName: "No-Ladder", Enable: true},
+	}
+	infos := toModelInfos(dyn)
+	if len(infos) != 2 {
+		t.Fatalf("infos len = %d", len(infos))
+	}
+	withLadder := infos[0]
+	if len(withLadder.SupportedEfforts) != 2 || withLadder.SupportedEfforts[0] != "low" ||
+		withLadder.SupportedEfforts[1] != "high" {
+		t.Errorf("ladder 未透出：%v", withLadder.SupportedEfforts)
+	}
+	if withLadder.DefaultEffort != "high" || !withLadder.ReasoningCanDisable {
+		t.Errorf("默认档/可关闭标记未透出：%q %v", withLadder.DefaultEffort, withLadder.ReasoningCanDisable)
+	}
+	// 目录未声明 thinking_config → 不暴露档位（不猜 ladder）
+	noLadder := infos[1]
+	if len(noLadder.SupportedEfforts) != 0 || noLadder.DefaultEffort != "" || noLadder.ReasoningCanDisable {
+		t.Errorf("未声明 thinking_config 的模型不该暴露档位：%+v", noLadder)
+	}
+}
+
+// 思考投影：档位按该模型 ladder 就近降级、开关与档位同源，
+// 且只认 RealmQoderCN 面（与 Qoder / QoderCOM 同名模型互不串味）。
+//
+// 测试用独立模型名，避免污染其它用例共享的能力表（reasoning.Caps 是进程级）。
+func TestReasoningSpecForProjection(t *testing.T) {
+	old := reasoning.Caps
+	reasoning.Caps = reasoning.NewCatalog()
+	t.Cleanup(func() { reasoning.Caps = old })
+
+	reasoning.Caps.SetRemote(reasoning.RealmQoderCN, map[string]reasoning.Cap{
+		"probe-ladder":     {Efforts: []string{"low", "medium", "xhigh"}, DefaultEffort: "medium", SupportsDisable: true},
+		"probe-nodisable":  {Efforts: []string{"low", "high", "max"}, DefaultEffort: "max"},
+		"probe-switchonly": {SupportsDisable: true},
+	})
+	// 同名模型在 Qoder 面只有 low：本渠道必须无视它（否则 ultra 会被降到 low）。
+	reasoning.Caps.SetRemote(reasoning.RealmQoder, map[string]reasoning.Cap{
+		"probe-ladder": {Efforts: []string{"low"}},
+	})
+
+	cases := []struct {
+		name     string
+		model    string
+		effort   string
+		thinking *thinkingParam
+		wantOn   bool
+		wantEff  string
+	}{
+		{"未表达", "probe-ladder", "", nil, false, ""},
+		{"显式关闭（可关模型）", "probe-ladder", "none", nil, false, "none"},
+		{"显式关闭 off（可关模型）", "probe-ladder", "off", nil, false, "none"},
+		{"显式关闭（不可关模型→降最低档）", "probe-nodisable", "none", nil, true, "low"},
+		{"显式关闭（只有开关的模型）", "probe-switchonly", "none", nil, false, "none"},
+		{"显式关闭（能力未知→只关开关）", "probe-unknown", "none", nil, false, ""},
+		{"指定档位命中", "probe-ladder", "medium", nil, true, "medium"},
+		{"指定档位就近降级", "probe-ladder", "high", nil, true, "medium"},
+		{"指定档位超上限（realm 隔离：取 CN 面 xhigh 而非 Qoder 面 low）", "probe-ladder", "ultra", nil, true, "xhigh"},
+		{"指定档位低于下限", "probe-nodisable", "minimal", nil, true, "low"},
+		{"只说开思考→补默认档", "probe-ladder", "", &thinkingParam{Type: "enabled"}, true, "medium"},
+		{"adaptive→补默认档", "probe-ladder", "", &thinkingParam{Type: "adaptive"}, true, "medium"},
+		{"thinking disabled 兜底", "probe-ladder", "", &thinkingParam{Type: "disabled"}, false, "none"},
+		// 保守守卫：能力未知（目录未下发 thinking_config）时不下发档位字段，
+		// 与「面板/`/v1/models` 不声明档位」保持同一口径。
+		{"指定档位（能力未知→只翻开关）", "probe-unknown", "high", nil, true, ""},
+		{"只说开思考（能力未知）", "probe-unknown", "", &thinkingParam{Type: "enabled"}, true, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := reasoningSpecFor(tc.model, tc.effort, tc.thinking)
+			if got.Enabled != tc.wantOn || got.Effort != tc.wantEff {
+				t.Errorf("reasoningSpecFor(%q, %q) = {on:%v effort:%q}, want {on:%v effort:%q}",
+					tc.model, tc.effort, got.Enabled, got.Effort, tc.wantOn, tc.wantEff)
+			}
+		})
+	}
+}
+
+// body 层：档位与开关同源落在 model_config 与 parameters 两处；
+// 未给档位时不得凭空造出 parameters.reasoning_effort。
+func TestBuildAgentBodyReasoningFields(t *testing.T) {
+	mc := &ModelEntry{Key: "gmodel", DisplayName: "GLM-5.3", MaxInputTokens: 180000}
+	msgs := []map[string]any{{"role": "user", "content": "hi"}}
+
+	decode := func(t *testing.T, spec reasoningSpec) map[string]any {
+		t.Helper()
+		raw, err := buildAgentBody(msgs, mc, nil, spec, 0, "personal_standard")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var body map[string]any
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Fatal(err)
+		}
+		return body
+	}
+
+	// 有档位：三处同源
+	body := decode(t, reasoningSpec{Enabled: true, Effort: "xhigh"})
+	params, _ := body["parameters"].(map[string]any)
+	if params["reasoning_effort"] != "xhigh" || params["enable_thinking"] != true {
+		t.Errorf("parameters 档位字段错：%v", params)
+	}
+	mcfg, _ := body["model_config"].(map[string]any)
+	if mcfg["is_reasoning"] != true {
+		t.Errorf("model_config.is_reasoning 应为 true：%v", mcfg)
+	}
+	extra, _ := body["chat_context"].(map[string]any)["extra"].(map[string]any)
+	lite, _ := extra["modelConfig"].(map[string]any)
+	if lite["is_reasoning"] != true {
+		t.Errorf("chat_context.extra.modelConfig 未同源：%v", lite)
+	}
+
+	// 关闭且不可关 → 降到最低档时 enable_thinking 必须为 true（不可自相矛盾）
+	body = decode(t, reasoningSpec{Enabled: true, Effort: "low"})
+	params, _ = body["parameters"].(map[string]any)
+	if params["reasoning_effort"] != "low" || params["enable_thinking"] != true {
+		t.Errorf("降档形态应为开启态：%v", params)
+	}
+
+	// 显式关闭：effort=none + enable_thinking=false + is_reasoning=false
+	body = decode(t, reasoningSpec{Enabled: false, Effort: "none"})
+	params, _ = body["parameters"].(map[string]any)
+	if params["reasoning_effort"] != "none" || params["enable_thinking"] != false {
+		t.Errorf("关闭形态错：%v", params)
+	}
+	mcfg, _ = body["model_config"].(map[string]any)
+	if mcfg["is_reasoning"] != false {
+		t.Errorf("关闭时 is_reasoning 应为 false：%v", mcfg)
+	}
+
+	// 未给档位：不下发档位字段（与旧行为一致，不打扰上游默认档）
+	body = decode(t, reasoningSpec{Enabled: true})
+	params, _ = body["parameters"].(map[string]any)
+	if _, has := params["reasoning_effort"]; has {
+		t.Errorf("无档位时不该下发 reasoning_effort：%v", params)
+	}
+	if _, has := params["enable_thinking"]; has {
+		t.Errorf("无档位时不该下发 enable_thinking：%v", params)
+	}
+	if params["max_tokens"] != float64(32768) {
+		t.Errorf("max_tokens 默认值被破坏：%v", params["max_tokens"])
 	}
 }

@@ -12,15 +12,18 @@
 //     compat.static_effort_fallback 关闭，关闭后只剩远端一级）；
 //  3. 两者皆无 → 不降级（档位原样透传），/v1/models 也不暴露档位字段。
 //
-// Qoder（RealmQoder）是特例：能力一律来自其模型目录的 thinking_config
-// （每模型一条 ladder，见 internal/qoder/models.go），静态表刻意留空 —— 猜错
-// ladder 会把「未知」当「已知」而发出非法档位。
+// Qoder 系（RealmQoder / RealmQoderCN / RealmQoderCOM）是特例：能力一律来自各自
+// 模型目录的 thinking_config（每模型一条 ladder，见 internal/qoder/models.go、
+// internal/qodercn/models.go、internal/qodercom/models.go），静态表刻意留空 ——
+// 猜错 ladder 会把「未知」当「已知」而发出非法档位。
+// 三个 Qoder 渠道各自独立成面（详见 Realm 常量后的说明）。
 //
 // ⚠️ 静态表数值来自对官方客户端（codebuddy.js / product.ts）的逆向记录，
 // 本仓库未独立复现；远端返回值始终优先，实测不符时只改本文件即可。
 package reasoning
 
 import (
+	"encoding/json"
 	"log"
 	"sort"
 	"strings"
@@ -39,7 +42,19 @@ const (
 	// thinking_config（每模型一条 ladder），且不少模型只支持关闭节点而不支持
 	// 档位、或反之，与 CodeBuddy 的同名模型并不通用。
 	RealmQoder = "qoder"
+	// RealmQoderCN QoderCN（qoder.com.cn，qoder2api 系，独立渠道）。
+	RealmQoderCN = "qodercn"
+	// RealmQoderCOM QoderCOM（qoder.sh，国际版）。
+	RealmQoderCOM = "qodercom"
 )
+
+// ⚠️ 三个 Qoder 渠道（Qoder / QoderCN / QoderCOM）**必须各占一个面**，
+// 不得合并成同一个 realm：`SetRemote` 是「整桶替换」（`remote[realm] = bucket`），
+// 共用面时后拉到的渠道会把先拉到的整份 ladder 覆盖掉；而它们各自的模型目录
+// 互不相通（同名模型 ladder 未必相同，甚至同一个模型在一个面有 ladder、另一个面没有），
+// 一旦串味就会按错误 ladder 降级 → 发上游不认的档位。
+// 同理 `RealmForKind` 的 default 分支落 RealmCN：新增渠道若忘记登记 realm，
+// 会静默落进国内版面并污染 WorkBuddy 的档位表。
 
 // Cap 一个模型的档位能力。
 type Cap struct {
@@ -104,9 +119,10 @@ var globalEffortFallback = map[string]Cap{
 	"kimi-k2.6":           {Efforts: []string{"medium"}},
 }
 
-// qoderEffortFallback Qoder 的静态兜底表**刻意留空**：
-// 它的档位能力一律来自上游模型目录的 thinking_config（远端权威），
+// qoderEffortFallback Qoder 系的静态兜底表**刻意留空**（Qoder / QoderCN / QoderCOM 共用这一份空表）：
+// 它们的档位能力一律来自上游模型目录的 thinking_config（远端权威），
 // 本地猜一条 ladder 反而会把「未知」当成「已知」而降级错档位。
+// 三个面共用「空」是安全的——空表没有任何可串味的取值。
 var qoderEffortFallback = map[string]Cap{}
 
 // staticFallback 静态兜底表开关。默认开启；由 main.go 按配置
@@ -187,6 +203,10 @@ func normalizeRealm(realm string) string {
 		return RealmGlobal
 	case strings.EqualFold(strings.TrimSpace(realm), RealmQoder):
 		return RealmQoder
+	case strings.EqualFold(strings.TrimSpace(realm), RealmQoderCN):
+		return RealmQoderCN
+	case strings.EqualFold(strings.TrimSpace(realm), RealmQoderCOM):
+		return RealmQoderCOM
 	}
 	return RealmCN
 }
@@ -196,12 +216,12 @@ func normalizeModel(model string) string {
 	return strings.ToLower(strings.TrimSpace(model))
 }
 
-// staticCap 取静态兜底条目。Qoder 无静态表（能力只认上游目录）。
+// staticCap 取静态兜底条目。Qoder 系三个面均无静态表（能力只认上游目录）。
 func staticCap(realm, model string) Cap {
 	switch normalizeRealm(realm) {
 	case RealmGlobal:
 		return globalEffortFallback[normalizeModel(model)]
-	case RealmQoder:
+	case RealmQoder, RealmQoderCN, RealmQoderCOM:
 		return qoderEffortFallback[normalizeModel(model)]
 	}
 	return cnEffortFallback[normalizeModel(model)]
@@ -280,6 +300,54 @@ func (c *Catalog) HasRemote(realm string) bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return len(c.remote[normalizeRealm(realm)]) > 0
+}
+
+// ParseThinkingConfig 解析上游模型目录的 thinking_config（Qoder 系三个渠道共用的形状）。
+//
+// 实测形状（2026-09-19，qwen3.8-max / deepseek-v4-pro / glm-5.3 等）：
+//
+//	{"disabled":{"description":"Disable thinking"},
+//	 "enabled":{"description":"...","is_default":true,
+//	            "efforts":{"low":{},"medium":{"is_default":true},"xhigh":{}}}}
+//
+// 注意 efforts 是**对象**（键即档位名，值里可能带 is_default/description），不是数组；
+// 部分模型只有 enabled 没有 disabled（不可显式关闭），也有 is_reasoning=false 却带
+// ladder 的（开关与档位能力不绑定）。
+//
+// 缺失/非法一律返回零值（未知）——调用方据此「不暴露档位、不降级」，
+// 而不是猜一条 ladder（猜错会把「未知」当「已知」而发出非法档位）。
+func ParseThinkingConfig(raw json.RawMessage) Cap {
+	if len(raw) == 0 || string(raw) == "null" {
+		return Cap{}
+	}
+	var tc struct {
+		Disabled json.RawMessage `json:"disabled"`
+		Enabled  struct {
+			IsDefault bool                       `json:"is_default"`
+			Efforts   map[string]json.RawMessage `json:"efforts"`
+		} `json:"enabled"`
+	}
+	if err := json.Unmarshal(raw, &tc); err != nil {
+		return Cap{}
+	}
+	cap := Cap{SupportsDisable: len(tc.Disabled) > 0 && string(tc.Disabled) != "null"}
+	for name, meta := range tc.Enabled.Efforts {
+		cap.Efforts = append(cap.Efforts, name)
+		if cap.DefaultEffort != "" {
+			continue
+		}
+		var m struct {
+			IsDefault bool `json:"is_default"`
+		}
+		if err := json.Unmarshal(meta, &m); err == nil && m.IsDefault {
+			cap.DefaultEffort = name
+		}
+	}
+	cap.Efforts = SortEfforts(cap.Efforts)
+	if !containsEffort(cap.Efforts, cap.DefaultEffort) {
+		cap.DefaultEffort = "" // 默认档必须落在支持的档位里
+	}
+	return cap
 }
 
 // SortEfforts 按强度升序排列档位（未知档位排在已知档位之后，保持原有相对顺序）。
@@ -406,24 +474,32 @@ func containsEffort(efforts []string, want string) bool {
 	return false
 }
 
-// RealmForKind 把渠道名映射成产品面（三个渠道有档位能力）。
+// RealmForKind 把渠道名映射成产品面（有档位能力的渠道）。
 // 放在 reasoning 包是为了让渠道层与模型列表共用同一映射，避免两处漂移。
-// Qoder 与 WorkBuddy 的档位表互不相通（同名模型 ladder 不同），故单独一个面。
+// Qoder 系三个渠道与 WorkBuddy 的档位表互不相通（同名模型 ladder 不同），故各自一个面。
 func RealmForKind(kind string) string {
 	switch {
 	case strings.EqualFold(strings.TrimSpace(kind), "workbuddyai"):
 		return RealmGlobal
 	case strings.EqualFold(strings.TrimSpace(kind), "qoder"):
 		return RealmQoder
+	case strings.EqualFold(strings.TrimSpace(kind), "qodercn"):
+		return RealmQoderCN
+	case strings.EqualFold(strings.TrimSpace(kind), "qodercom"):
+		return RealmQoderCOM
 	}
 	return RealmCN
 }
 
-// SupportsEffortKind 该渠道是否有可验证的思考档位能力（WorkBuddy 双面 + Qoder）。
-// TraeWork 协议没有档位字段，对它声明档位会让客户端发出上游不认的参数。
+// SupportsEffortKind 该渠道是否有可验证的思考档位能力
+// （WorkBuddy 双面 + Qoder / QoderCN / QoderCOM 三个 Qoder 面）。
+// TraeWork / 千问办公的协议里没有可验证的档位字段，对它们声明档位会让客户端
+// 发出上游不认的参数。
+// ⚠️ 与 RealmForKind **必须同时改**：这里返回 true 而 RealmForKind 未登记该渠道，
+// 能力表就会写进 RealmCN，把 WorkBuddy 国内版的档位表污染掉。
 func SupportsEffortKind(kind string) bool {
 	switch strings.ToLower(strings.TrimSpace(kind)) {
-	case "workbuddy", "workbuddyai", "qoder":
+	case "workbuddy", "workbuddyai", "qoder", "qodercn", "qodercom":
 		return true
 	}
 	return false

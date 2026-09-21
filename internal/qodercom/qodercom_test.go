@@ -8,6 +8,7 @@ import (
 
 	"wild-work/internal/auth"
 	"wild-work/internal/provider"
+	"wild-work/internal/reasoning"
 )
 
 func TestNormalizeModelName(t *testing.T) {
@@ -221,7 +222,7 @@ func TestBuildAgentBodyShape(t *testing.T) {
 	mc := &ModelEntry{Key: "gmodel", DisplayName: "GLM-5.3", MaxInputTokens: 180000}
 	raw, err := buildAgentBody(
 		[]map[string]any{{"role": "developer", "content": "sys"}, {"role": "user", "content": "hi"}},
-		mc, nil, true, 0, "personal_standard")
+		mc, nil, reasoningSpec{Enabled: true}, 0, "personal_standard")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,5 +266,142 @@ func TestClassifyOrder(t *testing.T) {
 	}
 	if got := Classify(401, `{"code":"TOKEN_EXPIRE"}`); got != provider.ErrSessionDead {
 		t.Errorf("TOKEN_EXPIRE should be session dead, got %v", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 思考档位：能力解析 → 投影 → body 字段（realm 为 RealmQoderCOM）
+// ---------------------------------------------------------------------------
+
+// toModelInfos 必须把上游 thinking_config 的 ladder 带进 provider.ModelInfo。
+func TestToModelInfosCarriesThinkingCaps(t *testing.T) {
+	dyn := []ModelEntry{
+		{
+			Key: "gmodel", DisplayName: "GLM-5.3", Enable: true, IsReasoning: true,
+			ThinkingConfig: json.RawMessage(`{"disabled":{"description":"x"},` +
+				`"enabled":{"efforts":{"low":{},"high":{"is_default":true}}}}`),
+		},
+		{Key: "nomodel", DisplayName: "No-Ladder", Enable: true},
+	}
+	infos := toModelInfos(dyn)
+	if len(infos) != 2 {
+		t.Fatalf("infos len = %d", len(infos))
+	}
+	withLadder := infos[0]
+	if len(withLadder.SupportedEfforts) != 2 || withLadder.DefaultEffort != "high" ||
+		!withLadder.ReasoningCanDisable {
+		t.Errorf("档位能力未透出：%+v", withLadder)
+	}
+	noLadder := infos[1]
+	if len(noLadder.SupportedEfforts) != 0 || noLadder.DefaultEffort != "" || noLadder.ReasoningCanDisable {
+		t.Errorf("未声明 thinking_config 的模型不该暴露档位：%+v", noLadder)
+	}
+}
+
+// 思考投影：只认 RealmQoderCOM 面（与 Qoder / QoderCN 的同名模型互不串味）。
+//
+// 三个面的 ladder 刻意设成不同值：串味会立刻体现在降级结果上
+// （COM 是 low/max、CN 是 low/medium/xhigh、Qoder 只有 low）。
+func TestReasoningSpecForProjection(t *testing.T) {
+	old := reasoning.Caps
+	reasoning.Caps = reasoning.NewCatalog()
+	t.Cleanup(func() { reasoning.Caps = old })
+
+	reasoning.Caps.SetRemote(reasoning.RealmQoderCOM, map[string]reasoning.Cap{
+		"probe-ladder":     {Efforts: []string{"low", "max"}, DefaultEffort: "low", SupportsDisable: true},
+		"probe-nodisable":  {Efforts: []string{"low", "high", "max"}, DefaultEffort: "max"},
+		"probe-switchonly": {SupportsDisable: true},
+	})
+	reasoning.Caps.SetRemote(reasoning.RealmQoderCN, map[string]reasoning.Cap{
+		"probe-ladder": {Efforts: []string{"low", "medium", "xhigh"}, DefaultEffort: "medium"},
+	})
+	reasoning.Caps.SetRemote(reasoning.RealmQoder, map[string]reasoning.Cap{
+		"probe-ladder": {Efforts: []string{"low"}},
+	})
+
+	cases := []struct {
+		name     string
+		model    string
+		effort   string
+		thinking *thinkingParam
+		wantOn   bool
+		wantEff  string
+	}{
+		{"未表达", "probe-ladder", "", nil, false, ""},
+		{"显式关闭（可关模型）", "probe-ladder", "none", nil, false, "none"},
+		{"显式关闭 off（可关模型）", "probe-ladder", "off", nil, false, "none"},
+		{"显式关闭（不可关模型→降最低档）", "probe-nodisable", "none", nil, true, "low"},
+		{"显式关闭（只有开关的模型）", "probe-switchonly", "none", nil, false, "none"},
+		{"显式关闭（能力未知→只关开关）", "probe-unknown", "none", nil, false, ""},
+		{"指定档位命中", "probe-ladder", "max", nil, true, "max"},
+		{"指定档位就近降级（realm 隔离：COM 面 low/max，不串 CN 的 medium）", "probe-ladder", "medium", nil, true, "low"},
+		{"指定档位超上限", "probe-ladder", "ultra", nil, true, "max"},
+		{"指定档位低于下限", "probe-nodisable", "minimal", nil, true, "low"},
+		{"只说开思考→补默认档（COM 面 low）", "probe-ladder", "", &thinkingParam{Type: "enabled"}, true, "low"},
+		{"adaptive→补默认档", "probe-ladder", "", &thinkingParam{Type: "adaptive"}, true, "low"},
+		{"thinking disabled 兜底", "probe-ladder", "", &thinkingParam{Type: "disabled"}, false, "none"},
+		// 保守守卫：能力未知（目录未下发 thinking_config）时不下发档位字段。
+		{"指定档位（能力未知→只翻开关）", "probe-unknown", "high", nil, true, ""},
+		{"只说开思考（能力未知）", "probe-unknown", "", &thinkingParam{Type: "enabled"}, true, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := reasoningSpecFor(tc.model, tc.effort, tc.thinking)
+			if got.Enabled != tc.wantOn || got.Effort != tc.wantEff {
+				t.Errorf("reasoningSpecFor(%q, %q) = {on:%v effort:%q}, want {on:%v effort:%q}",
+					tc.model, tc.effort, got.Enabled, got.Effort, tc.wantOn, tc.wantEff)
+			}
+		})
+	}
+}
+
+// body 层：档位与开关同源落在 model_config 与 parameters 两处。
+func TestBuildAgentBodyReasoningFields(t *testing.T) {
+	mc := &ModelEntry{Key: "gmodel", DisplayName: "GLM-5.3", MaxInputTokens: 180000}
+	msgs := []map[string]any{{"role": "user", "content": "hi"}}
+
+	decode := func(t *testing.T, spec reasoningSpec) map[string]any {
+		t.Helper()
+		raw, err := buildAgentBody(msgs, mc, nil, spec, 0, "personal_standard")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var body map[string]any
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Fatal(err)
+		}
+		return body
+	}
+
+	body := decode(t, reasoningSpec{Enabled: true, Effort: "max"})
+	params, _ := body["parameters"].(map[string]any)
+	if params["reasoning_effort"] != "max" || params["enable_thinking"] != true {
+		t.Errorf("parameters 档位字段错：%v", params)
+	}
+	mcfg, _ := body["model_config"].(map[string]any)
+	if mcfg["is_reasoning"] != true {
+		t.Errorf("model_config.is_reasoning 应为 true：%v", mcfg)
+	}
+	extra, _ := body["chat_context"].(map[string]any)["extra"].(map[string]any)
+	lite, _ := extra["modelConfig"].(map[string]any)
+	if lite["is_reasoning"] != true {
+		t.Errorf("chat_context.extra.modelConfig 未同源：%v", lite)
+	}
+
+	// 显式关闭：effort=none + enable_thinking=false + is_reasoning=false
+	body = decode(t, reasoningSpec{Enabled: false, Effort: "none"})
+	params, _ = body["parameters"].(map[string]any)
+	if params["reasoning_effort"] != "none" || params["enable_thinking"] != false {
+		t.Errorf("关闭形态错：%v", params)
+	}
+
+	// 未给档位：不下发档位字段
+	body = decode(t, reasoningSpec{Enabled: true})
+	params, _ = body["parameters"].(map[string]any)
+	if _, has := params["reasoning_effort"]; has {
+		t.Errorf("无档位时不该下发 reasoning_effort：%v", params)
+	}
+	if params["max_tokens"] != float64(32768) {
+		t.Errorf("max_tokens 默认值被破坏：%v", params["max_tokens"])
 	}
 }

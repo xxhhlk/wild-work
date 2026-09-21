@@ -168,8 +168,20 @@ POST /api/quit                     # 退出程序
     `reasoning_content`，被误判成「上游不支持」。改动 Qoder 请求形状前后，必须跑 `TestLiveProbeProductionPath`
     （走 `ChatStream` 全链路，断言 `reasoning_content` 非空）。
 23. **档位「对外声明」只有一处入口（`reasoning.ListingForKind`）**：`/v1/models` 与面板费率表
-    （`/api/fees`）共用它取档位，其中已含「该渠道是否有档位能力」的判断（TraeWork 必须为空）。
+    （`/api/fees`）共用它取档位，其中已含「该渠道是否有档位能力」的判断（TraeWork / 千问办公必须为空）。
     新增渠道或更换档位来源时只改这一处——两处各写一份判断必然漂移，面板显示的档位就会与实际下发的档位不一致。
+    - **`SupportsEffortKind` 与 `RealmForKind` 必须同一次改完**：前者放行而后者未登记该渠道时，
+      能力会写进 `RealmCN`（`RealmForKind` 的 default 分支），污染 WorkBuddy 国内版的档位表；
+      且 `HasRemote("cn")` 变真后 `ensureEffortCaps` 对真实国内版渠道直接 return，远端权威源被饿死。
+      守门测试：`TestEffortKindHasOwnRealm`。
+    - **Qoder / QoderCN / QoderCOM 三个渠道各占一个 realm**（`RealmQoder` / `RealmQoderCN` / `RealmQoderCOM`）：
+      `Catalog.SetRemote` 是「整桶替换」（`remote[realm] = bucket`），共用面时后拉到的渠道会整份覆盖
+      先拉到的，而三者模型目录互不相通（同名模型 ladder 未必相同）→ 按错 ladder 降级发非法档位。
+      守门测试：`TestQoderRealmIsolation`（各包另有投影侧隔离用例）。
+    - **QoderCN / QoderCOM 的档位下发尚未线上实测**（上游是否认 `parameters.reasoning_effort` 未知）：
+      这两个渠道的 `reasoningSpecFor` 采用保守策略——模型未声明 `thinking_config` 时只翻
+      `model_config.is_reasoning`、不下发档位字段，与「面板/`/v1/models` 不声明该模型档位」严格对齐。
+      实测确认后可按 `internal/qoder` 放开（该包对未知模型也原样透传档位）。
 
 24. **千问办公推理 body 必须带 `business.product`**（`internal/qwenwork/constants.go::BusinessProduct`）：
     上游按它选「模型目录」，缺省时推理端点恒回 HTTP 200 + envelope

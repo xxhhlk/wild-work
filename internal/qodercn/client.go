@@ -21,6 +21,7 @@ import (
 
 	"wild-work/internal/auth"
 	"wild-work/internal/provider"
+	"wild-work/internal/reasoning"
 )
 
 // Client QoderCN 上游客户端。
@@ -258,6 +259,81 @@ func (c *Client) RefreshToken(a *auth.Auth) error {
 	return nil
 }
 
+// thinkingParam 客户端 thinking 参数：Qoder 系只关心 type（enabled/adaptive/disabled）。
+type thinkingParam struct {
+	Type string `json:"type"`
+}
+
+// reasoningSpecFor 把归一化后的思考控制投影成 QoderCN 的请求字段。
+//
+// 官方客户端同时写 model_config.is_reasoning、parameters.reasoning_effort、
+// parameters.enable_thinking，因此这里返回一个 reasoningSpec 交给 body 层三处一起写，
+// 避免出现矛盾态（is_reasoning=true + enable_thinking=false）。
+//
+// 语义（clientModel 用客户端名，与模型目录的能力表同键；能力来自 RealmQoderCN 面）：
+//   - 未表达 → 关，且不下发档位字段（与旧行为一致，避免打扰上游默认档）；
+//   - 显式关闭 → 该模型声明可关闭（thinking_config.disabled）时真关
+//     （effort=none + enable_thinking=false + is_reasoning=false）；
+//     不可关闭时**降到最低档**而不是发 none——上游对不认识的 none 会静默
+//     忽略并按其默认档执行，反而偏离客户端「别想太多」的意图；
+//     能力未知（目录未拉到）时只关开关，不猜档位；
+//   - 指定档位 → 按该模型 ladder 就近降级（reasoning.Caps.Clamp），
+//     避免把 high 发给只认 low/medium/xhigh 的模型；
+//   - 只说开思考 → 补上游标了 is_default 的档；没有声明则只翻开关。
+//
+// thinking.type 作为兜底：未经 server 层归一化的直连调用仍可能只带该字段。
+func reasoningSpecFor(clientModel, reasoningEffort string, thinking *thinkingParam) reasoningSpec {
+	probe := map[string]any{}
+	if reasoningEffort != "" {
+		probe["reasoning_effort"] = reasoningEffort
+	}
+	if thinking != nil && thinking.Type != "" {
+		probe["thinking"] = map[string]any{"type": thinking.Type}
+	}
+	control, err := reasoning.Resolve(probe, false)
+	if err != nil {
+		return reasoningSpec{} // 非法控制已在 server 层拦下；此处兜底按未表达处理
+	}
+	const realm = reasoning.RealmQoderCN
+	switch control.Mode {
+	case reasoning.ModeDisabled:
+		cap, ok := reasoning.Caps.Lookup(realm, clientModel)
+		if !ok {
+			return reasoningSpec{}
+		}
+		if cap.SupportsDisable {
+			return reasoningSpec{Enabled: false, Effort: "none"}
+		}
+		if lowest := reasoning.LowestEffort(cap.Efforts); lowest != "" {
+			return reasoningSpec{Enabled: true, Effort: lowest}
+		}
+		return reasoningSpec{}
+	case reasoning.ModeEnabled, reasoning.ModeEffort:
+		// 保守策略（让「对外声明」与「实际下发」严格对齐）：能力未知的模型只翻开关、
+		// 不下发档位字段——面板与 /v1/models 对未声明 thinking_config 的模型同样不暴露档位
+		// （reasoning.ListingForKind 返回空），两端口径一致。
+		// ⚠️ 本渠道的档位下发**尚未经线上实测**（上游是否认 parameters.reasoning_effort 未知）。
+		// 实测确认后，可放开为与 internal/qoder 一致（未知模型也原样透传档位）。
+		cap, ok := reasoning.Caps.Lookup(realm, clientModel)
+		if !ok {
+			return reasoningSpec{Enabled: true}
+		}
+		effort := reasoning.ChatEffort(control)
+		if control.Mode == reasoning.ModeEnabled && control.BudgetTokens == nil {
+			// 只说开思考：用该模型声明的默认档；没有声明就不下发档位字段。
+			effort = cap.DefaultEffort
+			if effort == "" {
+				return reasoningSpec{Enabled: true}
+			}
+		}
+		if effort != "" {
+			effort = reasoning.Caps.Clamp(realm, clientModel, effort)
+		}
+		return reasoningSpec{Enabled: true, Effort: effort}
+	}
+	return reasoningSpec{}
+}
+
 // ChatStream 发 chat 请求并返回原始嵌套 SSE body 流（调用方负责 Close）。
 // 非 2xx 时 rc 为 nil、respBody 为上游响应体、err 为 nil；只有传输层失败才返回 err。
 func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status int, respBody []byte, err error) {
@@ -268,9 +344,7 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 		Tools           []any            `json:"tools"`
 		ReasoningEffort string           `json:"reasoning_effort"`
 		MaxTokens       int              `json:"max_tokens"`
-		Thinking        *struct {
-			Type string `json:"type"`
-		} `json:"thinking"`
+		Thinking        *thinkingParam   `json:"thinking"`
 	}
 	if err := json.Unmarshal(body, &reqOpenAI); err != nil {
 		return nil, 0, nil, fmt.Errorf("parse chat body: %w", err)
@@ -281,15 +355,14 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 		modelKey = clientName
 	}
 
-	// 思考开关：reasoning_effort 或 thinking:{type:"enabled"} → 启用推理
-	enableReasoning := false
-	if reqOpenAI.ReasoningEffort != "" {
-		enableReasoning = true
-	} else if reqOpenAI.Thinking != nil && reqOpenAI.Thinking.Type == "enabled" {
-		enableReasoning = true
-	}
+	// 思考控制：server 层（internal/server.prepareChatBody）已把 reasoning_effort /
+	// reasoning.effort / thinking.* / enable_thinking 等写法归一化为顶层 reasoning_effort，
+	// 这里按官方投影成 is_reasoning + parameters{reasoning_effort, enable_thinking}。
+	spec := reasoningSpecFor(clientName, reqOpenAI.ReasoningEffort, reqOpenAI.Thinking)
+	log.Printf("qodercn reasoning: client=%q key=%q is_reasoning=%v effort=%q",
+		clientName, modelKey, spec.Enabled, spec.Effort)
 
-	rawBody, err := buildAgentBody(reqOpenAI.Messages, c.modelEntry(modelKey), reqOpenAI.Tools, enableReasoning, reqOpenAI.MaxTokens, c.userTypeOf(a))
+	rawBody, err := buildAgentBody(reqOpenAI.Messages, c.modelEntry(modelKey), reqOpenAI.Tools, spec, reqOpenAI.MaxTokens, c.userTypeOf(a))
 	if err != nil {
 		return nil, 0, nil, fmt.Errorf("build qodercn body: %w", err)
 	}

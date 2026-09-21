@@ -18,6 +18,7 @@ import (
 
 	"wild-work/internal/auth"
 	"wild-work/internal/provider"
+	"wild-work/internal/reasoning"
 )
 
 // contextConfig 形状：{"<label>": {"is_default":bool,"token_count":int}}
@@ -161,6 +162,15 @@ func toModelInfos(dyn []ModelEntry) []provider.ModelInfo {
 			SupportsImages:    m.IsVL,
 			SupportsReasoning: m.IsReasoning,
 		}
+		// 档位能力只在上游明确声明时透出：本地不猜 Qoder 的 ladder
+		// （各模型 ladder 不同，猜错会发非法档位）。能力进入 reasoning.Caps
+		// 的 RealmQoderCN 面（见 server.publishEffortCaps），与 Qoder / QoderCOM 互不干扰。
+		caps := reasoning.ParseThinkingConfig(m.ThinkingConfig)
+		if len(caps.Efforts) > 0 {
+			mi.SupportedEfforts = caps.Efforts
+			mi.DefaultEffort = caps.DefaultEffort
+		}
+		mi.ReasoningCanDisable = caps.SupportsDisable
 		// 上下文窗口：context_config.token_count 优先，回退 max_input_tokens（qoder2api 形态）
 		if m.ContextWindow > 0 {
 			mi.ContextWindow = m.ContextWindow

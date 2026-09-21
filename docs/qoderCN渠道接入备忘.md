@@ -74,3 +74,51 @@ Qoder（`provider.Qoder`，QoderWork 产品线，移植自 qoderwork2api）**并
 - 首次启动在拉到模型前 `/v1/models` 该渠道为空（无静态兜底的代价）；登录后会立即 afterAccountAdded→RefreshPricing 预热。
 - qoder2api 的 PAT→jobToken 交换未引入（如需粘贴 PAT 登录再评估）。
 - 稳定运行后是否替换旧 `qoder` 渠道：另行决议（决议前两条渠道并存）。
+
+## 8. 思考档位收口（2026-09-22）
+
+QoderCN 此前**未声明档位能力**：`reasoning.SupportsEffortKind("qodercn")` 为假，
+于是模型目录里的 `thinking_config` 从不被解析，面板与 `/v1/models` 看不到档位，
+请求侧也只有一个「是否开思考」的布尔开关（客户端给的 `reasoning_effort` 被直接丢弃）。
+本次收口把三个 Qoder 渠道按「独立产品面」纳入统一入口：
+
+| 环节 | 位置 | 说明 |
+| --- | --- | --- |
+| 产品面 | `reasoning.RealmQoderCN` | **独立面**，不与 `RealmQoder` / `RealmQoderCOM` 共用 |
+| 渠道登记 | `reasoning.SupportsEffortKind` / `RealmForKind` | 两处必须同一次改完（见 AGENTS 不变量 23） |
+| 能力解析 | `reasoning.ParseThinkingConfig` | 上游 `thinking_config` → `Cap{Efforts, DefaultEffort, SupportsDisable}` |
+| 能力透出 | `qodercn.toModelInfos` | 填 `ModelInfo.SupportedEfforts / DefaultEffort / ReasoningCanDisable` |
+| 能力入库 | `server.publishEffortCaps` | 写入 `Caps.SetRemote(RealmQoderCN, …)` |
+| 对外声明 | `reasoning.ListingForKind` | `/v1/models` 与面板费率表共用（不新增第二处判断） |
+| 请求投影 | `qodercn.reasoningSpecFor` + `body.go` | `model_config.is_reasoning` 与 `parameters.{reasoning_effort, enable_thinking}` 同源 |
+
+### 为什么必须独立成面
+
+`Catalog.SetRemote` 是**整桶替换**（`remote[realm] = bucket`）：三个 Qoder 渠道若共用一个 realm，
+后拉到模型目录的渠道会把先拉到的整份 ladder 覆盖掉。而三者目录互不相通——
+同名模型 ladder 未必相同，甚至同一个模型在一个面有 ladder、另一个面只有开关。
+一旦串味就会按错 ladder 降级，把上游不认的档位发出去。
+
+### ⚠️ 尚未线上实测
+
+`parameters.reasoning_effort` / `enable_thinking` 是否被 QoderCN 上游接受**没有实测数据**
+（本机无 QoderCN 账号）。因此 `reasoningSpecFor` 采取保守策略：
+
+- 模型**未声明** `thinking_config` → 只翻 `model_config.is_reasoning`，**不下发**档位字段
+  （与「面板不声明该模型档位」严格对齐，行为与改动前一致）；
+- 模型**声明了** ladder → 按 ladder 就近降级后下发。
+
+实测确认上游认这两个字段后，可放开为与 `internal/qoder` 一致（未知模型也原样透传档位）。
+验证方式：登录 QoderCN 账号后跑一次真实请求，看上游是否 400、以及 `reasoning_content` 是否下发。
+
+### 验证
+
+```bash
+go test ./internal/reasoning/ ./internal/qodercn/ ./internal/qodercom/ -v
+```
+
+守门用例：`TestEffortKindHasOwnRealm`（kind ↔ realm 一一对应）、`TestQoderRealmIsolation`（三面不串味）、
+`TestParseThinkingConfig`（三种 `thinking_config` 形态 + 缺失/非法）、
+`TestReasoningSpecForProjection`（含「能力未知不下发档位」守卫）、
+`TestBuildAgentBodyReasoningFields`（档位与开关三处同源）。
+

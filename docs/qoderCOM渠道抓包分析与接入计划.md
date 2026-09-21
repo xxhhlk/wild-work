@@ -123,3 +123,7 @@ R2 追问代号 → 「Bravo-9」（多轮上下文 OK）
 2. **dr t- 缺失**：测试凭据无 refresh token，30 天后过期需重登；正式用户走面板登录会拿到完整 dt-/drt-。
 3. **`/api/v3/user/status`**（Orchids 用于配额）：未接，quota/usage 已够用；后续需要 whitelistStatus 时再补。
 4. **`/api/v1/me/jobToken`**：COM 区空 body 400，与 CN 行为不同；本项目用不到，无影响。
+5. **思考档位**：与 QoderCN 同源实现（能力面 `reasoning.RealmQoderCOM`，独立于 `RealmQoder` / `RealmQoderCN`），
+   收口细节与「档位下发**尚未线上实测**」的保守策略见 `docs/qoderCN渠道接入备忘.md` §8。
+   实测手段：用本文件 §1 的凭据发一次真实推理请求，确认上游是否接受
+   `parameters.reasoning_effort` / `enable_thinking`、以及是否下发 `reasoning_content`。

@@ -15,11 +15,17 @@ import (
 //   - messages：客户端原始消息列表（可含 system/assistant/tool 多轮）
 //   - mc：model_config 条目（来自动态模型表；nil 时用 auto 兜底）
 //   - tools：客户端传来的 OpenAI tools 数组；为空则不注入 tools 字段
-//   - enableReasoning：是否启用思考模式
+//   - spec：思考控制（开关 + 档位），见 reasoningSpec
 //   - maxTokens：客户端请求的 max_tokens，<=0 时用模板默认 32768
 //
+// 思考字段投影（与 internal/qoder 的 A6e() 写法一致）：
+//
+//	model_config.is_reasoning     = spec.Enabled
+//	parameters.reasoning_effort   = spec.Effort   （仅非空时写）
+//	parameters.enable_thinking    = spec.Enabled  （仅非空档位时写，与 is_reasoning 同源）
+//
 // 注意：developer 角色必须改写为 system。
-func buildAgentBody(messages []map[string]any, mc *ModelEntry, tools []any, enableReasoning bool, maxTokens int, userType string) ([]byte, error) {
+func buildAgentBody(messages []map[string]any, mc *ModelEntry, tools []any, spec reasoningSpec, maxTokens int, userType string) ([]byte, error) {
 	// developer → system（浅拷贝消息避免污染调用方数据）
 	msgs := make([]map[string]any, len(messages))
 	for i, m := range messages {
@@ -50,10 +56,17 @@ func buildAgentBody(messages []map[string]any, mc *ModelEntry, tools []any, enab
 	if userType == "" {
 		userType = "personal_standard"
 	}
-	modelCfg := modelConfigFrom(mc, enableReasoning)
+	modelCfg := modelConfigFrom(mc, spec.Enabled)
 
 	now := time.Now()
 	newUUID := uuid4()
+
+	// parameters 恒下发（至少带 max_tokens）；档位与开关同源写入。
+	params := map[string]any{"max_tokens": maxTokens}
+	if spec.Effort != "" {
+		params["reasoning_effort"] = spec.Effort
+		params["enable_thinking"] = spec.Enabled
+	}
 
 	base := map[string]any{
 		"request_id":       newUUID,
@@ -72,7 +85,7 @@ func buildAgentBody(messages []map[string]any, mc *ModelEntry, tools []any, enab
 		"version":       "3",
 		"chat_prompt":   "",
 		"task_id":       "common",
-		"parameters":    map[string]any{"max_tokens": maxTokens},
+		"parameters":    params,
 		"session_type":  "qoder", // qoderwork 渠道是 "qodercli"
 		"model_config":  modelCfg,
 		"chat_context": map[string]any{
@@ -112,14 +125,34 @@ type ModelEntry struct {
 	MaxInputTokens int64   `json:"max_input_tokens"`
 	PriceFactor    float64 `json:"price_factor"`
 	ContextWindow  int64   `json:"-"` // context_config.token_count 解析结果
+	// ThinkingConfig 上游声明的思考能力（档位 ladder / 是否可关闭），
+	// 形状与 internal/qoder 的 DynamicModel.ThinkingConfig 同源（同一模型目录接口）：
+	//   {"disabled":{"description":"..."},
+	//    "enabled":{"is_default":true,"efforts":{"low":{},"medium":{"is_default":true}}}}
+	// 缺失/非法一律当「未知」：不暴露档位、不降级（猜 ladder 会发非法档位）。
+	ThinkingConfig json.RawMessage `json:"thinking_config"`
+}
+
+// reasoningSpec QoderCN 请求里的思考控制（与 internal/qoder 的投影同源）。
+//
+// 官方客户端的写法是档位与开关**同时**落在 model_config 与 parameters 两处，
+// 且 parameters.enable_thinking 必须与 model_config.is_reasoning 同源，
+// 否则上游会收到自相矛盾的组合（is_reasoning=true + enable_thinking=false）。
+type reasoningSpec struct {
+	// Enabled 投影到 model_config.is_reasoning / parameters.enable_thinking。
+	Enabled bool
+	// Effort 投影到 parameters.reasoning_effort；空串表示不下发档位字段
+	// （客户端没给档位、或该模型没有可用的 ladder）。
+	Effort string
 }
 
 // modelConfigFrom 构造 model_config（qoder2api baseprompt.json 全字段形态）。
-func modelConfigFrom(m *ModelEntry, enableReasoning bool) map[string]any {
+// reasoningOn 即 spec.Enabled：投影到 is_reasoning，与 parameters.enable_thinking 同源。
+func modelConfigFrom(m *ModelEntry, reasoningOn bool) map[string]any {
 	if m == nil || m.Key == "" {
 		return map[string]any{
 			"key": "auto", "display_name": "Auto", "model": "", "format": "openai",
-			"is_vl": false, "is_reasoning": enableReasoning, "api_key": "", "url": "",
+			"is_vl": false, "is_reasoning": reasoningOn, "api_key": "", "url": "",
 			"source": "system", "max_input_tokens": 180000,
 		}
 	}
@@ -130,7 +163,7 @@ func modelConfigFrom(m *ModelEntry, enableReasoning bool) map[string]any {
 	}
 	return map[string]any{
 		"key": m.Key, "display_name": m.DisplayName, "model": "", "format": format,
-		"is_vl": m.IsVL, "is_reasoning": enableReasoning, "api_key": "", "url": "",
+		"is_vl": m.IsVL, "is_reasoning": reasoningOn, "api_key": "", "url": "",
 		"source": "system", "max_input_tokens": maxIn,
 	}
 }
