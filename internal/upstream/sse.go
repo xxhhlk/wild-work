@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"sort"
 	"strings"
@@ -489,6 +490,11 @@ func StreamHint(w http.ResponseWriter, r io.Reader, hintFn func(string) string) 
 	// 供逐 chunk 透传时收敛 name 为「每 index 一次」（对齐 OpenAI 官方流）。
 	toolCallSeen := map[int]bool{}
 
+	// errFrameLogged 同一条流只记一次上游 error 帧。这类帧走的仍是 HTTP 200
+	// （限流/审核等业务错误在流内下发），4xx 日志抓不到，而客户端会把它当失败
+	// （如桌面版连通性检测只看首个数据帧有没有 error 键），必须留痕。
+	errFrameLogged := false
+
 	// firstID 透传流的消息级 id 基准：缓存首个非空上游 id，后续帧缺失/空串时复用
 	// （issue #35：同一条 SSE 消息所有帧共用一个真实 id，后台按 id 归并；此前中间帧
 	// 一律补 chatcmpl-wb2api 哨兵，造成同流 id 分裂）。全流无真实 id → 才出现哨兵。
@@ -523,6 +529,10 @@ func StreamHint(w http.ResponseWriter, r io.Reader, hintFn func(string) string) 
 			// code/msg/requestId。error.message 即上游原文（如 6004 限流、审核拦截），
 			// 计入有效帧（避免误判空流补写 "empty upstream stream"）。
 			if _, hasErr := obj["error"]; hasErr {
+				if !errFrameLogged {
+					errFrameLogged = true
+					log.Printf("[upstream] 上游 error 帧透传：%s", clip(payload, 300))
+				}
 				if werr := writeRaw(payload); werr != nil {
 					return 0, werr
 				}
@@ -607,6 +617,14 @@ readLoop:
 		return errEmptyStream
 	}
 	return nil
+}
+
+// clip 截断日志文本（保留可读头部）。
+func clip(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }
 
 // frameGatewayHint 取 error 帧的 gateway_hint（hintFn 缺失/异常返回空串 → 不附加）。

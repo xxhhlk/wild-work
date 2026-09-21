@@ -18,6 +18,7 @@ import (
 	"wild-work/internal/pool"
 	"wild-work/internal/provider"
 	"wild-work/internal/reasoning"
+	"wild-work/internal/upstream"
 )
 
 // Runtime 是一个平台的一组运行时资源：pool + upstream + 静态模型兜底。
@@ -577,7 +578,12 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		rt.Pool.NoteSuccess(acct.UID)
 		h.stickySuccess(rt)
 		if peek.Stream {
-			_ = rt.Upstream.Stream(w, rc, clientModel)
+			if err := rt.Upstream.Stream(w, rc, clientModel); err != nil && upstream.IsEmptyStreamError(err) {
+				// 上游 200 但无有效数据帧：HTTP 头已发出只能 200，客户端会收到我们补的
+				// error 帧（部分客户端因此判定「模型不可用」），这里留痕便于对账。
+				log.Printf("upstream 空流 platform=%s uid=%s model=%s（已下发 error 帧与 [DONE]）",
+					rt.Kind, acct.UID, clientModel)
+			}
 			return
 		}
 		resp, err := rt.Upstream.Aggregate(rc, clientModel)
