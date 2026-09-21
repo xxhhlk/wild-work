@@ -29,9 +29,13 @@ internal/
 ├── workbuddyai/                # WorkBuddy 国际版上游（www.workbuddy.ai，与国内版独立）
 ├── traework/                   # TraeWork 上游：chat(SOLO)/billing/checkin/模型/定价
 ├── qoder/                      # Qoder 上游：chat(COSY)/billing/模型/定价
+├── qodercn/                    # QoderCN 上游（独立渠道，移植自 qoder2api）
+├── qodercom/                   # QoderCOM 国际版上游（qoder.com / qoder.sh）
 ├── login/                      # WorkBuddy OAuth 登录编排
 ├── login_trae/                 # TraeWork 登录编排（PKCE + 回调轮询）
 ├── login_qoder/                # Qoder 登录编排（OAuth + 设备注册）
+├── login_qodercn/              # QoderCN 登录编排（设备流 + 机器指纹）
+├── login_qodercom/             # QoderCOM 登录编排（设备流 + 机器指纹）
 ├── auth/auth.go                # 凭证文件解析（嵌套/扁平双形态）+ 原子写回
 ├── config/config.go            # 配置加载/校验/写回（listen 新旧格式兼容）
 ├── systray/systray.go          # 跨平台托盘：固定菜单 + 纯 Go 生成图标

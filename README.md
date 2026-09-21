@@ -1,6 +1,6 @@
 # wild-work
 
-> 多渠道账号聚合桌面工具——把 WorkBuddy(CodeBuddy) 国内版/国际版、TraeWork、Qoder、千问办公的多个账号聚合成一个 OpenAI 兼容 API，双击启动，浏览器管理。
+> 多渠道账号聚合桌面工具——把 WorkBuddy(CodeBuddy) 国内版/国际版、TraeWork、Qoder、QoderCN、QoderCOM、千问办公的多个账号聚合成一个 OpenAI 兼容 API，双击启动，浏览器管理。
 
 [![GitHub](https://img.shields.io/badge/GitHub-rockswang%2Fworkbuddy--wild-blue)](https://github.com/rockswang/workbuddy-wild)
 
@@ -10,7 +10,7 @@
 - **请求体指纹脱敏**：自动清除 Claude Code / Codex CLI 注入的模板句，防止上游 11128 内容拦截
 - **OpenAI 兼容代理**：`/v1/chat/completions`、`/v1/models`，支持流式/非流式，模型前缀路由
 - **错误分类精细化**：区分「请求问题」与「账号问题」——内容拦截/上下文超限不罚号，限流/风控/账号故障分级冷却，429 不再误判余额耗尽
-- **五渠道聚合**：WorkBuddy(CodeBuddy) + WorkBuddy 国际版 + TraeWork + Qoder + 千问办公，模型前缀路由，粘性路由优先复用账号以提升会话缓存利用率，临期积分优先消耗
+- **七渠道聚合**：WorkBuddy(CodeBuddy) + WorkBuddy 国际版 + TraeWork + Qoder + QoderCN + QoderCOM + 千问办公，模型前缀路由，粘性路由优先复用账号以提升会话缓存利用率，临期积分优先消耗
 - **自动签到**：每日定时签到领额度，token 保活，冷却状态机
 - **自动领日活奖励**（WorkBuddy 国际版）：定时自动用免费模型对话保活，自动领取每日活跃奖励，无需手动签到
 - **Web 管理面板**：账号管理（添加/签到/刷新/停用/删除）、积分明细、模型列表和费率、API 配置
@@ -30,7 +30,7 @@
 1. 从 [Releases](https://github.com/rockswang/workbuddy-wild/releases) 下载 `wild-work.exe`
 2. 放到任意目录，双击启动
 3. 右下角出现 W 图标，**双击托盘图标** → 浏览器打开 Web 管理面板
-4. 在面板中点击「+ WorkBuddy」/「+ WorkBuddy 国际版」/「+ TraeWork」/「+ Qoder」/「+ 千问办公」添加账号
+4. 在面板中点击「＋ WorkBuddyCN」/「＋ WorkBuddyAI」/「＋ TraeWork」/「＋ QoderCN」/「＋ QoderCOM」/「＋ 千问办公」添加账号
 5. 根据下方配置说明接入你的 AI 客户端
 
 ### 托盘菜单
