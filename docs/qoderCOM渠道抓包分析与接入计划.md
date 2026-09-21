@@ -9,13 +9,17 @@
 
 ## 1. ★ 已提取并实测可用的凭据
 
+> ⚠️ **本节原记录从抓包提取的真实 `dt-` / `drt-` / uid / 账号 / 机器指纹，已全部移除**
+> （本仓库曾把上游抓包备忘连同明文凭据一起入库，见提交 `31b3f50` 之后的脱敏提交）。
+> 抓包原件在 `ref/*.saz`（**未入库**）；需要时从本地抓包重新提取，**不要写回仓库**。
+
 来源：`misc` 抓包 sid=5，`GET https://openapi.qoder.sh/api/v1/userinfo` 请求头。
 
 | 字段 | 值 |
 |---|---|
-| access token | `dt-mLnB0WhNWCzqCqVZpY68SGf0` |
-| uid | `01a0c3ea-e0a9-7a37-9585-992b64933f05` |
-| 账号 | pyichiban / pyichiban@outlook.com（GitHub SSO，`source=sso.github`） |
+| access token | `<REDACTED>` |
+| uid | `<REDACTED>` |
+| 账号 | <REDACTED>（GitHub SSO，`source=sso.github`） |
 | 套餐 | Pro Trial（`personal_professional_trial`，300 credits / 14 天） |
 | 余额（实测） | 300/300 未消费 |
 
@@ -23,7 +27,7 @@
 
 | 端点 | 结果 |
 |---|---|
-| `GET /api/v1/userinfo` | ✅ name=pyichiban, email=pyichiban@outlook.com |
+| `GET /api/v1/userinfo` | ✅ 200（name / email 已脱敏） |
 | `GET /api/v2/user/plan` | ✅ Pro Trial，窗口 2026-09-21 → 10-04 |
 | `GET /api/v2/quota/usage` | ✅ 300/300 credits（userQuota） |
 | `GET /sash/api/v1/me/campaigns` | ✅ 今日活动 `act-20260921-308` 已被 IDE 领取（CLAIMED，100 credits/30 天） |
@@ -104,7 +108,7 @@ CN dt- 在 `.sh` 报 `401 TOKEN_EXPIRE`；COM dt- 在 `.com.cn` 同理（双向�
 ### 实施说明（与计划的偏差）
 
 1. **模型列表双域名**：`constants.go` 新增 `ModelsBase = api2.qoder.sh`（推理 api1 与模型 api2 分离，qoder2api Global 表同构），`models.go` 的 `fetchModels` 走 `c.ModelsBase`。
-2. **测试凭据**：misc 抓包的 dt- 已写入 `dist/auths/qodercom-01a0c3ea-...json`（nickname=pyichiban，domain=qoder.com）。**refreshToken 为空**（IDE 本地换 token 不走代理，drt- 未捕获），已置 `pending-relogin` 占位——scheduler 的签到前置检查只判非空，`dt-` 还有 30 天有效期，短期内无影响；**dt- 过期前需面板重新登录获取 drt-**。
+2. **测试凭据**：misc 抓包的 dt- 已写入 `dist/auths/qodercom-<REDACTED>...json`（nickname=<REDACTED>，domain=qoder.com）。**refreshToken 为空**（IDE 本地换 token 不走代理，drt- 未捕获），已置 `pending-relogin` 占位——scheduler 的签到前置检查只判非空，`dt-` 还有 30 天有效期，短期内无影响；**dt- 过期前需面板重新登录获取 drt-**。
 
 ### 端到端验证（2026-09-21 20:54-20:56）
 

@@ -73,7 +73,7 @@ Step 2  POST /sash/api/v1/me/daily-check-in/claim   （空 body / "{}"）
 ```
 GET  /sash/api/v1/me/campaigns
      → {"claimable":true,"campaigns":[
-          {"campaignId":"01a0bf8b-...","campaignKey":"act-20260920-549",
+          {"campaignId":"<REDACTED-uid>...","campaignKey":"act-20260920-549",
            "actionType":"CLAIM_BENEFIT","claimStatus":"CLAIMABLE"|"CLAIMED",
            "benefit":{"kind":"CREDITS","amount":100,"validity":{"mode":"RELATIVE_DAYS","days":30}}}]}
 POST /sash/api/v1/me/campaigns/{campaignId}/claim   （空 body + origin 头）
@@ -252,11 +252,11 @@ func noExplicitCheckin(k provider.Kind) bool {
 
 ### 8.1 测试凭据
 
-`dist/auths/qoder-01a00f81-2f0d-775e-8e67-2790396ca3a0.json`（本项目原生格式，legacy 凭据）：
+`dist/auths/qoder-<REDACTED-uid>.json`（本项目原生格式，legacy 凭据）：
 
 ```json
 {
-  "account": { "nickname": "", "uid": "01a00f81-...", "enterpriseId": "" },
+  "account": { "nickname": "", "uid": "<REDACTED>"...", "enterpriseId": "" },
   "auth": {
     "accessToken": "dt-...",            // 27 字符
     "refreshToken": "drt-...",           // 28 字符
@@ -286,7 +286,7 @@ GET  /sash/api/v1/me/campaigns               → 200 {"claimable":true,"campaign
 POST /sash/api/v1/me/campaigns/{id}/claim    → 200 {"status":"CLAIMED","replayed":false,"benefit":{"amount":100},"expiresAt":"2026-10-21T..."}   ★ 真实领取成功
 POST /sash/api/v1/me/daily-check-in/claim    → 409 AlreadyExists（重放，幂等）
 GET  /api/v2/quota/usage                     → 200 addOnQuota.remaining 从 0 → 100，isQuotaExceeded true → false
-GET  /api/v1/userinfo                        → 200 name=rocks@cnjm.net source=sso.aliyun
+GET  /api/v1/userinfo                        → 200 name=<REDACTED> source=sso.aliyun
 ```
 
 > 领取后 `addOnQuota: {total:100, remaining:100}`，主 `userQuota` 仍为 0——**积分落在赠送额度池**，与现有 `UserResourceDetail` 的 `赠送额度` 条目口径一致。
@@ -342,7 +342,7 @@ GET  /api/v1/userinfo                        → 200 name=rocks@cnjm.net source=
 
 ```
 qoder_session_cookie=<base64 blob>      ← 核心会话凭据（cookie，非 dt- token）
-qoderuid=01a0c1c6-91c1-7e08-a986-09cb360d5821   ← 与 CN 凭据的 uid 不同（另一账号）
+qoderuid=<REDACTED-uid>   ← 与 CN 凭据的 uid 不同（另一账号）
 qoder_visitor_id=468cbb3c-...           ← 匿名访客 ID
 ```
 
@@ -368,4 +368,4 @@ qoder_visitor_id=468cbb3c-...           ← 匿名访客 ID
 2. **不能用于本项目**：本项目走 dt- + COSY 签名的推理通道，Web cookie 既不能签到也不能推理。
 3. **CSRF 要求**：`qoder.com` 的写操作需 CSRF 令牌（`POST /api/v1/deviceToken` 等返回 `CSRFInvalid`），无 cookie jar + CSRF 无法自动化。
 4. `deviceToken/*` 路径在 web 站返回 **CSRFInvalid 而非 404**，推测存在 **web → device token 互换**的可能（即用浏览器登录态换取 dt-），但目前被 CSRF 阻断，**未验证成功**。若将来要支持「用网页登录态自动获取 dt-」，这是需逆向的方向，但优先级低。
-5. 该账号 uid（`01a0c1c6-...`）与 CN 测试凭据（`01a00f81-...`）**是不同账号**，说明用户同时持有两个站的账号。
+5. 该账号 uid（`<REDACTED-uid>...`）与 CN 测试凭据（`<REDACTED-uid>...`）**是不同账号**，说明用户同时持有两个站的账号。

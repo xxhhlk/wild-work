@@ -457,7 +457,7 @@ Authorization: Bearer <auth_code>
   "code": 0,
   "data": {
     "token": "<dt-xxx>",
-    "userId": "01a00f81-2f0d-775e-8e67-2790396ca3a0",
+    "userId": "<REDACTED-uid>",
     "nickname": "user123"
   }
 }

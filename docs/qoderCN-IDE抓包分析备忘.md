@@ -9,14 +9,18 @@
 
 ## 1. ★ 已提取并实测可用的用户凭据
 
+> ⚠️ **本节原记录从抓包提取的真实 `dt-` / `drt-` / uid / 账号 / 机器指纹，已全部移除**
+> （本仓库曾把上游抓包备忘连同明文凭据一起入库，见提交 `31b3f50` 之后的脱敏提交）。
+> 抓包原件在 `ref/*.saz`（**未入库**）；需要时从本地抓包重新提取，**不要写回仓库**。
+
 来源：sid=591，`GET https://openapi.qoder.com.cn/api/v1/deviceToken/poll` 的 200 响应（设备流成功帧）。
 
 | 字段 | 值 |
 |---|---|
-| access token | `dt-nsaxAQhJYX90SJ7fWhGYdNqe` |
-| refresh token | `drt-08xUeQ64pFg3ICbw7mJxqMNx` |
-| uid | `01a0c304-253c-7d9c-93b6-f57d4fa5fba9` |
-| 账号 | hi20459268@aliyun.com（SSO aliyun 登录，`source=sso.aliyun`） |
+| access token | `<REDACTED>` |
+| refresh token | `<REDACTED>` |
+| uid | `<REDACTED>` |
+| 账号 | <REDACTED>（SSO aliyun 登录，`source=sso.aliyun`） |
 | user_type | `personal_professional_trial`（Pro Trial，来自 /api/v2/user/plan） |
 | dt 有效期 | 2026-10-21（30 天，`expires_in=2591999999` ms） |
 | drt 有效期 | 2027-09-16（约 1 年，`refresh_token_expires_in=31103999999` ms） |
@@ -25,7 +29,7 @@
 
 | 端点 | 结果 |
 |---|---|
-| `GET /api/v1/userinfo` | ✅ 200，hi20459268@aliyun.com |
+| `GET /api/v1/userinfo` | ✅ 200，<REDACTED> |
 | `GET /api/v2/user/plan` | ✅ 200，Pro Trial（300 额度窗口 2026-09-21 → 10-21） |
 | `GET /api/v2/quota/usage` | ✅ 200，**293/300 credits**（userQuota，已用 7） |
 | `GET /sash/api/v1/me/campaigns` | ✅ 200，`claimable=false`（今日已被 IDE 领过） |
@@ -88,11 +92,11 @@ authorization: Bearer dt-...
 Cosy-ClientType: 10
 Cosy-Version: 0.3.4
 Cosy-MachineOS: x86_64_win32
-Cosy-MachineHostname: DESKTOP-FLHS79P
-Cosy-MachineId: af256f52-39d0-4a6e-b160-b11f343dd567
-Cosy-MachineToken: P1gAz9WE6uzNc1rEtJFtAUm3MgG8Tm88WVa6aPL-8Ppq3j4e5rAl4FuDnKVnBxSEkqAEhLyrDr8nJ1edjpsmbv4o
-Cosy-MachineCode: cb4ad5bc763e34b0c2
-Cosy-MachineType: 1dcb54ea14324b4f6f
+Cosy-MachineHostname: <REDACTED>
+Cosy-MachineId: <REDACTED>
+Cosy-MachineToken: <REDACTED>
+Cosy-MachineCode: <REDACTED>
+Cosy-MachineType: <REDACTED>
 origin/referer: https://openapi.qoder.com.cn/growth-page/activity-iframe
 ```
 

@@ -76,7 +76,7 @@
 
 ### 2.1 验证环境
 
-- 凭据来源：**千问办公网页版**（`qwenwork.cn`）登录态 —— cookie `token`（HS256 JWT，`iss=qwenwork.cn`，`client_type=desktop`，uid `d0fbfa46-…`）+ `ory_hydra_session`
+- 凭据来源：**千问办公网页版**（`qwenwork.cn`）登录态 —— cookie `token`（HS256 JWT，`iss=qwenwork.cn`，`client_type=desktop`，uid `<REDACTED-uid>…`）+ `ory_hydra_session`
 - 桌面端 COSY 签名：Python 复刻（`temp/qwen/cosy.py`），RSA 公钥取三方一致的 PEM
 - 目标：`gateway.qwenwork.cn`（桌面端网关）
 - 原则：仅只读 GET + 极短推理（`max_tokens` 8~24），每次间隔 3~4s，不并发
@@ -86,7 +86,7 @@
 | # | 验证项 | 结果 |
 |---|---|---|
 | 1 | 网页 cookie 只读端点 `/user/balance` | **200** `{"balance":2098.6147,"freeze_credit":0}` |
-| 2 | 网页 cookie `/user/info` | **200**（nickname=rockswang，Free 套餐，month_requests=100000） |
+| 2 | 网页 cookie `/user/info` | **200**（nickname=<REDACTED>，Free 套餐，month_requests=100000） |
 | 3 | **COSY 签名 GET `/api/v2/model/list`** | **200**，2420 字节，返回 3 个模型 |
 | 4 | `?Encode=1` 对 GET 模型列表 | **200**（与不带 Encode 完全相同，说明该参数在 GET 上无效果） |
 | 5 | **COSY 签名 POST 推理（明文 body）** | **200** `x-model-name: qwen3.8-flash` / `x-provider-name: maas` |
@@ -337,10 +337,10 @@ Set-Cookie: token=<JWT>; Path=/; Max-Age=172799; HttpOnly; Secure; SameSite=Lax
 
 JWT payload（`client_type` 是关键差异字段）：
 ```json
-{"aud":"user","client_type":"web","email":"phone_d0fbfa46-...@phone.local",
+{"aud":"user","client_type":"web","email":"<REDACTED>",
  "exp":1789895339,"iat":1789722539,"iss":"qwenwork.cn",
- "sub":"d0fbfa46-0fb0-46ba-ac08-5ac5f6acb149",
- "user_id":"d0fbfa46-0fb0-46ba-ac08-5ac5f6acb149","username":"rockswang"}
+ "sub":"<REDACTED>",
+ "user_id":"<REDACTED>","username":"<REDACTED>"}
 ```
 - 算法 **HS256**，有效期 **48 小时**（172799s）
 - 另有 `ory_hydra_session`（Ory Hydra 会话 cookie，供账户/consent 流程）
@@ -819,7 +819,7 @@ auth 文件未写、`reloadAccounts` 未触发 → 账号不出现。
 **修复**：
 1. `completeQwenWorkLogin` 增加 nickname 兜底：JWT 解出为空时用 token 调 `/user/info`
    拉昵称（`FetchNickname`），写回 auth 文件并同步池；
-2. 现有账号的 auth 文件已手动补齐（dist/auths/qwenwork-*.json nickname=rockswang）。
+2. 现有账号的 auth 文件已手动补齐（dist/auths/qwenwork-*.json nickname=<REDACTED>）。
 
 **教训**：OAuth 标准允许 access token 不携带用户claims；昵称应以 userinfo 端点为准，
 JWT 仅作快照优化。
