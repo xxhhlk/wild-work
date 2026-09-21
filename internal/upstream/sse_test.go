@@ -145,6 +145,38 @@ func TestPrepareBodyMaxOutputTokensConverged(t *testing.T) {
 	}
 }
 
+// 低于上游下限（16）的输出上限按「未设置」下发：1/2/8/15 实测被上游 11133
+// integer_below_min_value 拒绝，而完全不下发该字段实测 200（走上游默认），
+// 因此删掉比抬到 16 更安全——抬下限会把要长回复的请求截成十几 token。
+func TestPrepareBodyDropsBelowUpstreamFloor(t *testing.T) {
+	for _, n := range []string{"1", "2", "8", "15"} {
+		out := PrepareBody([]byte(`{"max_tokens":` + n + `,"messages":[{"role":"user","content":"x"}]}`))
+		var m map[string]any
+		json.Unmarshal(out, &m)
+		if v, has := m["max_tokens"]; has {
+			t.Errorf("max_tokens=%s 应删除（走上游默认），得到 %v", n, v)
+		}
+	}
+	for _, tc := range []struct {
+		in   string
+		want float64
+	}{{"16", 16}, {"32000", 32000}, {"131072", 131072}} {
+		out := PrepareBody([]byte(`{"max_tokens":` + tc.in + `,"messages":[{"role":"user","content":"x"}]}`))
+		var m map[string]any
+		json.Unmarshal(out, &m)
+		if m["max_tokens"] != tc.want {
+			t.Errorf("max_tokens=%s 不应被改动，得到 %v", tc.in, m["max_tokens"])
+		}
+	}
+	// 别名越界同样删除（不再翻译成越界的 max_tokens）。
+	out := PrepareBody([]byte(`{"max_output_tokens":1,"messages":[{"role":"user","content":"x"}]}`))
+	var m map[string]any
+	json.Unmarshal(out, &m)
+	if v, has := m["max_tokens"]; has {
+		t.Errorf("别名 1 应删除，得到 %v", v)
+	}
+}
+
 // 缺失时补 stream_options include_usage；显式带了则不覆盖。
 func TestPrepareBodyStreamOptionsDefault(t *testing.T) {
 	out := PrepareBody([]byte(`{"model":"glm-5.2","messages":[]}`))

@@ -471,6 +471,10 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	clientModel := peek.Model // 客户端请求的原始模型名（含 channel/ 前缀），回填进响应
+	// 上游报「参数被拒」时，客户端原始参数是唯一能定位「谁发的、发了什么」的依据
+	// （改写后的出站参数由渠道层打印），首次 4xx 时一并落日志。
+	clientParams := provider.LogParams(body)
+	clientUA := r.UserAgent()
 	// 档位能力表预热（首次请求才触发目录拉取，见 ensureEffortCaps）
 	h.ensureEffortCaps(rt)
 	body, err = prepareChatBody(body, model, h.reasoningDefaultFor(rt.Kind))
@@ -530,6 +534,8 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		if status >= 400 {
 			h.stickyClear(rt)
 			kind := rt.Upstream.Classify(status, string(respBody))
+			log.Printf("client request platform=%s model=%s status=%d ua=%q params=%s",
+				rt.Kind, clientModel, status, clientUA, clientParams)
 			switch kind {
 			case provider.ErrHardCredit:
 				rt.Pool.Cooldown(acct.UID, pool.CoolHard, h.cfg.HardCooldown, "余额/权益不足")

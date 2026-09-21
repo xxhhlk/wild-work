@@ -282,6 +282,9 @@ func TestPrepareBodyConvergesOutputLimits(t *testing.T) {
 		{"max_output_tokens null 删除", `{"max_output_tokens":null}`, nil},
 		{"max_tokens null 时不透传", `{"max_tokens":null}`, nil},
 		{"显式 max_tokens 优先", `{"max_tokens":32000,"max_output_tokens":8192}`, float64(32000)},
+		{"max_tokens 1 按未设置下发", `{"max_tokens":1}`, nil},
+		{"max_output_tokens 1 按未设置下发", `{"max_output_tokens":1}`, nil},
+		{"131072 不动", `{"max_tokens":131072}`, float64(131072)},
 	}
 	for _, c := range cases {
 		out := PrepareBody([]byte(`{"model":"gpt-5.6-luna","messages":[],` + c.src[1:]))

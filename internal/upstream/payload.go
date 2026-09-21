@@ -65,6 +65,11 @@ func prepareBodyInner(src []byte) []byte {
 	return out
 }
 
+// MinOutputTokens 上游对 max_tokens 的实测下限（gpt-5.6-luna，2026-09-21 直连实测）：
+// 1/2/8 → 400（code=11133 extError.code=integer_below_min_value，param 报的是模型侧
+// 名字 max_output_tokens），16 起正常，不下发该字段同样正常。
+const MinOutputTokens = 16
+
 // NormalizeOutputLimits 把出站请求的输出上限收敛为「至多一个正整数 max_tokens」，
 // 并删除全部别名（max_completion_tokens / max_output_tokens）。调用点在预处理管线
 // 的 stream 强制之后（同一管线挂载，任务书 prompt-too-long §3）。
@@ -73,14 +78,16 @@ func prepareBodyInner(src []byte) []byte {
 // （o-series 起），走 Responses 协议的客户端用 max_output_tokens，且常以
 // null 表示「未设置」。WorkBuddy 上游（CN /v2 与 global /console 同源）只认
 // max_tokens——别名透传会被忽略后回落默认输出上限（实测 32000），长流任务被截；
-// 显式带 null/0 的形态更会被上游的整数下限校验直接拒掉（11133
-// param=max_output_tokens），故这类形态一律删除而不是原样转发。
+// 显式带 null/0 的形态更会被上游的整数下限校验直接拒掉，故这类形态删除而不是原样转发。
 //
 //   - max_tokens 为正整数 → 保留（显式优先，别名只删不译，整数去整后回写，
 //     避免 1.28e5 科学计数法/小数尾巴进上游 body）；
 //   - max_tokens 缺失或非正（0/null/负数/非整数/非数值）→ 删除该键，改由别名顶替；
 //   - 别名按 max_completion_tokens → max_output_tokens 顺序取首个正整数值；
-//   - 三者都没有正整数值 → 不写 max_tokens，走上游默认。
+//   - 三者都没有正整数值 → 不写 max_tokens，走上游默认；
+//   - 最终值低于 MinOutputTokens（客户端探活用例：max_tokens=1）→ 同样删掉按
+//     未设置下发，而不是抬到下限：抬下限会把「本想要长回复、只是上限写小了」的
+//     请求截成十几 token，删掉则是走上游默认（实测不下发即 200）。
 //
 // 两域同口径：CN /v2 与 global /console 是同一套 API 的两次部署，翻译不分 realm。
 func NormalizeOutputLimits(obj map[string]any) {
@@ -96,14 +103,21 @@ func NormalizeOutputLimits(obj map[string]any) {
 			alias, hasAlias = n, true
 		}
 	}
-	if n, ok := positiveInt64(obj["max_tokens"]); ok {
-		obj["max_tokens"] = n
+	n, ok := positiveInt64(obj["max_tokens"])
+	if !ok {
+		delete(obj, "max_tokens")
+		if hasAlias {
+			n, ok = alias, true
+		}
+	}
+	if !ok || n < MinOutputTokens {
+		delete(obj, "max_tokens")
+		if ok {
+			log.Printf("[upstream] max_tokens=%d 低于上游下限 %d，按未设置下发（走上游默认）", n, MinOutputTokens)
+		}
 		return
 	}
-	delete(obj, "max_tokens")
-	if hasAlias {
-		obj["max_tokens"] = alias
-	}
+	obj["max_tokens"] = n
 }
 
 // positiveInt64 取正整数值。json.Unmarshal 的数字是 float64，需去整；int 家族为
