@@ -28,14 +28,14 @@ internal/
 ├── upstream/                   # WorkBuddy(CodeBuddy) 上游：chat/billing/auth/模型/定价/脱敏
 ├── workbuddyai/                # WorkBuddy 国际版上游（www.workbuddy.ai，与国内版独立）
 ├── traework/                   # TraeWork 上游：chat(SOLO)/billing/checkin/模型/定价
-├── qoder/                      # Qoder 上游：chat(COSY)/billing/模型/定价
-├── qodercn/                    # QoderCN 上游（独立渠道，移植自 qoder2api）
-├── qodercom/                   # QoderCOM 国际版上游（qoder.com / qoder.sh）
+├── qoder/                      # 旧 Qoder(QoderWork) 上游：已下线，路由保留
+├── qodercn/                    # QoderCN 上游：qoder2api 参数形态（cosyVersion 1.0.10 / 双路径签到）
+├── qodercom/                   # QoderCOM 国际版上游：三域分离（openapi/api1/api2.qoder.sh）
 ├── login/                      # WorkBuddy OAuth 登录编排
 ├── login_trae/                 # TraeWork 登录编排（PKCE + 回调轮询）
-├── login_qoder/                # Qoder 登录编排（OAuth + 设备注册）
-├── login_qodercn/              # QoderCN 登录编排（设备流 + 机器指纹）
-├── login_qodercom/             # QoderCOM 登录编排（设备流 + 机器指纹）
+├── login_qoder/                # 旧 Qoder 登录编排（已下线）
+├── login_qodercn/              # QoderCN 登录编排（设备流，client_id e883ade2）
+├── login_qodercom/             # QoderCOM 登录编排（设备流，授权页 qoder.com）
 ├── auth/auth.go                # 凭证文件解析（嵌套/扁平双形态）+ 原子写回
 ├── config/config.go            # 配置加载/校验/写回（listen 新旧格式兼容）
 ├── systray/systray.go          # 跨平台托盘：固定菜单 + 纯 Go 生成图标
@@ -95,25 +95,27 @@ Agent: `trae-api-cn.mchost.guru`, UG: `api.trae.cn`, OAuth: `api.trae.com.cn`
 
 模型定价：`GET work.trae.cn/api/remote/v1/models`，`features.consumption_rate.rate`（JSON 字符串需二次解析），discount 优先。
 
-### Qoder
+### Qoder 系（qodercn / qodercom）
 
-| 用途 | 端点 | 鉴权 |
-|------|------|------|
-| 刷新 token | `POST {base}/api/v1/deviceToken/refresh` | refresh_token |
-| 聊天 | `POST {gateway}/algo/api/v2/agent_chat_generation` | COSY 签名 + dt- |
-| 模型列表 | `GET {gateway}/algo/api/v2/model/list?Encode=1` | COSY 签名 |
-| 余额 | `GET {base}/api/v1/user/quota/usage` | dt- Bearer |
-| 登录 | OAuth + 设备注册 | 无 |
+| 用途 | QoderCN 端点 | QoderCOM 端点 | 鉴权 |
+|------|------|------|------|
+| 刷新 token | `POST {base}/api/v1/deviceToken/refresh` | 同左 | refresh_token (drt-) |
+| 聊天 | `POST {gateway}/algo/api/v2/service/pro/sse/agent_chat_generation?...AgentId=agent_common` | gateway=`api1.qoder.sh` | COSY 签名 + dt- |
+| 模型列表 | `GET {models}/algo/api/v2/model/list?Encode=1` | models=`api2.qoder.sh`（双域分离） | COSY 签名 |
+| 余额 | `GET {base}/api/v2/quota/usage` | 同左 | dt- Bearer |
+| 签到 | `GET/POST {base}/sash/api/v1/me/campaigns[/{id}/claim]` + daily-check-in 兑底 | 仅 campaigns（无 daily-check-in） | dt- + cosy-clienttype:10 |
+| 登录 | OAuth 设备流（PKCE+S256） | 同左（授权页 qoder.com） | 无 |
 
-Base: `openapi.qoder.com.cn`, Gateway: `gateway.qoder.com.cn`
+Base: CN `openapi.qoder.com.cn`+`gateway.qoder.com.cn`；COM `openapi.qoder.sh`+`api1.qoder.sh`+`api2.qoder.sh`
 
-聊天请求体由 `buildAgentBodyMeta()` 构造（嵌套结构），消息体再经 `qoderEncode()` 编码。SSE 为嵌套格式（`data:{"body":"<json>"}`），`parseNestedSSE()` 解析。
-
-请求体形状**以桌面版实测抓包为准**（`_spy/http-bodies/*.json`，见 AGENTS.md R21）：
-顶层 `system` 数组、`task_id`/`source`/`version`/`is_retry`、`session_type:"app"`、
-完整 `model_config`（10 字段，值来自模型目录元数据）、`business` 富对象、`tools` 恒为数组、
-`parameters` 恒下发（`max_tokens` + 已知时的 `context_length`）。
-`buildAgentBody()` 是元数据缺失时的兼容入口。
+协议要点（两区同源，代码级复制）：COSY 签名 cosyVersion=**1.0.10**、18 头（含
+`cosy-scene:assistant`/`cosy-business-product:ide`/`cosy-business-type:agent`，无 cosy-clientip）；
+identity.userType 从 `/api/v1/userinfo` 实测回填；请求体 `session_type:"qoder"`、
+`parameters.max_tokens`（默认 32768）、`model_config.source:"system"`（思考总开关）；
+消息体经 `qoderEncode()` 编码，SSE 嵌套格式（`data:{"body":"<json>"}`）。
+模型表无静态兑底：上次成功拉取作进程内缓存；场景解析 assistant→developer→chat 三级回退。
+签到必须 `cosy-clienttype: 10`（桌面端），与推理链路的 5 不同；活动 campaignKey 每日变化不可硬码。
+CN 凭据在国际端点 401（双向隔离），两渠道凭据文件前缀 `qodercn-`/`qodercom-`。
 
 模型定价：`price_factor` 字段（数字）。
 
@@ -333,12 +335,14 @@ GOOS=windows CGO_ENABLED=0 go build -ldflags "-H windowsgui" -o dist/wild-work.e
 
 1. **`--no-tray` 无头模式**：无桌面 Linux 必须用此参数；不带参数在无 DBus 环境托盘 panic 会直接 exit 并提示。
 2. **Windows 弹窗双显示器**：`MessageBoxW` 使用 `MB_DEFAULT_DESKTOP_ONLY` 标志强制主显示器。
-3. **Qoder 非流式不支持**：`Aggregate` 聚合返回空 content，建议只用流式。
-4. **Qoder 思考链已可见**（2026-09-20 起）：`agent_chat_generation` 端点会返回
-   `reasoning_content` 与 `usage.completion_tokens_details.reasoning_tokens`，前提是请求体/请求头
-   按桌面版实测形状对齐（AGENTS.md R21）。实测同一 prompt：`reasoning_effort=medium` → 思考 1876 字 /
-   `reasoning_tokens=1435`；`xhigh` → 思考 26145 字 / `reasoning_tokens=8373`；生产链路端到端 36845 字。
-   历史结论「legacy 不下发思考」是**请求形状没对齐**导致的误判，已推翻。
+3. **旧 Qoder 非流式不支持**：`Aggregate` 聚合返回空 content，建议只用流式。
+4. **旧 Qoder（`qoder/*`）思考链已可见**（2026-09-20 起，wire 级实测）：`agent_chat_generation` 端点在
+   请求体/请求头按桌面版实测形状对齐后会返回 `reasoning_content` 与
+   `usage.completion_tokens_details.reasoning_tokens`（见 AGENTS.md R21）。实测同一 prompt：
+   `reasoning_effort=medium` → 思考 1876 字 / `reasoning_tokens=1435`；`xhigh` → 思考 26145 字 /
+   `reasoning_tokens=8373`；生产链路端到端 36845 字。历史结论「legacy 不下发思考」是**请求形状没对齐**
+   导致的误判，已推翻——上游 §8 记的「缺 `source:"system"`」不准确，旧 Qoder 现已补该字段；
+   QoderCN/QoderCOM 渠道同样正常下发思考。
    回归护栏：`go test -tags live ./internal/qoder/ -run TestLiveProbeProductionPath -v`
    （需要 `WILDWORK_AUTHDIR` 指向账号目录）。
 5. **`config.example.json` 与 `config.Default()` 必须同步**。

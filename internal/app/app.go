@@ -41,7 +41,7 @@ import (
 )
 
 // Version 版本号。
-const Version = "2.3.1"
+const Version = "2.4.1"
 
 const (
 	loginTimeout   = 5 * time.Minute
