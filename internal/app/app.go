@@ -142,7 +142,7 @@ func (a *App) runtime(kind provider.Kind) *Runtime {
 }
 
 func (a *App) firstRuntime() *Runtime {
-	for _, k := range []provider.Kind{provider.WorkBuddy, provider.WorkBuddyAI, provider.TraeWork, provider.Qoder, provider.QoderCN, provider.QoderCOM, provider.QwenWork} {
+	for _, k := range []provider.Kind{provider.WorkBuddy, provider.WorkBuddyAI, provider.TraeWork, provider.Qoder, provider.QoderCN, provider.QoderCOM, provider.QwenWork, provider.Raccoon, provider.Loomy} {
 		if rt := a.runtime(k); rt != nil {
 			return rt
 		}
@@ -177,8 +177,11 @@ func (a *App) allStatuses() []pool.Status {
 // 无需用户手动触发，故也不提供手动签到入口；
 // 千问办公无签到活动且每日积分服务端被动发放，无需领取/保活。
 // QoderCN / QoderCOM 已实现签到（campaigns 主路径），支持手动按钮。
+// 小浣熊 / Loomy 一期也不提供手动签到：前者上游未提供额度/签到端点，
+// 后者有 /pet-work 每日任务但语义待评估（用户已同意签到可豁免，见计划 D1）。
 func noExplicitCheckin(k provider.Kind) bool {
-	return k == provider.Qoder || k == provider.WorkBuddyAI || k == provider.QwenWork
+	return k == provider.Qoder || k == provider.WorkBuddyAI || k == provider.QwenWork ||
+		k == provider.Raccoon || k == provider.Loomy
 }
 
 func (a *App) findRuntimeAuth(uid string) (*Runtime, *auth.Auth) {
@@ -320,6 +323,9 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 	switch k {
 	case provider.WorkBuddy, provider.WorkBuddyAI, provider.TraeWork, provider.Qoder, provider.QoderCN, provider.QoderCOM, provider.QwenWork:
 		// 这些渠道已有登录编排
+	case provider.Raccoon, provider.Loomy:
+		// 导入型渠道：凭据来自本机已登录的官方客户端，上游没有可复现的 OAuth 流程。
+		return "", fmt.Errorf("%s 渠道无需登录：请在面板点「从本机客户端导入」（复用本机已登录的官方客户端凭据）", k)
 	default:
 		return "", fmt.Errorf("unknown login provider %s", kind)
 	}
@@ -1578,6 +1584,19 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	})
+	// 导入型渠道（小浣熊 / Loomy）：从本机已登录的官方客户端读取凭据并写入 auths/。
+	mux.HandleFunc("POST /api/account/import_local", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Channel string `json:"channel"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		res, err := a.ImportLocalCredentials(req.Channel)
+		if err != nil {
+			apiError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, res)
+	})
 	mux.HandleFunc("POST /api/account/checkin", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			UID string `json:"uid"`
@@ -1902,6 +1921,7 @@ func (a *App) FeesInfo() map[string]any {
 
 	channels := buildFeesChannels(modelsByKind, cached, []provider.Kind{
 		provider.WorkBuddy, provider.WorkBuddyAI, provider.TraeWork, provider.Qoder, provider.QoderCN, provider.QoderCOM, provider.QwenWork,
+		provider.Raccoon, provider.Loomy,
 	}, a.cfg.Compat.ContextWindows)
 
 	result := map[string]any{

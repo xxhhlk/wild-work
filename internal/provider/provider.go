@@ -23,6 +23,10 @@ const (
 	QoderCN     Kind = "qodercn"  // QoderCN（qoder.com.cn，移植自 qoder2api，独立渠道）
 	QoderCOM    Kind = "qodercom" // QoderCOM 国际版（qoder.com / qoder.sh，移植自 qodercn）
 	QwenWork    Kind = "qwenwork" // 千问办公（gateway.qwenwork.cn + qwenwork.cn）
+	// 以下两渠道的凭据不由本工具登录产生，而是「从本机已安装的官方客户端导入」
+	// （见 docs/loomy-raccoon渠道接入计划.md §5.1 的形态 B；导入器 = internal/app 的 ImportLocal）。
+	Raccoon Kind = "raccoon" // 商汤小浣熊（xiaohuanxiong.com，access 2h + refresh 30d）
+	Loomy   Kind = "loomy"   // 讯飞 Loomy（loomyad.xunfei.cn，session 14d，无 refresh）
 )
 
 func (k Kind) String() string { return string(k) }

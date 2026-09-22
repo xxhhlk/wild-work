@@ -127,6 +127,18 @@ POST /api/quit                     # 退出程序
 > QoderCN / QoderCOM 已实现签到（campaigns 主路径），保留手动按钮。
 > WorkBuddyAI 国际版：`DailyCheckin` 实现为「免费模型对话保活 + 签到探测」（对用户透明，无前端界面）；
 > token 有效期 365 天，故 KeepaliveHours 设为 nil。详见 `docs/workbuddy国际版渠道接入备忘.md`。
+> **商汤小浣熊（`raccoon/*`）**：官方托管网关 `https://xiaohuanxiong.com/api/web/llm/v2`（OpenAI 兼容，
+> 鉴权只认 `Authorization: Bearer <access_token>`）；凭据来自本机客户端
+> `%USERPROFILE%\.box-agent\config\auth.json`（明文 JSON，access ≈2h / refresh ≈30d，**refresh 会轮换且单会话**）；
+> 积分：`GET /api/web/points/v1/balance`（**与推理网关不同前缀** —— 不在 `/api/web/llm/v2` 下，容易找漏）
+> → `available_points` + 四个池子（每日/奖励/充值/月度），`topup_frozen` 标记充值池冻结，
+> 由 `UserResourceDetail` 按池拆分并用 `ResourceItem.Usable` 表达冻结；费率取上游 `billing_multiplier`。
+> 详见 `docs/raccoon渠道接入备忘.md`。
+> **Loomy（`loomy/*`）**：讯飞自有网关 `https://loomyad.xunfei.cn/api/v1`（OpenAI 兼容，SSE）；
+> 请求头必须带 `Authorization` + `token`（双写）+ **`traceparent`**（缺失会挂死到超时）+ `loomy-version`；
+> 凭据来自 `C:\Users\Public\Loomy\<sha256(用户)[:12]>\userData\auth-session.json`（session ≈14 天，**无 refresh 端点**）；
+> 档位来自上游 `/models` 的 `reasoning_efforts`（权威值，独占 `RealmLoomy` 面）。
+> 详见 `docs/loomy渠道接入备忘.md`。
 
 ## 6. 关键不变量（改动前必读）
 
@@ -214,7 +226,21 @@ POST /api/quit                     # 退出程序
     抓包确认其请求体也不带 `reasoning_effort` / `enable_thinking` —— 这是符合官方行为、**不是缺口**，
     不要为它补档位投影（用户 2026-09-22 确认）。
 
-25. **上游错误分类里「请求级错误」不得罚号**（`internal/upstream/client.go` + `internal/server/handler.go`）：
+25. **导入型渠道（`raccoon` / `loomy`）不做登录编排**：凭据由面板「从本机客户端导入」产生
+    （`internal/app/import_local.go`，写 `auths/<渠道>-<uid>.json`，路径**自适应探测**多候选目录）。
+    由此产生三条硬约束：
+    - **未知模型必须本地拒绝**：两个上游对未知模型名都会**静默回落到默认模型并返回 200**（阶段 C 实测），
+      渠道层不校验就会让用户以为在用 A 模型、实际消耗 B 模型的额度。守门测试见各渠道包的
+      `TestChatStreamRejectsUnknownModel`。
+    - **聚合必须同时支持 JSON 与 SSE**：上游对非流式请求可能直接返回 JSON（Loomy 实测），
+      只按 SSE 解析会得到「content 空 + created 用 time.Now() 兜底」的假响应。
+    - **小浣熊的 refresh_token 是单会话的**：与官方客户端同时使用会互相抢刷新并报
+      `refresh_conflict`（实测 400）；文档要求导入后退出客户端。
+26. **`loomy` 的档位面独占 `RealmLoomy`**（`RealmForKind` / `SupportsEffortKind` 已同时登记）：
+    档位来自上游 `/models` 的 `reasoning_efforts`（无静态兜底）；投影时补 `enable_thinking` 与
+    `chat_template_kwargs.enable_thinking` 三件套。实测该系列模型**无法完全关闭思考**
+    （最低档仍产生约 59 字），故 `ReasoningCanDisable` 保持 false。
+27. **上游错误分类里「请求级错误」不得罚号**（`internal/upstream/client.go` + `internal/server/handler.go`）：
     内容拦截 / 上下文超限（11115）/ 图片格式无效（11135）/ 出站 body 畸形（11101）都是**请求内容**的问题 ——
     同一 body 换任何账号结果都一样。这几类必须在 `Classify` 里判成 `ErrContentBlocked` / `ErrPromptTooLong` /
     `ErrImageInvalid` / `ErrBadParams`，由 `handler.chatCompletions` 走「不冷却、不计数、原文透传」分支；
@@ -302,3 +328,7 @@ git tag vX.Y.Z && git push origin vX.Y.Z
 - [docs/workbuddy国际版渠道接入备忘.md](docs/workbuddy国际版渠道接入备忘.md) — 国际版渠道接入方案（接口规格、代码映射、调度设计、实施 Checklist）
 - [docs/upstream-reverse-engineering.md](docs/upstream-reverse-engineering.md) — 各上游渠道 API 逆向记录
 - [docs/三接口兼容改造备忘.md](docs/三接口兼容改造备忘.md) — 三接口（Chat/Responses/Anthropic）兼容层架构决策、实施记录、验证清单、已知限制
+- [docs/loomy-raccoon渠道接入计划.md](docs/loomy-raccoon渠道接入计划.md) — 两渠道接入计划（A–F 阶段、决策记录、风险矩阵）
+- [docs/loomy渠道接入备忘.md](docs/loomy渠道接入备忘.md) — Loomy 协议取证（端点/签名算法/登录 API/积分端点 + A3 实测）
+- [docs/raccoon渠道接入备忘.md](docs/raccoon渠道接入备忘.md) — 小浣熊协议取证（端点/凭据文件/refresh 链路 + A3 实测）
+- [docs/loomy-raccoon阶段C探针实测.md](docs/loomy-raccoon阶段C探针实测.md) — 流式/错误形态/关思考矩阵实测记录

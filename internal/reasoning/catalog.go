@@ -46,6 +46,10 @@ const (
 	RealmQoderCN = "qodercn"
 	// RealmQoderCOM QoderCOM（qoder.sh，国际版）。
 	RealmQoderCOM = "qodercom"
+	// RealmLoomy 讯飞 Loomy（loomyad.xunfei.cn）。
+	// 档位来自上游 /models 的 reasoning_efforts（每模型一条 ladder，实测 default=low），
+	// 与 WorkBuddy / Qoder 各面均不通：同名第三方模型的档位并不通用。
+	RealmLoomy = "loomy"
 )
 
 // ⚠️ 三个 Qoder 渠道（Qoder / QoderCN / QoderCOM）**必须各占一个面**，
@@ -207,6 +211,8 @@ func normalizeRealm(realm string) string {
 		return RealmQoderCN
 	case strings.EqualFold(strings.TrimSpace(realm), RealmQoderCOM):
 		return RealmQoderCOM
+	case strings.EqualFold(strings.TrimSpace(realm), RealmLoomy):
+		return RealmLoomy
 	}
 	return RealmCN
 }
@@ -221,7 +227,8 @@ func staticCap(realm, model string) Cap {
 	switch normalizeRealm(realm) {
 	case RealmGlobal:
 		return globalEffortFallback[normalizeModel(model)]
-	case RealmQoder, RealmQoderCN, RealmQoderCOM:
+	// RealmLoomy 与 Qoder 系一样没有静态兜底表（能力只认上游目录）。
+	case RealmQoder, RealmQoderCN, RealmQoderCOM, RealmLoomy:
 		return qoderEffortFallback[normalizeModel(model)]
 	}
 	return cnEffortFallback[normalizeModel(model)]
@@ -487,6 +494,8 @@ func RealmForKind(kind string) string {
 		return RealmQoderCN
 	case strings.EqualFold(strings.TrimSpace(kind), "qodercom"):
 		return RealmQoderCOM
+	case strings.EqualFold(strings.TrimSpace(kind), "loomy"):
+		return RealmLoomy
 	}
 	return RealmCN
 }
@@ -499,7 +508,7 @@ func RealmForKind(kind string) string {
 // 能力表就会写进 RealmCN，把 WorkBuddy 国内版的档位表污染掉。
 func SupportsEffortKind(kind string) bool {
 	switch strings.ToLower(strings.TrimSpace(kind)) {
-	case "workbuddy", "workbuddyai", "qoder", "qodercn", "qodercom":
+	case "workbuddy", "workbuddyai", "qoder", "qodercn", "qodercom", "loomy":
 		return true
 	}
 	return false

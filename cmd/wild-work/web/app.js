@@ -214,15 +214,18 @@ function renderTopbar() {
 }
 
 // 渠道显示名与 CSS 短类名（后端 group / 费率 channel 均为 provider.Kind）。
-const CH_LABEL = { workbuddy: "WorkBuddyCN", workbuddyai: "WorkBuddyAI", traework: "TraeWork", qoder: "Qoder", qodercn: "QoderCN", qodercom: "QoderCOM", qwenwork: "千问办公" };
-const CH_CLASS = { workbuddy: "wb", workbuddyai: "wbai", traework: "trae", qoder: "qoder", qodercn: "qodercn", qodercom: "qodercom", qwenwork: "qwenwork" };
+const CH_LABEL = { workbuddy: "WorkBuddyCN", workbuddyai: "WorkBuddyAI", traework: "TraeWork", qoder: "Qoder", qodercn: "QoderCN", qodercom: "QoderCOM", qwenwork: "千问办公", raccoon: "商汤小浣熊", loomy: "Loomy" };
+const CH_CLASS = { workbuddy: "wb", workbuddyai: "wbai", traework: "trae", qoder: "qoder", qodercn: "qodercn", qodercom: "qodercom", qwenwork: "qwenwork", raccoon: "raccoon", loomy: "loomy" };
 const chLabel = (k) => CH_LABEL[k] || "WorkBuddy";
 const chClass = (k) => CH_CLASS[k] || "wb";
 // 不支持显式签到（手动按钮）的渠道：
 // 旧 Qoder 渠道无签到活动（qoder.DailyCheckin 直接返回错误，见 internal/qoder/client.go）；
 // WorkBuddy 国际版不提供手动签到，而是自动对话保活领日活奖励；千问办公无签到活动。
 // QoderCN / QoderCOM 已实现签到（campaigns 主路径），保留手动按钮。
-const NO_EXPLICIT_CHECKIN = new Set(["qoder", "workbuddyai", "qwenwork"]);
+const NO_EXPLICIT_CHECKIN = new Set(["qoder", "workbuddyai", "qwenwork", "raccoon", "loomy"]);
+// 导入型渠道：凭据由本机已登录的官方客户端提供，没有浏览器登录流程（见 internal/app/import_local.go）。
+const IMPORT_LOCAL_CHANNELS = new Set(["raccoon", "loomy"]);
+const isImportLocal = (ch) => IMPORT_LOCAL_CHANNELS.has(ch);
 const noExplicitCheckin = (g) => NO_EXPLICIT_CHECKIN.has(g);
 // 无手动签到渠道的状态文案：国际版是「自动领日活奖励」，千问办公为「无签到」。
 const NO_CHECKIN_TAG = { workbuddyai: "自动领日活奖励" };
@@ -526,10 +529,21 @@ let pendingChannel = null;
 const NO_CHECKIN_LOGIN_HINT = {
   workbuddyai: "（无需手动签到，定时自动对话保活并领取日活奖励）",
   qwenwork: "（每日积分服务端 00:00 自动发放；若浏览器已登录千问办公则全自动完成，否则需扫码一次）",
+  raccoon: "（凭据来自本机已登录的小浣熊客户端；access_token 约 2 小时，本工具会自动续期）",
+  loomy: "（凭据来自本机已登录的 Loomy 客户端；上游无续期接口，约 14 天后需重新登录并再次导入）",
 };
 function promptLogin(channel) {
   pendingChannel = channel;
   const name = chLabel(channel);
+  // 导入型渠道：文案与动作都不同（读本机客户端凭据，而不是打开浏览器登录）。
+  if (isImportLocal(channel)) {
+    $("lcTitle").textContent = "导入 " + name + " 账号";
+    $("lcMsg").textContent = `将读取本机已登录的${name}客户端凭据并保存到 wild-work（不会修改客户端本身）。`
+      + `若提示未找到凭据，请先打开并登录${name}客户端后重试。${NO_CHECKIN_LOGIN_HINT[channel] || ""}`;
+    $("btnLoginConfirm").textContent = "导入";
+    $("loginConfirmOverlay").classList.remove("hidden");
+    return;
+  }
   $("lcTitle").textContent = "添加 " + name + " 账号";
   $("lcMsg").textContent = noExplicitCheckin(channel)
     ? `点击「登录${name}」将打开浏览器窗口，请按照指示正常登录${name}账号，登录成功后关闭浏览器窗口即可。${NO_CHECKIN_LOGIN_HINT[channel] || ""}`
@@ -539,7 +553,20 @@ function promptLogin(channel) {
 }
 function confirmLogin() {
   $("loginConfirmOverlay").classList.add("hidden");
-  if (pendingChannel) startLogin(pendingChannel);
+  if (!pendingChannel) return;
+  if (isImportLocal(pendingChannel)) importLocal(pendingChannel);
+  else startLogin(pendingChannel);
+}
+
+// importLocal 从本机已登录的官方客户端导入凭据（小浣熊 / Loomy）。
+async function importLocal(channel) {
+  try {
+    const r = await api("/api/account/import_local", { channel });
+    toast(`已导入 ${chLabel(channel)} 账号 ${r.uid || ""}`);
+    await loadState();
+  } catch (e) {
+    toast(e.message);
+  }
 }
 
 async function startLogin(channel) {
@@ -831,6 +858,8 @@ function bind() {
   $("btnAddQoderCN").onclick = () => promptLogin("qodercn");
   $("btnAddQoderCOM").onclick = () => promptLogin("qodercom");
   $("btnAddQwen").onclick = () => promptLogin("qwenwork");
+  $("btnAddRaccoon").onclick = () => promptLogin("raccoon");
+  $("btnAddLoomy").onclick = () => promptLogin("loomy");
   $("btnCheckinAll").onclick = checkinAll;
   $("btnRefreshAll").onclick = refreshAll;
   $("btnAddTime").onclick = addTime;

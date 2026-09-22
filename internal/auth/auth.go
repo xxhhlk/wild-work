@@ -390,3 +390,39 @@ func LoadQwenWorkDir(dir string) ([]*Auth, error) {
 	}
 	return out, nil
 }
+
+// LoadRaccoonDir 扫描商汤小浣熊凭证（raccoon-*.json）。
+//
+// 前缀不与 LoadQoderDir 的 `qoder*.json` 冲突（后者要求以 qoder 开头）。
+// 凭据不来自本工具的登录编排，而是由面板「从本机客户端导入」生成（见 app.ImportLocalRaccoon）。
+func LoadRaccoonDir(dir string) ([]*Auth, error) {
+	return loadPrefixed(dir, "raccoon")
+}
+
+// LoadLoomyDir 扫描讯飞 Loomy 凭证（loomy-*.json）。
+func LoadLoomyDir(dir string) ([]*Auth, error) {
+	return loadPrefixed(dir, "loomy")
+}
+
+// loadPrefixed 按前缀扫描并解析凭证（供无登录编排的「导入型」渠道复用）。
+// 单个文件损坏时跳过而不整体失败——与既有 Load*Dir 的容错口径一致。
+func loadPrefixed(dir, prefix string) ([]*Auth, error) {
+	files, err := filepath.Glob(filepath.Join(dir, prefix+"-*.json"))
+	if err != nil {
+		return nil, err
+	}
+	var out []*Auth
+	for _, f := range files {
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		a, err := Parse(raw)
+		if err != nil {
+			continue
+		}
+		a.Kind, a.FilePath = prefix, f
+		out = append(out, a)
+	}
+	return out, nil
+}

@@ -327,3 +327,15 @@ body {
 .btn.primary.alt.qwenwork:hover { background: #155e75; }
 .badge.qwenwork { background: #0e7490; }
 .fees .ch-header.qwenwork td { color: #0e7490; }
+
+/* raccoon 商汤小浣熊渠道色（取客户端 branding 的紫罗兰 #8E6BF2） */
+.btn.primary.alt.raccoon { background: #8e6bf2; border-color: #8e6bf2; }
+.btn.primary.alt.raccoon:hover { background: #7c56e8; }
+.badge.raccoon { background: #8e6bf2; }
+.fees .ch-header.raccoon td { color: #8e6bf2; }
+
+/* loomy 讯飞 Loomy 渠道色（讯飞蓝） */
+.btn.primary.alt.loomy { background: #1d4ed8; border-color: #1d4ed8; }
+.btn.primary.alt.loomy:hover { background: #1e40af; }
+.badge.loomy { background: #1d4ed8; }
+.fees .ch-header.loomy td { color: #1d4ed8; }
