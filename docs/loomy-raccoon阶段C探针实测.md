@@ -149,7 +149,7 @@ Authorization: Bearer <session> + token: <session> + traceparent + loomy-version
 ```
 OK   raccoon-<昵称>.json         uid="<昵称>"  accessLen=380 refreshLen=380 expiresAt=1790089841
                                 apiHost=https://xiaohuanxiong.com  domain=/api/web/llm/v2  needRefresh(5m)=false
-OK   loomy-260915192021296374.json uid="260915192021296374" accessLen=32 refreshLen=0 expiresAt=1791277650
+OK   loomy-<userid>.json            uid="<userid>" accessLen=32 refreshLen=0 expiresAt=1791277650
                                 apiHost=https://loomyad.xunfei.cn  domain=/api/v1  needRefresh(5m)=false
 OK   qwenwork-<既有账号>.json    （对照：解析正常，needRefresh(5m)=true）
 ```

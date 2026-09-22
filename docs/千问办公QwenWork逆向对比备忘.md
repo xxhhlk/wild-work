@@ -349,9 +349,9 @@ JWT payload（`client_type` 是关键差异字段）：
 
 ```json
 {"return_to":"/app/chat/<session_id>",
- "bx-ua":"231!GRR3fkmU...",          // 阿里设备指纹（超长，>2KB）
- "bx-umidtoken":"T2gAoppicHEgeltaAcbNphYh5gewnmvU1YB1_fVO_x0_htqjTTF1zUPlwTP74WhbaaE=",
- "bx_et":"gAexIqVlgabDRaW5JKfuv29LRZslr_qVirrBIV0D1zU8jkPmsKDm1N387f0joSYT6r4uWfSqSVgTSlNcq9X30okZ..."}
+ "bx-ua":"<REDACTED>...",          // 阿里设备指纹（超长，>2KB）
+ "bx-umidtoken":"<REDACTED>",
+ "bx_et":"<REDACTED>..."}
 ```
 
 ⚠️ **`bx-ua` 每次请求都不同**（实测 087/092/103 三份 body 的 `bx-ua` 互不相同），并由阿里 captcha SDK 在浏览器端动态生成 —— **脚本难以复现，这是 QR 登录自动化的主要障碍**。
