@@ -142,6 +142,7 @@ POST /api/quit                     # 退出程序
 13. **兼容层调用内层只能经 `Gateway.call()`**（`io.Pipe`），调用方读完必须 `res.Close()`，否则内层 goroutine 可能阻塞在 Write 上泄漏。
 14. **`pipeRW.Flush()` 为空操作是刻意的**：`io.Pipe` 无缓冲，Write 即送达；不要改成缓冲 + 定时 flush。
 15. **错误分类 429 必须优先于 hardMarkers**：限流 body 高频带 `quota exceeded`，先判 hardRule 会把限流误归余额耗尽 → 12h 硬冷却。三渠道 `Classify` 均已修复此顺序。
+    - **唯一例外：429 + 业务码 14018**（积分耗尽 —— 结构化码，不是文案）→ 硬冷却弃号。业务码判定必须走 `codeMarker`（容忍 `{"code": 14018}` 的 JSON 空白与引号形态），字面量 `strings.Contains` 会漏判。
 16. **脱敏层仅做文本替换不做语义变更**：`internal/sanitize` 只改模板句、不改用户内容语义；预检不命中时零分配原样通过。将来配置 `features.sanitize_fingerprints` 可一键关闭（逃生门）。
 17. **积分「可用/不可用」拆分统计**：`provider.ResourceItem.Usable` 标记条目是否属于本工具可消耗的额度池，`provider.Summarize()` 汇总小计。
     - TraeWork 判据是 **`available_endpoint == 0`**（ep=1 是官方客户端专用池，本工具扣不到）；
@@ -205,6 +206,23 @@ POST /api/quit                     # 退出程序
     **本渠道刻意不投影任何思考字段**：千问办公官方客户端本身没有思考控制设置（无档位/开关 UI），
     抓包确认其请求体也不带 `reasoning_effort` / `enable_thinking` —— 这是符合官方行为、**不是缺口**，
     不要为它补档位投影（用户 2026-09-22 确认）。
+
+25. **上游错误分类里「请求级错误」不得罚号**（`internal/upstream/client.go` + `internal/server/handler.go`）：
+    内容拦截 / 上下文超限（11115）/ 图片格式无效（11135）/ 出站 body 畸形（11101）都是**请求内容**的问题 ——
+    同一 body 换任何账号结果都一样。这几类必须在 `Classify` 里判成 `ErrContentBlocked` / `ErrPromptTooLong` /
+    `ErrImageInvalid` / `ErrBadParams`，由 `handler.chatCompletions` 走「不冷却、不计数、原文透传」分支；
+    一旦落到 `ErrClient`，`default:` 分支的 `NoteError` 就会把健康账号喂到冷却。
+    - **业务码一律走 `codeMarker`，不用字面量 marker**：上游信封形态不统一
+      （`"code":11135` / `{"code": 11135}` / `"code":"11135"`），字面量只覆盖紧凑形态，漏判即退化成 `ErrClient`。
+      `codeMarker` 同时排除 `"code":111350` 这类前缀误命中。
+    - **这些判定必须排在 `status == 404` / `status >= 500` 之前**：404 上的 11115 若落到 `ErrNotFound` 会软冷却账号
+      （上下文超限与账号健康无关）。
+    - **图片解析失败的信封 code 也是 11101**（`Parse message failed: invalid image_url content ...`）：
+      图片判定必须先于 11101 判定，否则「图片有问题」被误归「body 畸形」。
+    - 出站 `image_url` 形状在 `payload.normalizeImageURL` 归一（上游只认 OpenAI 对象形态，
+      字符串形态会 400 code=11101）；只转形状，空串/缺失/类型不对一律不动，让上游报真实错误。
+    守门测试：`TestUpstreamRequestLevelErrorsDoNotPunishAccount`（含「未知 4xx 仍罚号」对照，防止断言空转）、
+    `TestCodeMarkerTolerance`、`TestNormalizeImageURL`。
 
 ## 7. 平台能力差异表（internal/platform）
 

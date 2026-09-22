@@ -29,11 +29,13 @@ const (
 	ErrNotFound       = provider.ErrNotFound       // 404 上游偶发 → 短冷却不累计 errCount
 	ErrServer         = provider.ErrServer         // 5xx 上游故障
 	ErrClient         = provider.ErrClient         // 其他 4xx / 业务错误
-	ErrContentBlocked  = provider.ErrContentBlocked // 内容拦截
-	ErrPromptTooLong   = provider.ErrPromptTooLong  // 上下文超限
-	ErrWafBlock        = provider.ErrWafBlock       // WAF 拦截
-	ErrAccountFault    = provider.ErrAccountFault   // 账号级故障
-	ErrModelBlocked    = provider.ErrModelBlocked   // 模型不存在
+	ErrContentBlocked = provider.ErrContentBlocked // 内容拦截
+	ErrPromptTooLong  = provider.ErrPromptTooLong  // 上下文超限
+	ErrImageInvalid   = provider.ErrImageInvalid   // 图片格式/数据无效
+	ErrBadParams      = provider.ErrBadParams      // 出站 body 无法解析
+	ErrWafBlock       = provider.ErrWafBlock       // WAF 拦截
+	ErrAccountFault   = provider.ErrAccountFault   // 账号级故障
+	ErrModelBlocked   = provider.ErrModelBlocked   // 模型不存在
 )
 
 // Error 带分类的上游错误。
@@ -57,8 +59,58 @@ var contentBlockedMarkers = []string{
 	"illegal api invocation",
 }
 
+// invalidImageMarkers 图片请求格式/数据无效（HTTP 400）的**文案**形态。
+//
+// 这类错误由请求内容决定，不是账号问题：同一 body 换任何账号都会得到相同的解析
+// 错误，轮转白费时间、NoteError 还会把健康账号喂到冷却。故归 ErrImageInvalid
+// （请求级错误：不冷却、不计数、原样透传）。
+//
+// 业务码 11135 不列在这里：字面量 marker 只能覆盖紧凑 JSON（`"code":11135`），
+// 上游返回带空白的合法形态（`{"code": 11135, ...}`）会漏判 → 退化成 ErrClient
+// 并被罚号。业务码统一走 codeMarker（见 Classify 的 400 分支），与 11115/11101 同口径。
+var invalidImageMarkers = []string{
+	"invalid image_url content",
+	"invalid_image_data",
+	"replace the image",
+}
+
+// codeMarker 判定 body 里是否出现业务码 code（如 11115 / 11101 / 11135 / 14018）。
+//
+// 上游信封的形态不统一：`"code":11135`、`"code": 11135`、`"code":"11135"`、
+// `"code": "11135"` 都实测出现过（code 可能是数字也可能是字符串）。字面量
+// `strings.Contains(body, "\"code\":11135")` 只覆盖紧凑形态，上游一旦美化输出
+// 就会漏判——而漏判的后果不是「少一条日志」，是把请求级错误误归 ErrClient 并罚健康账号。
+//
+// 业务码之后紧跟字母/数字时不算命中（`"code":111350` 不该命中 11135）：上游业务码是
+// 定长五位，理论上不会撞，但前缀匹配的坑不值得留。
+func codeMarker(lower, code string) bool {
+	for _, key := range []string{`"code":`, `'code':`} {
+		for off := 0; ; {
+			i := strings.Index(lower[off:], key)
+			if i < 0 {
+				break
+			}
+			rest := strings.TrimLeft(lower[off+i+len(key):], ` "'`)
+			off += i + len(key)
+			if !strings.HasPrefix(rest, code) {
+				continue
+			}
+			if tail := rest[len(code):]; tail != "" && isASCIIAlnum(tail[0]) {
+				continue
+			}
+			return true
+		}
+	}
+	return false
+}
+
+func isASCIIAlnum(c byte) bool {
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
 // Classify 按 HTTP 状态码 + body 判定错误类别。
 // 429 必须在 hardMarkers 之前——限流 body 高频带 "quota exceeded"，先判 hardRule 会误归 12h 硬冷却。
+// 例外：429 携带业务码 14018 是明确的「账号积分耗尽」（见下），按硬冷却弃号。
 func Classify(status int, body string) ErrKind {
 	if status == http.StatusPaymentRequired {
 		return ErrHardCredit
@@ -68,6 +120,13 @@ func Classify(status int, body string) ErrKind {
 		if strings.Contains(body, m) {
 			return ErrSessionDead
 		}
+	}
+	// 429 + 业务码 14018 = 账号积分耗尽（上游把「余额耗尽」也走 429 返回）：
+	// 按硬冷却弃号，等次日签到恢复。必须放在 429 兜底之前。
+	// 只认结构化业务码，不靠文案：429 body 高频带 "quota exceeded" 这类跨计费/限流
+	// 两界的措辞，靠文案猜会把限流误归硬冷却，白扔号约 12h（这正是 429 前置的原因）。
+	if status == http.StatusTooManyRequests && codeMarker(lower, "14018") {
+		return ErrHardCredit
 	}
 	if status == http.StatusTooManyRequests {
 		return ErrSoftRate
@@ -83,6 +142,32 @@ func Classify(status int, body string) ErrKind {
 		strings.Contains(lower, "请求过于频繁") || strings.Contains(lower, "限流") {
 		return ErrSoftRate
 	}
+	// 请求级错误先于 404/5xx 与通用 4xx 判定：这些业务码出现在 404 上时若落到
+	// ErrNotFound（→ 软冷却账号），就把「上下文超限 / 图片格式错 / body 畸形」误判成
+	// 账号问题了——它们与账号健康无关，换任何账号结果都一样。
+	// 位置必须在 429 / hardMarkers / 限流文案之后：那三条更权威（429 上的
+	// "quota exceeded" 措辞会先被接管，见上方注释）。
+	if status == http.StatusBadRequest || status == http.StatusNotFound {
+		if strings.Contains(lower, "prompt is too long") || codeMarker(lower, "11115") {
+			return ErrPromptTooLong
+		}
+		// 图片格式/数据无效必须排在 11101 之前：上游的图片解析失败信封里 code
+		// 就是 11101（`Parse message failed: invalid image_url content ...`），
+		// 先判 11101 会把「图片有问题」误归「body 畸形」。
+		if status == http.StatusBadRequest {
+			for _, m := range invalidImageMarkers {
+				if strings.Contains(lower, m) {
+					return ErrImageInvalid
+				}
+			}
+			if codeMarker(lower, "11135") {
+				return ErrImageInvalid
+			}
+		}
+		if codeMarker(lower, "11101") || strings.Contains(body, "Unmarshal chat params failed") {
+			return ErrBadParams
+		}
+	}
 	if status == http.StatusNotFound {
 		return ErrNotFound
 	}
@@ -90,15 +175,6 @@ func Classify(status int, body string) ErrKind {
 		return ErrServer
 	}
 	if status >= 400 {
-		// 专项分类在通用 4xx 之前：区分「请求问题」与「账号问题」。
-		if status == http.StatusBadRequest || status == http.StatusNotFound {
-			if strings.Contains(lower, "prompt is too long") || strings.Contains(lower, `"code":11115`) {
-				return ErrPromptTooLong
-			}
-			if strings.Contains(body, `"code":11101`) || strings.Contains(body, "Unmarshal chat params failed") {
-				return ErrClient // BadParams：不罚号但仍轮转
-			}
-		}
 		for _, m := range contentBlockedMarkers {
 			if strings.Contains(lower, m) {
 				return ErrContentBlocked

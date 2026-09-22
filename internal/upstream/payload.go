@@ -1,6 +1,7 @@
 // payload.go 改写发往上游的 chat 请求体：
 //  1. 强制 stream:true（上游拒绝非流式）
 //  2. tool_choice 归一化（上游该字段是 string，对象形式会 400 code=11101）
+//  3. image_url 归一化（上游只认 OpenAI 对象形态，字符串形态会 400 code=11101）
 package upstream
 
 import (
@@ -37,7 +38,8 @@ func prepareBodyInner(src []byte) []byte {
 		obj["stream_options"] = map[string]any{"include_usage": true}
 	}
 	normalizeToolChoice(obj)
-	normalizeRoles(obj) // developer → system（上游对 developer 角色触发内容过滤误杀）
+	normalizeRoles(obj)    // developer → system（上游对 developer 角色触发内容过滤误杀）
+	normalizeImageURL(obj) // 字符串形态 → 上游只认的对象形态（否则 400 code=11101）
 	ProjectReasoning(obj, reasoning.RealmCN)
 
 	// tool 配对两步（见 tool_pairing.go）：先重排再清理。所有模型一律执行（独立于
@@ -168,6 +170,46 @@ func normalizeRoles(obj map[string]any) {
 		if strings.EqualFold(strings.TrimSpace(role), "developer") {
 			msg["role"] = "system"
 			log.Printf("[upstream] role normalized developer->system idx=%d", i)
+		}
+	}
+}
+
+// normalizeImageURL 兼容 OpenAI chat 多模态内容的两种 image_url 写法。
+//
+// OpenAI Chat Completions 规范用对象形态 {"url":"...","detail":"..."}；部分客户端
+// （以及 Responses → Chat 的转换器）会发字符串形态 "data:image/png;base64,..." 或
+// "https://..."。WorkBuddy 上游只接受对象形态，字符串会返
+// 400 code=11101 "cannot unmarshal string into ... ImageContent"。
+//
+// 只做形状转换，不猜内容：字符串 → {"url": 原值}；已是对象则原样保留（含 url /
+// detail / mime_type）；空串、缺失、对象内 url 类型不对一律不动，交给上游返回真实
+// 错误——补默认值会把「客户端发错了」变成「我们静默发了个空图」。
+//
+// 与 normalizeRoles 同理，这是「协议兼容」而非「内容脱敏」：即使 sanitize=false 也照常执行。
+func normalizeImageURL(obj map[string]any) {
+	msgs, ok := obj["messages"].([]any)
+	if !ok {
+		return
+	}
+	for _, rawMsg := range msgs {
+		msg, ok := rawMsg.(map[string]any)
+		if !ok {
+			continue
+		}
+		parts, ok := msg["content"].([]any)
+		if !ok {
+			continue
+		}
+		for _, rawPart := range parts {
+			part, ok := rawPart.(map[string]any)
+			if !ok || part["type"] != "image_url" {
+				continue
+			}
+			url, ok := part["image_url"].(string)
+			if !ok || url == "" {
+				continue
+			}
+			part["image_url"] = map[string]any{"url": url}
 		}
 	}
 }

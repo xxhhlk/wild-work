@@ -453,7 +453,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, errTooLarge) {
 			writeOpenAIError(w, http.StatusRequestEntityTooLarge, "request_too_large", err.Error())
 		} else {
-		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "read body: "+err.Error())
+			writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "read body: "+err.Error())
 		}
 		return
 	}
@@ -546,9 +546,12 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				rt.Pool.Disable(acct.UID, "session dead")
 			case provider.ErrNotFound:
 				rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "upstream 404")
-			case provider.ErrContentBlocked, provider.ErrPromptTooLong:
-				// 内容拦截/上下文超限：不冷却不熔断不计错，直接透传原文回客户端。
-				// 这些是请求内容问题，与账号健康无关，轮转白费时间且浪费好号配额。
+			case provider.ErrContentBlocked, provider.ErrPromptTooLong,
+				provider.ErrImageInvalid, provider.ErrBadParams:
+				// 请求级错误（内容拦截 / 上下文超限 / 图片格式无效 / 出站 body 畸形）：
+				// 不冷却不熔断不计错，直接透传原文回客户端。
+				// 这些是请求内容问题，与账号健康无关——同一 body 换任何账号结果都一样，
+				// 轮转白费时间，NoteError 还会把健康账号喂到冷却。
 				transparentError(w, status, respBody)
 				return
 			case provider.ErrWafBlock, provider.ErrAccountFault, provider.ErrModelBlocked:

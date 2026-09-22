@@ -19,30 +19,34 @@ const (
 	WorkBuddy   Kind = "workbuddy"
 	WorkBuddyAI Kind = "workbuddyai" // WorkBuddy 国际版（www.workbuddy.ai），与国内版完全独立
 	TraeWork    Kind = "traework"
-	Qoder       Kind = "qoder"      // QoderWork（qoder.com.cn，移植自 qoderwork2api）
-	QoderCN     Kind = "qodercn"    // QoderCN（qoder.com.cn，移植自 qoder2api，独立渠道）
-	QoderCOM    Kind = "qodercom"   // QoderCOM 国际版（qoder.com / qoder.sh，移植自 qodercn）
-	QwenWork    Kind = "qwenwork"   // 千问办公（gateway.qwenwork.cn + qwenwork.cn）
+	Qoder       Kind = "qoder"    // QoderWork（qoder.com.cn，移植自 qoderwork2api）
+	QoderCN     Kind = "qodercn"  // QoderCN（qoder.com.cn，移植自 qoder2api，独立渠道）
+	QoderCOM    Kind = "qodercom" // QoderCOM 国际版（qoder.com / qoder.sh，移植自 qodercn）
+	QwenWork    Kind = "qwenwork" // 千问办公（gateway.qwenwork.cn + qwenwork.cn）
 )
 
 func (k Kind) String() string { return string(k) }
 
 // ErrKind 错误分类，驱动 pool 冷却状态机。
+// 只存在于运行时：state.json 落盘的是冷却原因文案（pool.Cool*）而不是 ErrKind 数值，
+// 因此新增/调整枚举成员不需要考虑兼容已落盘数据（但仍保持只增不改，便于日志对账）。
 type ErrKind int
 
 const (
-	ErrNone        ErrKind = iota // 成功
-	ErrHardCredit                 // 余额/权益不足 → 长冷却
-	ErrSoftRate                   // 429 软限流 → 短冷却
-	ErrSessionDead                // 登录态失效 → 禁用
-	ErrNotFound                   // 404 上游偶发 → 短冷却不累计 errCount
-	ErrServer                     // 5xx 上游故障
-	ErrClient                     // 其他 4xx / 业务错误
-	ErrContentBlocked             // 内容策略拦截（400 + 审核文案）→ 不罚账号，透传原文
-	ErrPromptTooLong              // 11115 上下文超限 → 请求级错误，不罚号不轮转，透传原文
-	ErrWafBlock                   // 403 + 非业务信封（WAF 拦截页/空体）→ 账号软冷却
-	ErrAccountFault               // 账号级授权/配额故障（11140/14017）→ 冷却轮换
-	ErrModelBlocked               // 11102 该后端无此模型 → (账号,模型) 负缓存避让
+	ErrNone           ErrKind = iota // 成功
+	ErrHardCredit                    // 余额/权益不足 → 长冷却
+	ErrSoftRate                      // 429 软限流 → 短冷却
+	ErrSessionDead                   // 登录态失效 → 禁用
+	ErrNotFound                      // 404 上游偶发 → 短冷却不累计 errCount
+	ErrServer                        // 5xx 上游故障
+	ErrClient                        // 其他 4xx / 业务错误
+	ErrContentBlocked                // 内容策略拦截（400 + 审核文案）→ 不罚账号，透传原文
+	ErrPromptTooLong                 // 11115 上下文超限 → 请求级错误，不罚号不轮转，透传原文
+	ErrImageInvalid                  // 图片格式/数据无效（11135 等）→ 请求级错误，不罚号不轮转，透传原文
+	ErrBadParams                     // 11101 出站 body 无法解析 → 请求级错误，不罚号不轮转，透传原文
+	ErrWafBlock                      // 403 + 非业务信封（WAF 拦截页/空体）→ 账号软冷却
+	ErrAccountFault                  // 账号级授权/配额故障（11140/14017）→ 冷却轮换
+	ErrModelBlocked                  // 11102 该后端无此模型 → (账号,模型) 负缓存避让
 )
 
 func (k ErrKind) String() string {
@@ -63,6 +67,10 @@ func (k ErrKind) String() string {
 		return "content_blocked"
 	case ErrPromptTooLong:
 		return "prompt_too_long"
+	case ErrImageInvalid:
+		return "image_invalid"
+	case ErrBadParams:
+		return "bad_params"
 	case ErrWafBlock:
 		return "waf_block"
 	case ErrAccountFault:
