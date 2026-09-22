@@ -465,6 +465,15 @@ func Classify(status int, body string) provider.ErrKind {
 		strings.Contains(lower, "usage limit") || strings.Contains(lower, "请求过于频繁") {
 		return provider.ErrSoftRate
 	}
+	// 上下文超限（11115）是请求级错误：必须排在 404 兜底（→软冷却账号）之前——
+	// 换任何账号结果都一样，与账号健康无关（AGENTS.md §6.25，与 internal/upstream 同口径）。
+	// 业务码走 provider.CodeMarker：裸 Contains(lower,"11115") 会被 request_id 等任意含这五个
+	// 数字的文本误命中，把该罚号的错误原因透传出去。
+	if status == http.StatusBadRequest || status == http.StatusNotFound {
+		if strings.Contains(lower, "prompt is too long") || provider.CodeMarker(lower, "11115") {
+			return provider.ErrPromptTooLong
+		}
+	}
 	if status == http.StatusNotFound {
 		return provider.ErrNotFound
 	}
@@ -476,10 +485,6 @@ func Classify(status int, body string) provider.ErrKind {
 			strings.Contains(lower, "unapproved channel") ||
 			strings.Contains(lower, "illegal api invocation") {
 			return provider.ErrContentBlocked
-		}
-		if (status == 400 || status == 404) &&
-			(strings.Contains(lower, "prompt is too long") || strings.Contains(lower, "11115")) {
-			return provider.ErrPromptTooLong
 		}
 		if status == 403 && strings.TrimSpace(body) == "" {
 			return provider.ErrWafBlock

@@ -54,9 +54,11 @@ internal/
 8. **定价缓存持久化**：`data/pricing-cache.json`，启动时加载，超过 1 小时自动刷新。
 9. **上游错误透传**：HTTP ≥400 时直接透传原始响应体，不在 server 层包装，冷却状态机仍正常运转。
 10. **Classify 429 优先于 hardMarkers**：三渠道 `Classify` 均须先判 `status==429` 再扫余额关键词；顺序反置会导致 429 + "quota exceeded" 误判硬冷却 12h。
-    唯一例外是 429 + 业务码 **14018**（积分耗尽，结构化码）→ 硬冷却；业务码判定走 `codeMarker`（容忍 JSON 空白）。
+    唯一例外是 429 + 业务码 **14018**（积分耗尽，结构化码）→ 硬冷却；业务码判定走 `provider.CodeMarker`（容忍 JSON 空白）。
     请求级错误（内容拦截 / 11115 超限 / 11135 图片无效 / 11101 body 畸形）必须判在 404/5xx 之前，
     并在 handler 里走「不冷却不计数、原文透传」分支 —— 落到 `ErrClient` 会 `NoteError` 罚掉健康账号。
+    业务码判定全渠道共用 `provider.CodeMarker`（upstream/qoder/qodercn/qodercom/workbuddyai 的 Classify），
+    禁止裸 `Contains` 数字串（request_id 误命中会把该罚号的错误透传出去）。
 11. **脱敏层预检零分配**：`internal/sanitize` 的 `hasFingerprint` 先走 `strings.Contains` 特征快速路径，普通请求不命中即原样返回，不做 JSON Unmarshal。
 12. **RefreshHeaders 直接读 RefreshToken**：该函数调用方已持有 `a.Lock()`，不能走 `a.RefreshTokenValue()`（会死锁）。其余 API 头用 `a.AccessTokenValue()` 锁快照。
 

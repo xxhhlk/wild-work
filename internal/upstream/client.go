@@ -74,39 +74,8 @@ var invalidImageMarkers = []string{
 	"replace the image",
 }
 
-// codeMarker 判定 body 里是否出现业务码 code（如 11115 / 11101 / 11135 / 14018）。
-//
-// 上游信封的形态不统一：`"code":11135`、`"code": 11135`、`"code":"11135"`、
-// `"code": "11135"` 都实测出现过（code 可能是数字也可能是字符串）。字面量
-// `strings.Contains(body, "\"code\":11135")` 只覆盖紧凑形态，上游一旦美化输出
-// 就会漏判——而漏判的后果不是「少一条日志」，是把请求级错误误归 ErrClient 并罚健康账号。
-//
-// 业务码之后紧跟字母/数字时不算命中（`"code":111350` 不该命中 11135）：上游业务码是
-// 定长五位，理论上不会撞，但前缀匹配的坑不值得留。
-func codeMarker(lower, code string) bool {
-	for _, key := range []string{`"code":`, `'code':`} {
-		for off := 0; ; {
-			i := strings.Index(lower[off:], key)
-			if i < 0 {
-				break
-			}
-			rest := strings.TrimLeft(lower[off+i+len(key):], ` "'`)
-			off += i + len(key)
-			if !strings.HasPrefix(rest, code) {
-				continue
-			}
-			if tail := rest[len(code):]; tail != "" && isASCIIAlnum(tail[0]) {
-				continue
-			}
-			return true
-		}
-	}
-	return false
-}
-
-func isASCIIAlnum(c byte) bool {
-	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
-}
+// codeMarker 是本包对 provider.CodeMarker 的别名（判定规则与坑的说明见那边）。
+var codeMarker = provider.CodeMarker
 
 // Classify 按 HTTP 状态码 + body 判定错误类别。
 // 429 必须在 hardMarkers 之前——限流 body 高频带 "quota exceeded"，先判 hardRule 会误归 12h 硬冷却。
