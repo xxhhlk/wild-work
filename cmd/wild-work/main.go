@@ -198,30 +198,33 @@ func main() {
 	// WorkBuddy 国际版：无显式签到（ActivitiesOnly 模式）。
 	// 定时仍对每个账号调用 DailyCheckin，其实现为「免费模型对话保活 + 签到探测」；
 	// 不记录/上报签到状态，保持对用户透明。
-	// Keepalive 关闭（token 有效期 365 天，无需每日刷新）。
+	// Keepalive 关闭（token 有效期 365 天，无需每日刷新）—— 用显式空切片，
+	// 传 nil 会被 scheduler.New 补成默认 22:00。
 	wbaSch := scheduler.New(scheduler.Config{Pool: wbaPool, Upstream: wbaUp, Name: "workbuddyai",
-		CheckinMinutes: checkinMinutes, KeepaliveHours: nil, ActivitiesOnly: true})
+		CheckinMinutes: checkinMinutes, KeepaliveHours: []int{}, ActivitiesOnly: true})
 	// 千问办公：无签到活动（每日积分服务端被动发放，无需保活/领取）；
-	// CheckinMinutes=nil + KeepaliveHours=nil（token 由 deviceToken/refresh 按需轮换，
+	// 定时任务全部关闭：必须传**显式空切片** []int{}，传 nil 会被 scheduler.New
+	// 补成默认的 9:00/21:00 签到与 22:00 保活（token 由 deviceToken/refresh 按需轮换，
 	// 定时保活反而会与千问办公 App 互踩 —— 见备忘 §7.5 风险 1）。
 	// 余额/费率靠 StartCreditAutoRefresh 循环拉取。
 	qwSch := scheduler.New(scheduler.Config{Pool: qwPool, Upstream: qwUp, Name: "qwenwork",
-		CheckinMinutes: nil, KeepaliveHours: nil})
+		CheckinMinutes: []int{}, KeepaliveHours: []int{}})
 	// QoderCN：签到双路径已实现（campaigns 主路径 + daily-check-in 兑底），
 	// 沿用全局签到时段；token keepalive 与 qoder 相同。
 	qcnSch := scheduler.New(scheduler.Config{Pool: qcnPool, Upstream: qcnUp, Name: "qodercn", CheckinMinutes: []int{615}, KeepaliveHours: cfg.Schedule.KeepaliveHours})
 	// QoderCOM：仅 campaigns 活动路径（无 daily-check-in）；其余同 QoderCN。
 	qcmSch := scheduler.New(scheduler.Config{Pool: qcmPool, Upstream: qcmUp, Name: "qodercom", CheckinMinutes: []int{615}, KeepaliveHours: cfg.Schedule.KeepaliveHours})
-	// 小浣熊：无签到；access_token 实测仅 ≈2h，而 refresh_token ≈30 天，
+	// 小浣熊：无签到（CheckinMinutes 用显式空切片，nil 会被补成 9:00/21:00）；
+	// access_token 实测仅 ≈2h，而 refresh_token ≈30 天，
 	// 故保活比其它渠道更密（每 4 小时一次）以减少「请求先 401 再刷新」的额外往返；
 	// 请求路径上的 refreshIfSessionDead 仍会兜底自愈。
 	rcSch := scheduler.New(scheduler.Config{Pool: rcPool, Upstream: rcUp, Name: "raccoon",
-		CheckinMinutes: nil, KeepaliveHours: []int{1, 5, 9, 13, 17, 21}})
+		CheckinMinutes: []int{}, KeepaliveHours: []int{1, 5, 9, 13, 17, 21}})
 	// Loomy：无签到，且**上游无 refresh 端点**（session 14 天，到期需重新导入）；
-	// 其凭据 refreshToken 为空，scheduler 的 keepalive 会按「无 refresh token」跳过，
-	// 不会产生无意义的失败重试。
+	// 定时任务全部关闭（显式空切片）：refreshToken 为空，保活虽会按「无 refresh token」
+	// 跳过、不会误禁用账号，但每天仍空跑一次并记录失败，故直接关掉。
 	lmSch := scheduler.New(scheduler.Config{Pool: lmPool, Upstream: lmUp, Name: "loomy",
-		CheckinMinutes: nil, KeepaliveHours: nil})
+		CheckinMinutes: []int{}, KeepaliveHours: []int{}})
 
 	runtimes := map[provider.Kind]*server.Runtime{
 		provider.WorkBuddy: {Kind: provider.WorkBuddy, Pool: wbPool, Upstream: wbUp, StaticModels: server.WorkBuddyStaticModels()},

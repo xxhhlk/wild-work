@@ -43,8 +43,15 @@ type Scheduler struct {
 }
 
 // New 构建。
+//
+// 零值（nil）与显式空切片语义不同，不可混用：
+//   - nil        = 「未配置」→ 落默认（签到 9:00/21:00，保活 22:00）
+//   - []int{}    = 「本渠道没有这类定时任务」→ 保持为空，什么都不跑
+//
+// 之前用 len(...) == 0 判定，导致想关掉定时任务的渠道（如无 refresh 端点、
+// 无签到活动的渠道）被静默补上默认时间，每天空跑并记录失败。
 func New(cfg Config) *Scheduler {
-	if len(cfg.CheckinMinutes) == 0 {
+	if cfg.CheckinMinutes == nil {
 		if len(cfg.CheckinHours) > 0 {
 			cfg.CheckinMinutes = make([]int, 0, len(cfg.CheckinHours))
 			for _, h := range cfg.CheckinHours {
@@ -56,7 +63,7 @@ func New(cfg Config) *Scheduler {
 			cfg.CheckinMinutes = []int{9 * 60, 21 * 60}
 		}
 	}
-	if len(cfg.KeepaliveHours) == 0 {
+	if cfg.KeepaliveHours == nil {
 		cfg.KeepaliveHours = []int{22}
 	}
 	return &Scheduler{cfg: cfg, wake: make(chan struct{}, 1)}
@@ -207,6 +214,17 @@ func (s *Scheduler) Run(ctx context.Context) {
 	for {
 		ch, kh := s.schedule()
 		all := append(append([]int{}, ch...), hoursToMinutes(kh)...)
+		if len(all) == 0 {
+			// 本渠道无任何定时任务（CheckinMinutes/KeepaliveHours 均为显式空切片）。
+			// nextFireMinutes 对空列表返回零值，会让 timer 立即触发而空转烧 CPU，
+			// 所以这里直接阻塞，等取消或配置变更。
+			select {
+			case <-ctx.Done():
+				return
+			case <-s.wake:
+			}
+			continue
+		}
 		next := nextFireMinutes(time.Now(), all)
 		timer := time.NewTimer(time.Until(next))
 		select {

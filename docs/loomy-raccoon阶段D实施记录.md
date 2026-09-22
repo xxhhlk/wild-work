@@ -95,3 +95,30 @@ wild-work 启动时按 `NeedsRefresh(10min)` 主动刷新，而客户端也在�
 
 - `internal/traework/live_probe_test.go` 是**并行会话的 WIP**（未跟踪状态），本次未触碰、未 add；
 - 阶段 C 的探针工具与 asar 工具保留在 `_probe/`、`_raccoon_probe/`（工作区，非仓库内容）。
+
+---
+
+## 7. 阶段 E 前置修复：定时任务被静默补默认（2026-09-23）
+
+阶段 E 排查「渠道 token 是否需要定期刷新」时发现 `scheduler.New` 的零值处理有缺陷：
+`len(cfg.KeepaliveHours) == 0` 把 **nil 与显式空切片一视同仁**，都补成默认 `[22]`
+（签到同理补 `9:00/21:00`）。结果是四个「注释声明已关闭」的渠道实际仍在跑定时任务：
+
+| 渠道 | 注释声明 | 实际（修复前） |
+|---|---|---|
+| `workbuddyai` | 「Keepalive 关闭（token 365 天）」 | 每天 22:00 保活 |
+| `qwenwork` | 「nil + nil（定时保活会与千问办公 App 互踩）」 | 9:00/21:00 签到 + 22:00 保活 —— **正是注释要避免的互踩** |
+| `raccoon` | 无签到活动 | 每天 9:00/21:00 调 `DailyCheckin` 并返回错误 |
+| `loomy` | 无 refresh 端点、无签到 | 每天 3 次空跑（`refreshToken` 为空会提前 skip，**不会误禁用账号**） |
+
+**修复**（`internal/scheduler/scheduler.go`）：
+
+- `nil` = 未配置 → 落默认；`[]int{}` = 本渠道无此类任务 → 保持为空；
+- `Run` 对「无任何定时任务」显式阻塞等待 —— 否则 `nextFireMinutes` 对空列表返回零值，
+  timer 会立即触发而空转烧 CPU。
+
+**配置**（`cmd/wild-work/main.go`）：上述四渠道改用显式空切片；`raccoon` 每 4 小时的
+保活**保留**（access 仅 ≈2h，必要）。
+
+新增测试 `internal/scheduler/scheduler_defaults_test.go`（4 例：零值默认、显式空关闭、
+混合场景、无任务时 `Run` 阻塞且可被 ctx 取消）。

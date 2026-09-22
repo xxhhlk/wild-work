@@ -232,7 +232,7 @@
 2. **签名骨架**：`NewCosySession` / `AuthHeader` / `ApplyHeaders` 只需抽出「静态头集合 + 版本常量」为参数。
 3. **SSE 剥壳**：`internal/qoder/sse.go` 的 `parseNestedSSE` 与两参考项目等价，envelope 结构相同 → 直接复用。
 4. **编码开关**：`internal/qoder/encoding.go` 的 `qoderEncode` 在 QwenWork 上**不需要**（实测明文 200）。
-5. **渠道装配模板**：`internal/workbuddyai`（无签到、`KeepaliveHours=nil`）最贴近 QwenWork。
+5. **渠道装配模板**：`internal/workbuddyai`（无签到、`KeepaliveHours=[]int{}` 显式关闭）最贴近 QwenWork。
 
 ### 3.4 需要新增的工作
 
@@ -258,7 +258,7 @@
    `deviceToken/refresh` 会**轮换** refresh_token。wild-work daemon 常驻 + `KeepaliveHours` 定时保活 → 与用户同时开着的千问办公 App 互相作废。
    - xrl 解法：按需刷新（5min 缓冲，平均 1h 才刷 1 次）+ 写回 `auth-v2.dat` + `fs.watch` 监听 App 侧刷新。
    - Buddy2api 解法：按需刷新 + 刷新成功后写回 `auth-v2.dat`（带备份）。
-   - **建议**：QwenWork 渠道设 `KeepaliveHours = nil`（对齐 workbuddyai），改为「每次 chat 前检查 `ExpiresAt`，临近过期才刷新」，并实现写回 `auth-v2.dat`。
+   - **建议**：QwenWork 渠道设 `KeepaliveHours = []int{}`（**显式空切片**；传 nil 会被 `scheduler.New` 补成默认 22:00，等于没关 —— 见 2026-09-23 修复），改为「每次 chat 前检查 `ExpiresAt`，临近过期才刷新」，并实现写回 `auth-v2.dat`。
 2. **写回安全性**：必须保留 `auth-v2.dat` 中未知字段（`loginDeviceId`、`loginMethod`、`refreshStrategy` 等），先备份再原子替换；解密失败**禁止**写回。
 3. **零 token 日志不变量**：新渠道需纳入 wild-work「日志/面板/消息框零 token」约束。
 4. **平台限制**：DPAPI 绑定当前 Windows 用户，`auth-v2.dat` + `Local State` 拷贝到其他机器/账户无法解密 → 与跨平台定位冲突，需在 UI/文档明确提示。
