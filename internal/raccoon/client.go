@@ -280,7 +280,11 @@ func (c *Client) FetchModels(a *auth.Auth) ([]provider.ModelInfo, error) {
 			// 本渠道不投影档位（上游目录未声明 reasoning_efforts，见阶段 C 实测），
 			// 仅如实声明模型是否具备推理标签，便于客户端自行选择。
 			SupportsReasoning: hasTag(m.Tags, "reasoning"),
-			SupportsTools:     false, // 未实测，按 provider 约定「未知即不声明」
+			// 上游 catalog 不声明工具能力（无 tools 字段），但 2026-09-23 阶段 E 实测
+			// 默认模型 `raccoon-8c4485` 在带 tools 的请求下返回结构化
+			// `finish_reason=tool_calls` + `tool_calls`，故按实测声明支持。
+			// sn-* 系列因账号冷却未逐一验证（上游无声明，只能实测）。
+			SupportsTools: true,
 		}
 		out = append(out, info)
 	}
