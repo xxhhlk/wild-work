@@ -8,7 +8,7 @@
 ## 1. 结论
 
 **验收通过**：三接口、工具调用闭环、错误分类、并发与会话隔离、积分/费率口径、Web UI 六项全部达成。
-过程中发现 **1 个并发缺陷（未修）** 与 **3 个需知晓的事实**，详见 §4。
+过程中发现 **1 个并发缺陷（已修复并 A/B 验证）** 与 **3 个需知晓的事实**，详见 §4。
 
 ---
 
@@ -96,20 +96,24 @@
 
 ## 4. 发现的问题
 
-### 4.1 ⚠️ 并发刷新竞态（**未修，建议尽快处理**）
+### 4.1 ✅ 并发刷新竞态（**已修复，A/B 对照验证**）
 
 **现象**：并发请求同一账号且本地 token 已过期时，每个请求都各自触发一次刷新 ——
 raccoon 实测 4 并发 → **1 次成功 + 3 次 `refresh_conflict`**，账号被冷却 10 分钟并返回 503。
 
 ```
-01:56:09  refresh start platform=raccoon uid=RaccoonJames reason=request   ×4（同一秒）
+01:56:09  refresh start platform=raccoon uid=<昵称> reason=request   ×4（同一秒）
 01:56:10  refresh failed ... {"code":200822,"message":"refresh_conflict"}
-01:56:10  refresh success platform=raccoon uid=RaccoonJames expires_at=1790110570
+01:56:10  refresh success platform=raccoon uid=<昵称> expires_at=1790110570
 → /api/state: cooling=true until=09-23 02:06
 ```
 
 **根因**：`internal/app/app.go` 的 `refreshIfSessionDead` 无并发保护。
 已有 `refreshMu`（app.go:94）注释是「防并发刷新积分」，只用于 `RefreshPricing`，**与 token 刷新无关**。
+
+**更底层的原因**：渠道的 `RefreshToken` 只在**写字段**时持 `auth.mu`，HTTP 调用在锁外 ——
+该锁只能防数据竞争，拦不住「两次刷新都真的打上游」。串行执行也照样各发一次请求，
+第二个用的还是已被轮换的旧 refresh_token。
 
 **影响面**：不止 raccoon —— 任何 **refresh_token 会轮换**的渠道都中招（qwenwork 同为此类）。
 raccoon 因 access 仅 ≈2h、过期频繁，最容易复现。
@@ -118,15 +122,45 @@ raccoon 因 access 仅 ≈2h、过期频繁，最容易复现。
 并发请求之间，**后台循环（credit / pricing，每 30 分钟）与请求路径之间**同样会撞车。
 该 503 复测即恢复（200），无持久影响。
 
-**建议修法**（按账号单飞 + 结果复用）：
+**修法**（已实施）：新增 `internal/provider/refresh.go`，按账号做单飞（singleflight）。
 
 ```go
-// provider/refresh.go（新增）：同一账号的刷新全局单飞，并发调用只打一次上游
-func RefreshOnce(u Upstream, a *auth.Auth) error
+func RefreshOnce(a *auth.Auth, fn func() error) error
 ```
 
-调用点统一改用（app.go 3 处 + scheduler.go 2 处）。等待者复用首个结果，
-避免同一个单会话 refresh_token 被并发使用而互相作废。
+- 单飞键 = auth 文件路径（回落 UID）→ 跨渠道天然隔离，不同账号互不阻塞；
+- 6 个调用点统一改用（app.go 3 处 + scheduler.go 2 处 + handler.go 1 处），闭包内做
+  「重检 `NeedsRefresh` → 刷新 → `SaveAtomic`」，等待者醒来重检发现已被刷过就直接返回；
+- 手写 map + channel 实现，**不引入 `golang.org/x/sync` 依赖**（本仓 go.mod 刻意保持极小）。
+
+**A/B 对照验证**（同一场景：把 raccoon 的 `expiresAt` 推到过去，8 个请求同时放行）：
+
+| 指标 | 无单飞（对照） | 有单飞（修复后） |
+|---|---|---|
+| `refresh start` | 8 条 | 8 条 |
+| `refresh success` | 1 条 | **8 条（`expires_at` 完全相同）** |
+| `refresh_conflict` | **7 条** | **0 条** |
+| 账号冷却 | **是**（`冷却 1`） | 否 |
+| 请求成功 | **1/8** | 6/8 |
+
+对照组日志原文（禁用单飞后重建二进制）：
+```
+03:01:55.378726 refresh success platform=raccoon uid=<昵称> expires_at=1790114515
+03:01:55.382689 refresh failed ... {"code":200822,"message":"refresh_conflict","details":"refresh token conflict or reused"}
+   ... 共 7 条 conflict
+```
+修复后日志原文：
+```
+03:02:41.055~057  refresh start platform=raccoon uid=<昵称> reason=request          ×8
+03:02:41.290603   refresh success platform=raccoon uid=<昵称> expires_at=1790114561  ×8（同一毫秒）
+```
+
+> 修复后仍有 2/8 请求失败（503），但**原因与刷新无关**：是上游推理超时（120s），
+> 日志里 `冷却 0` 且刷新全部成功。同时段对照：loomy 串行 4/4 成功（1.2s），
+> raccoon 串行 2/4（2 个 120s 超时）→ 属小浣熊上游侧的间歇性慢响应。
+
+守门测试：`internal/provider/refresh_test.go`（6 例：并发单飞 / 不同账号独立 / 失败结果共享 /
+无粘性缓存 / 无法定 key 时直通 / panic 唤醒等待者），全部通过 `-race`。
 
 ### 4.2 raccoon 能力标记不准（**已修**）
 

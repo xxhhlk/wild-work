@@ -262,6 +262,19 @@ POST /api/quit                     # 退出程序
       超限判定在各渠道 Classify 里同样必须排在 404 兜底之前（qoder 系 4 渠道守门：
       `TestClassifyPromptTooLong11115`）。qwenwork / traework 不认 11115 码（其上游无该信封，
       只认文案形态），维持现状。
+28. **token 刷新必须按账号单飞**（`internal/provider/refresh.go`）：渠道的 `RefreshToken` 只在写字段时持
+    `auth.mu`，HTTP 调用在锁外 —— 该锁只防数据竞争，**拦不住「两次刷新都真的打上游」**。单会话
+    refresh_token 被并发使用必然一方报 `refresh_conflict`（raccoon `200822` / qwenwork `invalid_grant`），
+    失败方还会被 `Pool.Cooldown` 推进冷却，对外表现为「一并发就 503」。所有刷新调用点
+    （app.go 3 处 / scheduler.go 2 处 / handler.go 1 处）一律走 `provider.RefreshOnce(a, fn)`，
+    **禁止直接调 `Upstream.RefreshToken`**（`internal/login_trae` 的登录内联刷新除外）。
+    - fn 内固定做「重检 `NeedsRefresh` → 刷新 → `SaveAtomic`」：等待者醒来重检发现已被刷过就直接返回，
+      同时封住「上一轮 flight 刚删除」的窗口。唯一例外是 401 自愈（session 已作废但 expiresAt 未到），
+      那类 fn 无条件刷新。
+    - 单飞键取 **auth 文件路径**（回落 UID）：跨渠道天然隔离，且「同账号在两个目录各有一份文件」
+      本就代表两个独立会话，应各自单飞。
+    - 实现在 map + channel 上，**不引入 `golang.org/x/sync`**。
+    守门测试：`internal/provider/refresh_test.go`（含 panic 唤醒等待者、无粘性缓存两例）。
 
 ## 7. 平台能力差异表（internal/platform）
 

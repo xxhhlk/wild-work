@@ -927,13 +927,21 @@ func (a *App) refreshIfSessionDead(rt *Runtime, au *auth.Auth, err error) bool {
 		return false
 	}
 	log.Printf("session dead, refreshing platform=%s uid=%s", rt.Kind, au.UID)
-	if rerr := rt.Upstream.RefreshToken(au); rerr != nil {
+	// 单飞：同一账号的并发 401 只放一次刷新出去（refresh_token 单会话，并发刷新必然一方冲突）。
+	// 此处刻意不做 NeedsRefresh 重检 —— session 已被上游作废，而本地 expiresAt 可能还没到期。
+	rerr := provider.RefreshOnce(au, func() error {
+		if err := rt.Upstream.RefreshToken(au); err != nil {
+			return err
+		}
+		// 刷新成功必须落盘：否则下次启动又拿旧 token，重回 401。
+		if serr := au.SaveAtomic(); serr != nil {
+			log.Printf("session dead refresh save failed platform=%s uid=%s err=%v", rt.Kind, au.UID, serr)
+		}
+		return nil
+	})
+	if rerr != nil {
 		log.Printf("session dead refresh failed platform=%s uid=%s err=%v", rt.Kind, au.UID, rerr)
 		return false
-	}
-	// 刷新成功必须落盘：否则下次启动又拿旧 token，重回 401。
-	if serr := au.SaveAtomic(); serr != nil {
-		log.Printf("session dead refresh save failed platform=%s uid=%s err=%v", rt.Kind, au.UID, serr)
 	}
 	return true
 }
@@ -980,14 +988,23 @@ func (a *App) StartCreditAutoRefresh(ctx context.Context, kinds []provider.Kind,
 					if au == nil {
 						continue
 					}
-					// token 临近过期时先刷新（国际版 token 有效期长，通常不触发）
+					// token 临近过期时先刷新（国际版 token 有效期长，通常不触发）。
+					// 走单飞：本循环与请求路径/保活/费率是并发的，同账号并发刷新会互相作废 refresh_token。
 					if au.NeedsRefresh(10 * time.Minute) {
-						if err := rt.Upstream.RefreshToken(au); err != nil {
+						if err := provider.RefreshOnce(au, func() error {
+							if !au.NeedsRefresh(10 * time.Minute) {
+								return nil // 已被并发的另一次刷新刷过
+							}
+							if rerr := rt.Upstream.RefreshToken(au); rerr != nil {
+								return rerr
+							}
+							if serr := au.SaveAtomic(); serr != nil {
+								log.Printf("credit auto-refresh token save failed platform=%s uid=%s err=%v", k, st.UID, serr)
+							}
+							return nil
+						}); err != nil {
 							log.Printf("credit auto-refresh token refresh failed platform=%s uid=%s err=%v", k, st.UID, err)
 							continue
-						}
-						if err := au.SaveAtomic(); err != nil {
-							log.Printf("credit auto-refresh token save failed platform=%s uid=%s err=%v", k, st.UID, err)
 						}
 					}
 					usable, expiring, unusable, err := a.creditTotals(rt, au)
@@ -1973,16 +1990,24 @@ func (a *App) RefreshPricing() {
 		if acct == nil {
 			continue
 		}
-		// 先确保 token 有效
+		// 先确保 token 有效。走单飞：与请求路径/credit 循环并发，同账号并发刷新会互相作废 refresh_token。
 		if acct.NeedsRefresh(10 * time.Minute) {
-			if err := rt.Upstream.RefreshToken(acct); err != nil {
+			if err := provider.RefreshOnce(acct, func() error {
+				if !acct.NeedsRefresh(10 * time.Minute) {
+					return nil // 已被并发的另一次刷新刷过
+				}
+				if rerr := rt.Upstream.RefreshToken(acct); rerr != nil {
+					return rerr
+				}
+				// 必须落盘：refresh token 会轮换，不写回则下次启动用的是旧 refresh token，
+				// 而旧 access token 已被上游作废 → 本地 expiresAt 仍显示有效 → 卡死在 401。
+				if serr := acct.SaveAtomic(); serr != nil {
+					log.Printf("pricing token save failed platform=%s uid=%s err=%v", rt.Kind, acct.UID, serr)
+				}
+				return nil
+			}); err != nil {
 				errs = append(errs, fmt.Sprintf("%s: token refresh failed", rt.Kind))
 				continue
-			}
-			// 必须落盘：refresh token 会轮换，不写回则下次启动用的是旧 refresh token，
-			// 而旧 access token 已被上游作废 → 本地 expiresAt 仍显示有效 → 卡死在 401。
-			if serr := acct.SaveAtomic(); serr != nil {
-				log.Printf("pricing token save failed platform=%s uid=%s err=%v", rt.Kind, acct.UID, serr)
 			}
 		}
 		pricing, err := rt.Upstream.FetchModelPricing(acct)
