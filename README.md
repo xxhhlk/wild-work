@@ -1,6 +1,6 @@
 # wild-work
 
-> 多渠道账号聚合桌面工具——把 WorkBuddy(CodeBuddy) 国内版/国际版、TraeWork、QoderCN、QoderCOM（国际版）、千问办公、商汤小浣熊、Loomy（讯飞）的多个账号聚合成一个 OpenAI 兼容 API，并额外提供**无需账号**的 OpenCodeZen 匿名免费通道，双击启动，浏览器管理。
+> 多渠道账号聚合桌面工具——把 WorkBuddy(CodeBuddy) 国内版/国际版、TraeWork、QoderCN、QoderCOM（国际版）、千问办公、商汤小浣熊、Loomy（讯飞）、MonkeyCode 平台托管模型的多个账号聚合成一个 OpenAI 兼容 API，并额外提供**无需账号**的 OpenCodeZen 匿名免费通道，双击启动，浏览器管理。
 
 [![GitHub](https://img.shields.io/badge/GitHub-rockswang%2Fworkbuddy--wild-blue)](https://github.com/rockswang/workbuddy-wild)
 
@@ -10,8 +10,8 @@
 - **请求体指纹脱敏**：自动清除 Claude Code / Codex CLI 注入的模板句，防止上游 11128 内容拦截
 - **OpenAI 兼容代理**：`/v1/chat/completions`、`/v1/models`，支持流式/非流式，模型前缀路由
 - **错误分类精细化**：区分「请求问题」与「账号问题」——内容拦截/上下文超限不罚号，限流/风控/账号故障分级冷却，429 不再误判余额耗尽
-- **十渠道聚合**：WorkBuddyCN(CodeBuddy) + WorkBuddyAI（国际版） + TraeWork + TraeCode + QoderCN + QoderCOM（国际版） + 千问办公 + 商汤小浣熊 + Loomy（讯飞） + OpenCodeZen（`oczen/*`，匿名免费、无需账号）。
-  商汤小浣熊支持两条路：面板登录按钮走**协议劫持**（登录期间临时接管 `office-raccoon://` 深链截获网页授权码并自兑 token，结束立即恢复注册表），弹窗里的次按钮「从客户端导入」则复用本机客户端凭据；Loomy 为**导入型**（凭据不由本工具登录产生，从**本机已登录的官方客户端**读取）。模型前缀路由，粘性路由优先复用账号以提升会话缓存利用率，临期积分优先消耗；旧 Qoder（`qoder/*`）路由保留但已从界面下线
+- **十一渠道聚合**：WorkBuddyCN(CodeBuddy) + WorkBuddyAI（国际版） + TraeWork + TraeCode + QoderCN + QoderCOM（国际版） + 千问办公 + 商汤小浣熊 + Loomy（讯飞） + MonkeyCode（`monkeycode/*`，平台托管模型） + OpenCodeZen（`oczen/*`，匿名免费、无需账号）。
+  商汤小浣熊支持两条路：面板登录按钮走**协议劫持**（登录期间临时接管 `office-raccoon://` 深链截获网页授权码并自兑 token，结束立即恢复注册表），弹窗里的次按钮「从客户端导入」则复用本机客户端凭据；Loomy / MonkeyCode 为**导入型**（凭据不由本工具登录产生，从**本机已登录的官方客户端**读取）。模型前缀路由，粘性路由优先复用账号以提升会话缓存利用率，临期积分优先消耗；旧 Qoder（`qoder/*`）路由保留但已从界面下线
 - **匿名免费通道**（OpenCodeZen）：内置 `public` 凭证即可调用 Zen 上的免费模型（含 `big-pickle`），无需注册/登录；面板固定一个 `[OpenCodeZen] 匿名` 条目（不可增删停用、无签到、积分显示「不适用」）
 - **自动签到**：每日定时签到领额度，token 保活，冷却状态机
 - **自动领日活奖励**（WorkBuddy 国际版）：定时自动用免费模型对话保活，自动领取每日活跃奖励，无需手动签到
@@ -62,7 +62,7 @@
 2. 放到任意目录，双击启动
 3. 右下角出现 W 图标，**双击托盘图标** → 浏览器打开 Web 管理面板
 4. 在面板中点击「＋ WorkBuddyCN」/「＋ WorkBuddyAI」/「＋ TraeWork」/「＋ QoderCN」/「＋ QoderCOM」/「＋ 千问办公」添加账号
-   （「＋ 商汤小浣熊」/「＋ Loomy」是**导入**按钮：读取本机已登录客户端的凭据，不需要浏览器登录；
+   （「＋ 商汤小浣熊」/「＋ Loomy」/「＋ MonkeyCode」是**导入**按钮：读取本机已登录客户端的凭据，不需要浏览器登录；
    小浣熊的 refresh_token 是单会话的，导入后请**退出小浣熊客户端**，否则两边会互相抢刷新并报 `refresh_conflict`；
    OpenCodeZen 无需添加账号，启动即已就绪）
 5. 根据下方配置说明接入你的 AI 客户端
@@ -187,7 +187,7 @@ Base URL: http://127.0.0.1:7863/v1
 API Key:  WildWorkAPI
 ```
 
-模型 ID 需带渠道前缀：`workbuddy/<model>`、`workbuddyai/<model>`、`traework/<model>`、`traecode/<model>`、`qodercn/<model>`、`qodercom/<model>`、`qwenwork/<model>`、`raccoon/<model>`、`loomy/<model>`、`oczen/<model>`（旧 `qoder/<model>` 仍可用，已从界面下线）。
+模型 ID 需带渠道前缀：`workbuddy/<model>`、`workbuddyai/<model>`、`traework/<model>`、`traecode/<model>`、`qodercn/<model>`、`qodercom/<model>`、`qwenwork/<model>`、`raccoon/<model>`、`loomy/<model>`、`monkeycode/<model>`、`oczen/<model>`（旧 `qoder/<model>` 仍可用，已从界面下线）。
 
 #### OpenCodeZen 匿名免费模型（`oczen/*`）
 
@@ -427,6 +427,7 @@ curl -X POST "http://127.0.0.1:7863/v1/systemone" \
 | 千问办公 | `qwenwork/*` | — | ✓ | ✓ | 关闭（避免与官方 App 互抢） | refresh |
 | 商汤小浣熊 | `raccoon/*` | — | ✓（四池） | ✓ | — | refresh（access ≈2h，**单会话**） |
 | Loomy（讯飞） | `loomy/*` | ✓（全档位） | ✓ | ✓ | — | **无 refresh**（≈14 天需重新导入） |
+| MonkeyCode | `monkeycode/*` | — | —（上游无接口） | — | — | **无 refresh**（重新导入） |
 | 旧 Qoder | `qoder/*` | ✓ | ✓ | ✓ | — | refresh（≈30 天） |
 
 > - **思考档位** = 支持在请求里指定推理强度（`reasoning_effort`），并在 `/v1/models` 与面板费率表里列出可选档位。
@@ -438,7 +439,7 @@ curl -X POST "http://127.0.0.1:7863/v1/systemone" \
 > - 商汤小浣熊的面板按钮走**协议登录**：登录期间把 `office-raccoon://` 协议临时指向本工具，
 >   截获网页授权码后自行兑换 token，结束立即恢复注册表。**登录期间请勿启动小浣熊客户端**
 >   （它会重新注册协议，把劫持覆盖掉）；弹窗里的「从客户端导入」则复用本机已登录客户端的凭据。
->   Loomy 为**导入型**渠道，只有导入一条路。
+>   Loomy / MonkeyCode 为**导入型**渠道，只有导入一条路。
 > - **导入或协议登录后请退出对应客户端** —— 小浣熊的 refresh_token 是单会话的，两边同时刷新会互相作废。
 >   （协议细节与取证见 `docs/raccoon渠道接入备忘.md` §11。）
 

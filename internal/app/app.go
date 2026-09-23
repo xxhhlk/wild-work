@@ -214,7 +214,7 @@ func (a *App) runtime(kind provider.Kind) *Runtime {
 
 func (a *App) firstRuntime() *Runtime {
 	// oczen 排在末位：它无调度器活动，不应成为「签到时间/下次签到」的展示来源。
-	for _, k := range []provider.Kind{provider.WorkBuddy, provider.WorkBuddyAI, provider.TraeWork, provider.Qoder, provider.QoderCN, provider.QoderCOM, provider.QwenWork, provider.Raccoon, provider.Loomy, provider.Oczen} {
+	for _, k := range []provider.Kind{provider.WorkBuddy, provider.WorkBuddyAI, provider.TraeWork, provider.Qoder, provider.QoderCN, provider.QoderCOM, provider.QwenWork, provider.Raccoon, provider.Loomy, provider.MonkeyCode, provider.Oczen} {
 		if rt := a.runtime(k); rt != nil {
 			return rt
 		}
@@ -287,12 +287,12 @@ func sortChannelsByOrder[T any](items []T, kindOf func(T) provider.Kind) {
 // 无需用户手动触发，故也不提供手动签到入口；
 // 千问办公无签到活动且每日积分服务端被动发放，无需领取/保活。
 // QoderCN / QoderCOM 已实现签到（campaigns 主路径），支持手动按钮。
-// 小浣熊 / Loomy 一期也不提供手动签到：前者上游未提供额度/签到端点，
-// 后者有 /pet-work 每日任务但语义待评估（用户已同意签到可豁免，见计划 D1）。
+// 小浣熊 / Loomy / MonkeyCode 一期也不提供手动签到：上游未提供额度或签到端点
+// （Loomy 有 /pet-work 每日任务但语义待评估，见计划 D1）。
 // OpenCodeZen 匿名通道无账号概念，既无签到也无积分。
 func noExplicitCheckin(k provider.Kind) bool {
 	return k == provider.Qoder || k == provider.WorkBuddyAI || k == provider.QwenWork ||
-		k == provider.Raccoon || k == provider.Loomy || k == provider.Oczen
+		k == provider.Raccoon || k == provider.Loomy || k == provider.MonkeyCode || k == provider.Oczen
 }
 
 func (a *App) findRuntimeAuth(uid string) (*Runtime, *auth.Auth) {
@@ -439,7 +439,7 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 		// 小浣熊：协议劫持登录 —— 登录期间临时接管 office-raccoon 深链，
 		// 拿到网页授权码后自行兑换 token，随后恢复注册表（见 internal/login_raccoon）。
 		// 面板同时保留「从本机客户端导入」作为回退路径。
-	case provider.Loomy:
+	case provider.Loomy, provider.MonkeyCode:
 		// 导入型渠道：凭据来自本机已登录的官方客户端，上游没有可复现的 OAuth 流程。
 		return "", fmt.Errorf("%s 渠道无需登录：请在面板点「从本机客户端导入」（复用本机已登录的官方客户端凭据）", k)
 	case provider.Oczen:
@@ -1058,6 +1058,14 @@ func (a *App) reloadAccounts() {
 		auths, err := auth.LoadLoomyDir(a.cfg.AuthDir)
 		if err != nil {
 			log.Printf("reload loomy accounts: %v", err)
+		} else {
+			rt.Pool.SyncToDir(auths)
+		}
+	}
+	if rt := a.runtime(provider.MonkeyCode); rt != nil && rt.Pool != nil {
+		auths, err := auth.LoadMonkeyCodeDir(a.cfg.AuthDir)
+		if err != nil {
+			log.Printf("reload monkeycode accounts: %v", err)
 		} else {
 			rt.Pool.SyncToDir(auths)
 		}
@@ -2424,7 +2432,7 @@ func (a *App) FeesInfo() map[string]any {
 	}
 
 	// 展示顺序固定：OpenCodeZen → WorkBuddyCN → WorkBuddyAI → QoderCN → QoderCOM → TraeWork → TraeCode → 千问办公（旧 Qoder 跳过）
-	order := []provider.Kind{provider.Oczen, provider.WorkBuddy, provider.WorkBuddyAI, provider.QoderCN, provider.QoderCOM, provider.TraeWork, provider.TraeCode, provider.QwenWork, provider.Raccoon, provider.Loomy}
+	order := []provider.Kind{provider.Oczen, provider.WorkBuddy, provider.WorkBuddyAI, provider.QoderCN, provider.QoderCOM, provider.TraeWork, provider.TraeCode, provider.QwenWork, provider.Raccoon, provider.Loomy, provider.MonkeyCode}
 	channels := buildFeesChannels(modelsByKind, cached, order, a.cfg.Compat.ContextWindows)
 
 	result := map[string]any{

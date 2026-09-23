@@ -28,10 +28,14 @@ type Auth struct {
 	// QoderWork COSY 机器指纹（登录/刷新时生成，持久化到 auth 文件）
 	MachineToken string // Qoder: cosy-machinetoken
 	MachineType  string // Qoder: cosy-machinetype
-	UID          string
-	EnterpriseID string
-	Nickname     string
-	FilePath     string // 来源文件；refresh 后原子写回此处
+	// SigningSecret 随凭据下发的**独立签名密钥**（MonkeyCode 的 omas_ secret）。
+	// 与 AccessToken 是两把不同的凭据：后者是共享认证凭据，前者只用于 Prompt 签名
+	// （见 internal/monkeycode/sign.go）。其它渠道不用该字段。
+	SigningSecret string
+	UID           string
+	EnterpriseID  string
+	Nickname      string
+	FilePath      string // 来源文件；refresh 后原子写回此处
 }
 
 // Lock 供同进程内其他包（upstream.RefreshToken）在改写 Auth 字段期间加锁。
@@ -116,6 +120,8 @@ func Parse(raw []byte) (*Auth, error) {
 				DeviceID     string `json:"deviceId"`
 				MachineToken string `json:"machineToken"`
 				MachineType  string `json:"machineType"`
+				// signingSecret 只在 MonkeyCode 凭据里出现（其余渠道空）
+				SigningSecret string `json:"signingSecret"`
 			} `json:"auth"`
 			Account struct {
 				UID          string `json:"uid"`
@@ -136,9 +142,11 @@ func Parse(raw []byte) (*Auth, error) {
 			DeviceID:     n.Auth.DeviceID,
 			MachineToken: n.Auth.MachineToken,
 			MachineType:  n.Auth.MachineType,
-			UID:          n.Account.UID,
-			EnterpriseID: n.Account.EnterpriseID,
-			Nickname:     n.Account.Nickname,
+			// SigningSecret 仅在 MonkeyCode 凭据里出现
+			SigningSecret: n.Auth.SigningSecret,
+			UID:           n.Account.UID,
+			EnterpriseID:  n.Account.EnterpriseID,
+			Nickname:      n.Account.Nickname,
 		}
 	} else {
 		var f struct {
@@ -151,9 +159,11 @@ func Parse(raw []byte) (*Auth, error) {
 			DeviceID     string `json:"deviceId"`
 			MachineToken string `json:"machineToken"`
 			MachineType  string `json:"machineType"`
-			UID          string `json:"uid"`
-			EnterpriseID string `json:"enterpriseId"`
-			Nickname     string `json:"nickname"`
+			// signingSecret 只在 MonkeyCode 凭据里出现（其余渠道空）
+			SigningSecret string `json:"signingSecret"`
+			UID           string `json:"uid"`
+			EnterpriseID  string `json:"enterpriseId"`
+			Nickname      string `json:"nickname"`
 		}
 		if err := json.Unmarshal(raw, &f); err != nil {
 			return nil, fmt.Errorf("storage_parse_error: %w", err)
@@ -168,9 +178,11 @@ func Parse(raw []byte) (*Auth, error) {
 			DeviceID:     f.DeviceID,
 			MachineToken: f.MachineToken,
 			MachineType:  f.MachineType,
-			UID:          f.UID,
-			EnterpriseID: f.EnterpriseID,
-			Nickname:     f.Nickname,
+			// SigningSecret 仅在 MonkeyCode 凭据里出现
+			SigningSecret: f.SigningSecret,
+			UID:           f.UID,
+			EnterpriseID:  f.EnterpriseID,
+			Nickname:      f.Nickname,
 		}
 	}
 	if strings.TrimSpace(a.AccessToken) == "" {
@@ -204,6 +216,8 @@ func (a *Auth) saveAtomicLocked() error {
 			"deviceId":     a.DeviceID,
 			"machineToken": a.MachineToken,
 			"machineType":  a.MachineType,
+			// signingSecret 只在 MonkeyCode 凭据里非空；其余渠道写空串无副作用
+			"signingSecret": a.SigningSecret,
 		},
 		"account": map[string]any{
 			"uid":          a.UID,
@@ -402,6 +416,13 @@ func LoadRaccoonDir(dir string) ([]*Auth, error) {
 // LoadLoomyDir 扫描讯飞 Loomy 凭证（loomy-*.json）。
 func LoadLoomyDir(dir string) ([]*Auth, error) {
 	return loadPrefixed(dir, "loomy")
+}
+
+// LoadMonkeyCodeDir 扫描 MonkeyCode 平台托管模型凭证（monkeycode-*.json）。
+// 同属「导入型」渠道：凭据由面板「从本机客户端导入」从 ohmyagent 的
+// settings.json 生成（见 app.ImportLocalCredentials）。
+func LoadMonkeyCodeDir(dir string) ([]*Auth, error) {
+	return loadPrefixed(dir, "monkeycode")
 }
 
 // loadPrefixed 按前缀扫描并解析凭证（供无登录编排的「导入型」渠道复用）。

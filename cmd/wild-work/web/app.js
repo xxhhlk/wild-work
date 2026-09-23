@@ -225,8 +225,8 @@ function renderTopbar() {
 }
 
 // 渠道显示名与 CSS 短类名（后端 group / 费率 channel 均为 provider.Kind）。
-const CH_LABEL = { workbuddy: "WorkBuddyCN", workbuddyai: "WorkBuddyAI", traework: "TraeWork", traecode: "TraeCode", qoder: "Qoder", qodercn: "QoderCN", qodercom: "QoderCOM", qwenwork: "千问办公", raccoon: "商汤小浣熊", loomy: "Loomy", oczen: "OpenCodeZen" };
-const CH_CLASS = { workbuddy: "wb", workbuddyai: "wbai", traework: "trae", traecode: "traecode", qoder: "qoder", qodercn: "qodercn", qodercom: "qodercom", qwenwork: "qwenwork", raccoon: "raccoon", loomy: "loomy", oczen: "oczen" };
+const CH_LABEL = { workbuddy: "WorkBuddyCN", workbuddyai: "WorkBuddyAI", traework: "TraeWork", traecode: "TraeCode", qoder: "Qoder", qodercn: "QoderCN", qodercom: "QoderCOM", qwenwork: "千问办公", raccoon: "商汤小浣熊", loomy: "Loomy", monkeycode: "MonkeyCode", oczen: "OpenCodeZen" };
+const CH_CLASS = { workbuddy: "wb", workbuddyai: "wbai", traework: "trae", traecode: "traecode", qoder: "qoder", qodercn: "qodercn", qodercom: "qodercom", qwenwork: "qwenwork", raccoon: "raccoon", loomy: "loomy", monkeycode: "monkeycode", oczen: "oczen" };
 const chLabel = (k) => CH_LABEL[k] || "WorkBuddy";
 const chClass = (k) => CH_CLASS[k] || "wb";
 // 不支持显式签到（手动按钮）的渠道：
@@ -234,10 +234,10 @@ const chClass = (k) => CH_CLASS[k] || "wb";
 // WorkBuddy 国际版不提供手动签到，而是自动对话保活领日活奖励；千问办公无签到活动；
 // 小浣熊 / Loomy 无签到端点；OpenCodeZen 匿名通道无账号概念（也无积分）。
 // QoderCN / QoderCOM 已实现签到（campaigns 主路径），保留手动按钮。
-const NO_EXPLICIT_CHECKIN = new Set(["qoder", "workbuddyai", "qwenwork", "raccoon", "loomy", "oczen"]);
+const NO_EXPLICIT_CHECKIN = new Set(["qoder", "workbuddyai", "qwenwork", "raccoon", "loomy", "monkeycode", "oczen"]);
 const noExplicitCheckin = (g) => NO_EXPLICIT_CHECKIN.has(g);
 // 导入型渠道：凭据由本机已登录的官方客户端提供，没有浏览器登录流程（见 internal/app/import_local.go）。
-const IMPORT_LOCAL_CHANNELS = new Set(["raccoon", "loomy"]);
+const IMPORT_LOCAL_CHANNELS = new Set(["raccoon", "loomy", "monkeycode"]);
 const isImportLocal = (ch) => IMPORT_LOCAL_CHANNELS.has(ch);
 // 支持「协议登录」的渠道：登录期间临时接管该渠道的自定义协议深链，自己拿授权码换 token。
 // 小浣熊两个集合都命中 —— 弹窗里同时给「协议登录」与「从客户端导入」两个动作。
@@ -563,6 +563,7 @@ const NO_CHECKIN_LOGIN_HINT = {
   qwenwork: "（每日积分服务端 00:00 自动发放；若浏览器已登录千问办公则全自动完成，否则需扫码一次）",
   raccoon: "（凭据来自本机已登录的小浣熊客户端；access_token 约 2 小时，本工具会自动续期）",
   loomy: "（凭据来自本机已登录的 Loomy 客户端；上游无续期接口，约 14 天后需重新登录并再次导入）",
+  monkeycode: "（凭据来自本机已登录的 MonkeyCode 客户端；上游无续期接口，客户端重新登录后需再次导入）",
 };
 function promptLogin(channel) {
   pendingChannel = channel;
@@ -1012,6 +1013,7 @@ function bind() {
   $("btnAddQwen").onclick = () => promptLogin("qwenwork");
   $("btnAddRaccoon").onclick = () => promptLogin("raccoon");
   $("btnAddLoomy").onclick = () => promptLogin("loomy");
+  $("btnAddMonkeyCode").onclick = () => promptLogin("monkeycode");
   $("btnCheckinAll").onclick = checkinAll;
   $("btnRefreshAll").onclick = refreshAll;
   $("btnAddTime").onclick = addTime;

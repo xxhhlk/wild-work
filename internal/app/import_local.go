@@ -1,16 +1,20 @@
 package app
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
+	"wild-work/internal/monkeycode"
 	"wild-work/internal/provider"
 )
 
@@ -59,6 +63,8 @@ type authSection struct {
 	DeviceID     string `json:"deviceId"`
 	MachineToken string `json:"machineToken"`
 	MachineType  string `json:"machineType"`
+	// SigningSecret 只在 MonkeyCode 凭据里非空（omas_ secret，见 internal/monkeycode）
+	SigningSecret string `json:"signingSecret"`
 }
 
 type accountSection struct {
@@ -77,6 +83,8 @@ func (a *App) ImportLocalCredentials(channel string) (*ImportLocalResult, error)
 		return a.importRaccoon()
 	case provider.Loomy:
 		return a.importLoomy()
+	case provider.MonkeyCode:
+		return a.importMonkeyCode()
 	}
 	return nil, fmt.Errorf("渠道 %q 不支持本地导入（该渠道请用面板的登录按钮）", channel)
 }
@@ -191,6 +199,137 @@ func (a *App) importLoomy() (*ImportLocalResult, error) {
 		Channel: "loomy", UID: uid, File: filepath.Base(file),
 		Note: "Loomy 无 refresh 端点（session 约 14 天），到期后需在客户端重新登录并再次导入",
 	}, nil
+}
+
+// importMonkeyCode 读取 MonkeyCode 官方客户端（ohmyagent）的 settings.json，
+// 取出平台托管模型的 api_key 与顶层 signing_secret，落成本工具凭据。
+//
+// settings.json 结构（2026-09-23 实测）：
+//
+//	{
+//	  "signing_secret": "omas_…",            <- 顶层字段，与 api_key 是**两把不同的密钥**
+//	  "models": {                            <- 对象而非数组
+//	    "monkeycode-basic/deepseek-flash@monkeycode#<uuid>": {
+//	      "api_key": "oma_…", "base_url": "https://proxy.monkeycode-ai.com/v1",
+//	      "type": "anthropic", "model": "…"
+//	    }, …
+//	  }
+//	}
+//
+// 一个账号只有一对 (api_key, signing_secret)，与具体模型无关 → 任取一条托管条目即可
+// （按模型名排序取首条，保证同一份配置多次导入结果一致）。
+func (a *App) importMonkeyCode() (*ImportLocalResult, error) {
+	path, err := monkeyCodeSettingsPath()
+	if err != nil {
+		return nil, err
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("读取客户端配置失败（%s）：%w", path, err)
+	}
+	var payload struct {
+		SigningSecret string `json:"signing_secret"`
+		Models        map[string]struct {
+			APIKey  string `json:"api_key"`
+			BaseURL string `json:"base_url"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil, fmt.Errorf("解析客户端配置失败（%s）：%w", path, err)
+	}
+	secret := strings.TrimSpace(payload.SigningSecret)
+	if secret == "" {
+		return nil, fmt.Errorf("客户端配置里没有 signing_secret（%s）：请先在 MonkeyCode 客户端登录", path)
+	}
+	names := make([]string, 0, len(payload.Models))
+	for name := range payload.Models {
+		if strings.HasPrefix(name, "monkeycode-") {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return nil, fmt.Errorf("客户端配置里没有平台托管模型（%s）：请先在 MonkeyCode 客户端登录", path)
+	}
+	sort.Strings(names)
+	entry := payload.Models[names[0]]
+	key := strings.TrimSpace(entry.APIKey)
+	if key == "" {
+		return nil, fmt.Errorf("客户端配置里的托管条目没有 api_key（%s）", path)
+	}
+	host, path0 := splitBaseURL(strings.TrimSpace(entry.BaseURL))
+	// 上游无 uid：用 api_key 派生稳定标识，避免同一账号重复导入生成多个凭据文件。
+	sum := sha256.Sum256([]byte(key))
+	uid := "mc_" + hex.EncodeToString(sum[:5])
+	doc := authDoc{
+		Auth: authSection{
+			AccessToken: key,
+			// 无 refresh 端点：留空，scheduler 会跳过保活（不产生无意义失败）。
+			RefreshToken: "",
+			// 远期到期：避免 NeedsRefresh 恒真触发一次必然失败的刷新。
+			ExpiresAt:     time.Now().AddDate(50, 0, 0).Unix(),
+			Domain:        path0,
+			ApiHost:       host,
+			SigningSecret: secret,
+		},
+		Account: accountSection{UID: uid, Nickname: "MonkeyCode " + strings.TrimPrefix(uid, "mc_")},
+	}
+	file, err := a.writeAuthFile("monkeycode", uid, doc)
+	if err != nil {
+		return nil, err
+	}
+	a.reloadAccounts()
+	a.afterAccountAdded(provider.MonkeyCode)
+	return &ImportLocalResult{
+		Channel: "monkeycode", UID: uid, File: filepath.Base(file),
+		Note: "凭据来自本机 MonkeyCode 客户端（api_key + signing_secret）。上游无刷新接口，客户端重新登录后需再次导入。",
+	}, nil
+}
+
+// splitBaseURL 把客户端 base_url 拆成 (host, path)。
+// 例：https://proxy.monkeycode-ai.com/v1 → ("https://proxy.monkeycode-ai.com", "/v1")。
+// 空值回落到内置默认端点。
+func splitBaseURL(base string) (host, path string) {
+	base = strings.TrimRight(strings.TrimSpace(base), "/")
+	if base == "" {
+		base = monkeycode.DefaultBase
+	}
+	if i := strings.Index(base, "://"); i >= 0 {
+		rest := base[i+3:]
+		if j := strings.IndexByte(rest, '/'); j >= 0 {
+			return base[:i+3+len(rest[:j])], rest[j:]
+		}
+		return base, "/v1"
+	}
+	return base, "/v1"
+}
+
+// monkeyCodeSettingsPath 定位 MonkeyCode 客户端（ohmyagent）的 settings.json（自适应多候选）。
+//
+// 客户端是 Go 程序，配置由桌面壳写在 %APPDATA%\<bundle-id>\ohmyagent 下
+// （bundle id = com.chaitin.baizhi.monkeycode）；LOCALAPPDATA 作为次候选兜底。
+func monkeyCodeSettingsPath() (string, error) {
+	var cands []string
+	if dir := strings.TrimSpace(os.Getenv("MONKEYCODE_CONFIG_DIR")); dir != "" {
+		cands = append(cands, filepath.Join(dir, "settings.json"))
+	}
+	if appData := strings.TrimSpace(os.Getenv("APPDATA")); appData != "" {
+		cands = append(cands, filepath.Join(appData, "com.chaitin.baizhi.monkeycode", "ohmyagent", "settings.json"))
+	}
+	if local := strings.TrimSpace(os.Getenv("LOCALAPPDATA")); local != "" {
+		cands = append(cands, filepath.Join(local, "com.chaitin.baizhi.monkeycode", "ohmyagent", "settings.json"))
+		cands = append(cands, filepath.Join(local, "MonkeyCode", "ohmyagent", "settings.json"))
+	}
+	for _, p := range cands {
+		if fileExists(p) {
+			return p, nil
+		}
+	}
+	last := ""
+	if len(cands) > 0 {
+		last = cands[len(cands)-1]
+	}
+	return "", fmt.Errorf("未找到 MonkeyCode 客户端配置（已尝试 %d 个路径，最后一个是 %s）：请先安装并登录 MonkeyCode 客户端",
+		len(cands), last)
 }
 
 // raccoonClientAuthPath 定位小浣熊客户端凭据（自适应多候选）。

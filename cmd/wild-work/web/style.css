@@ -378,6 +378,12 @@ body {
 .badge.loomy { background: #1d4ed8; }
 .fees .ch-header.loomy td { color: #1d4ed8; }
 
+/* monkeycode MonkeyCode 平台托管模型渠道色（琥珀棕，与紫/蓝/青系区分） */
+.btn.primary.alt.monkeycode { background: #b45309; border-color: #b45309; }
+.btn.primary.alt.monkeycode:hover { background: #92400e; }
+.badge.monkeycode { background: #b45309; }
+.fees .ch-header.monkeycode td { color: #b45309; }
+
 /* oczen：OpenCodeZen 匿名通道（暗灰蓝，与其它紫/青系区分，弱化「固定账号」观感） */
 .badge.oczen { background: #475569; }
 .fees .ch-header.oczen td { color: #475569; }

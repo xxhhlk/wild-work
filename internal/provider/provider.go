@@ -25,10 +25,14 @@ const (
 	QwenWork    Kind = "qwenwork" // 千问办公（gateway.qwenwork.cn + qwenwork.cn）
 	// 以下两渠道的凭据不由本工具登录产生，而是「从本机已安装的官方客户端导入」
 	// （见 docs/loomy-raccoon渠道接入计划.md §5.1 的形态 B；导入器 = internal/app 的 ImportLocal）。
-	Raccoon  Kind = "raccoon"  // 商汤小浣熊（xiaohuanxiong.com，access 2h + refresh 30d）
-	Loomy    Kind = "loomy"    // 讯飞 Loomy（loomyad.xunfei.cn，session 14d，无 refresh）
-	TraeCode Kind = "traecode" // Trae 代码版：与 TraeWork 同一上游、共用账号，function=solo_agent
-	Oczen    Kind = "oczen"    // OpenCodeZen 匿名免费通道（opencode.ai/zen，无账号、凭证固定 public）
+	Raccoon Kind = "raccoon" // 商汤小浣熊（xiaohuanxiong.com，access 2h + refresh 30d）
+	Loomy   Kind = "loomy"   // 讯飞 Loomy（loomyad.xunfei.cn，session 14d，无 refresh）
+	// MonkeyCode 平台托管模型（proxy.monkeycode-ai.com，Anthropic 形状）。
+	// 同属形态 B（凭据从本机官方客户端导入）：一个账号 = oma_ api_key + omas_ signing_secret。
+	// 上游无目录/额度/刷新接口 → 模型表静态、额度恒 0、RefreshToken 空实现。
+	MonkeyCode Kind = "monkeycode"
+	TraeCode   Kind = "traecode" // Trae 代码版：与 TraeWork 同一上游、共用账号，function=solo_agent
+	Oczen      Kind = "oczen"    // OpenCodeZen 匿名免费通道（opencode.ai/zen，无账号、凭证固定 public）
 )
 
 func (k Kind) String() string { return string(k) }
