@@ -33,6 +33,11 @@ const (
 
 	// ⚠️ 积分/话费类接口**不在 /api/v1 前缀下**：客户端 points-service.js 里的 path 自带 `/api/`，
 	// 实测 `GET /api/v1/v2/points/records` 会 404 —— 必须用站点根 + 完整路径。
+	//
+	// 余额口径取 **v1 面**（2026-09-23 实测）：v1 直接下发 `availableBalance`
+	// （= balance + dailyBalance，上游权威的可用总额）与逐笔 ledger；
+	// v2 面只给 `balance` + `dailyBalance`（聊天聚合形状、无 availableBalance），
+	// 用它就得自己相加 —— 多一个口径推导就多一处出错面。
 	EpPointsV1 = "/api/v1/points/records"
 	EpPointsV2 = "/api/v2/points/records"
 	EpBalance  = "/api/v1/team-points/balance"

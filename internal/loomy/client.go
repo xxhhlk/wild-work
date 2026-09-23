@@ -188,9 +188,9 @@ func unknownModelBody(m string) string {
 // ---------------------------------------------------------------------------
 
 type modelsResp struct {
-	ReasoningEnabled        bool           `json:"reasoning_enabled"`
-	ReasoningCatalogVersion string         `json:"reasoning_catalog_version"`
-	Data                    []loomyModel   `json:"data"`
+	ReasoningEnabled        bool         `json:"reasoning_enabled"`
+	ReasoningCatalogVersion string       `json:"reasoning_catalog_version"`
+	Data                    []loomyModel `json:"data"`
 }
 
 type loomyModel struct {
@@ -249,16 +249,16 @@ func (c *Client) FetchModels(a *auth.Auth) ([]provider.ModelInfo, error) {
 			name = id
 		}
 		info := provider.ModelInfo{
-			ID:                 id,
-			Name:               name,
-			ContextWindow:      m.ContextLength,
-			MaxTokens:          m.MaxOutputTokens,
-			ContextFromAPI:     m.ContextLength > 0,
-			SupportsImages:     m.Capabilities.Vision,
-			SupportsReasoning:  m.Capabilities.Reasoning,
-			SupportsTools:      m.Capabilities.FunctionCalling,
-			SupportedEfforts:   append([]string{}, m.ReasoningEfforts...),
-			DefaultEffort:      strings.TrimSpace(m.DefaultReasoningEffort),
+			ID:                  id,
+			Name:                name,
+			ContextWindow:       m.ContextLength,
+			MaxTokens:           m.MaxOutputTokens,
+			ContextFromAPI:      m.ContextLength > 0,
+			SupportsImages:      m.Capabilities.Vision,
+			SupportsReasoning:   m.Capabilities.Reasoning,
+			SupportsTools:       m.Capabilities.FunctionCalling,
+			SupportedEfforts:    append([]string{}, m.ReasoningEfforts...),
+			DefaultEffort:       strings.TrimSpace(m.DefaultReasoningEffort),
 			ReasoningCanDisable: false, // 实测该系列"强制思考"，最低档仍会产生思考
 		}
 		out = append(out, info)
@@ -304,7 +304,12 @@ type pointsRecord struct {
 	Balance *int64 `json:"balance"`
 	Points  *int64 `json:"points"`
 	Data    struct {
-		Balance        *int64 `json:"balance"`
+		Balance *int64 `json:"balance"`
+		// DailyBalance 每日积分池余量（按 dailyCycleDate 每日循环，扣分优先消耗该池）。
+		DailyBalance *int64 `json:"dailyBalance"`
+		// AvailableBalance 上游给出的可用总额 = Balance + DailyBalance（**仅 v1 面下发**）。
+		AvailableBalance *int64 `json:"availableBalance"`
+
 		CurrentBalance *int64 `json:"currentBalance"`
 		RemainPoints   *int64 `json:"remainPoints"`
 		TotalPoints    *int64 `json:"totalPoints"`
@@ -321,8 +326,12 @@ func (c *Client) UserResource(a *auth.Auth) (int64, error) {
 }
 
 // UserResourceDetail 实现 provider.Upstream。
+//
+// 余额口径 = 上游 `availableBalance`（常规池 + 每日池），**不能只取 `balance`** ——
+// 2026-09-23 实测该账号 `balance=15000 / dailyBalance=4800 / availableBalance=19800`，
+// 只读 balance 会把每日积分整块漏掉（面板少显示、pool 路由口径偏低）。
 func (c *Client) UserResourceDetail(a *auth.Auth) (int64, []provider.ResourceItem, error) {
-	resp, raw, err := c.do(http.MethodGet, GatewayBase+EpPointsV2, a, nil)
+	resp, raw, err := c.do(http.MethodGet, GatewayBase+EpPointsV1, a, nil)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -339,11 +348,44 @@ func (c *Client) UserResourceDetail(a *auth.Auth) (int64, []provider.ResourceIte
 	if err := json.Unmarshal(raw, &rec); err != nil {
 		return 0, nil, nil // 结构未知：不报错、不留余额（避免把账号误判为异常）
 	}
-	if v := firstInt(rec.Balance, rec.Points, rec.Data.Balance, rec.Data.CurrentBalance, rec.Data.RemainPoints, rec.Data.TotalPoints); v != nil {
-		item := provider.ResourceItem{Name: "积分", Remain: *v, Usable: true, Total: *v}
-		return *v, []provider.ResourceItem{item}, nil
+	remain, items := parsePoints(rec)
+	return remain, items, nil
+}
+
+// parsePoints 把上游积分响应拆成 (可消耗余额, 明细条目)。
+//
+// 上游把积分分成两个池：
+//
+//	balance       常规池（注册奖励 / 新手任务 / 充值，长期有效）
+//	dailyBalance  每日池（每日循环发放，扣分优先消耗；ledger 里的 consumeSource=daily）
+//
+// 可用总额优先取上游的 `availableBalance`；该字段缺失（v2 面）时按两池相加兜底。
+// 抽成纯函数便于单测（Client 的 baseURL 是常量，不便在测试里换 host）。
+func parsePoints(rec pointsRecord) (int64, []provider.ResourceItem) {
+	base := firstInt(rec.Data.Balance, rec.Balance, rec.Points,
+		rec.Data.CurrentBalance, rec.Data.RemainPoints, rec.Data.TotalPoints)
+	daily := rec.Data.DailyBalance
+	if base == nil && daily == nil {
+		return 0, nil
 	}
-	return 0, nil, nil
+	items := make([]provider.ResourceItem, 0, 2)
+	if base != nil {
+		items = append(items, provider.ResourceItem{Name: "积分", Total: *base, Remain: *base, Usable: true})
+	}
+	if daily != nil {
+		items = append(items, provider.ResourceItem{Name: "每日积分", Total: *daily, Remain: *daily, Usable: true})
+	}
+	if v := rec.Data.AvailableBalance; v != nil {
+		return *v, items
+	}
+	var sum int64
+	if base != nil {
+		sum += *base
+	}
+	if daily != nil {
+		sum += *daily
+	}
+	return sum, items
 }
 
 func firstInt(vals ...*int64) *int64 {

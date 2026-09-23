@@ -87,13 +87,62 @@ func TestProjectEffort(t *testing.T) {
 	})
 }
 
+// TestParsePoints 守门：上游积分有两个池（balance 常规 + dailyBalance 每日），
+// 可用总额是两者之和（v1 面直接下发 availableBalance）。只读 balance 会漏掉每日积分 ——
+// 2026-09-23 实测该账号 balance=15000 / dailyBalance=4800 / availableBalance=19800。
+func TestParsePoints(t *testing.T) {
+	// v1 面真实响应形状（截自实测，list 省略）。
+	v1 := `{"code":"000000","desc":"成功","data":{"balance":15000,"dailyBalance":4800,
+		"availableBalance":19800,"pageNo":1,"pageSize":20,"total":622,"list":[]}}`
+	// v2 面：聊天聚合形状，**没有** availableBalance。
+	v2 := `{"code":"000000","desc":"成功","data":{"balance":15000,"dailyBalance":4800,
+		"pageNo":1,"pageSize":20,"total":101,"list":[]}}`
+
+	cases := []struct {
+		name     string
+		body     string
+		want     int64
+		wantName []string
+		wantEach []int64
+	}{
+		{"v1 用上游 availableBalance", v1, 19800, []string{"积分", "每日积分"}, []int64{15000, 4800}},
+		{"v2 缺失时两池相加兜底", v2, 19800, []string{"积分", "每日积分"}, []int64{15000, 4800}},
+		{"只有常规池", `{"data":{"balance":1200}}`, 1200, []string{"积分"}, []int64{1200}},
+		{"只有每日池", `{"data":{"dailyBalance":300}}`, 300, []string{"每日积分"}, []int64{300}},
+		{"余额为 0 也要展示条目", `{"data":{"balance":0,"dailyBalance":0,"availableBalance":0}}`, 0,
+			[]string{"积分", "每日积分"}, []int64{0, 0}},
+		{"字段全缺 → 宁缺勿错", `{"data":{"pageNo":1}}`, 0, nil, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var rec pointsRecord
+			if err := json.Unmarshal([]byte(tc.body), &rec); err != nil {
+				t.Fatal(err)
+			}
+			remain, items := parsePoints(rec)
+			if remain != tc.want {
+				t.Fatalf("remain = %d, want %d", remain, tc.want)
+			}
+			if len(items) != len(tc.wantName) {
+				t.Fatalf("items = %v, want %v", items, tc.wantName)
+			}
+			for i, it := range items {
+				if it.Name != tc.wantName[i] || it.Total != tc.wantEach[i] || it.Remain != tc.wantEach[i] || !it.Usable {
+					t.Fatalf("items[%d] = %+v, want name=%s total=remain=%d usable=true",
+						i, it, tc.wantName[i], tc.wantEach[i])
+				}
+			}
+		})
+	}
+}
+
 func TestPriceFromName(t *testing.T) {
 	cases := map[string]float64{
 		"DeepSeek V4 Flash 0731（x3.0）": 3.0,
 		"Qwen 3.8 Max (x12.0)":         12.0,
-		"Spark X2.5（x0.1）":            0.1,
+		"Spark X2.5（x0.1）":             0.1,
 		"qwen 3.8 flash（x0.8）":         0.8,
-		"Kimi k2.6（x6.5）":             6.5,
+		"Kimi k2.6（x6.5）":              6.5,
 		"没有倍率":                         0,
 	}
 	for in, want := range cases {

@@ -53,6 +53,11 @@ POST /v1/chat/completions  raccoon/nope-xyz        → 400 model_not_found（本
 `/api/v1/points/records`、`/api/v2/points/records`、`/api/v1/team-points/balance`（站点根 + 完整路径）。
 修正后实测 `remain=15000`。
 
+> **后续修正（2026-09-23）**：上面那个 `remain=15000` 本身就是**漏了每日积分**的结果 ——
+> 上游 `data` 里还有 `dailyBalance`（每日池）与 `availableBalance`（= 常规池 + 每日池）。
+> 现已改用 **v1 面**并取 `availableBalance`（实测 **19800**），拆「积分 / 每日积分」两条明细。
+> 详见 `docs/loomy渠道接入备忘.md` §6 的「余额口径」。
+
 ### 3.2 非流式聚合丢内容（Loomy）
 首版 `aggregate` 只按 SSE 解析，而**上游对非流式请求直接返回 JSON**（普通 `chat.completion`），
 于是产出「`content: ""` + `created` 用 `time.Now()` 兜底」的假响应 —— **静默丢全部内容**。

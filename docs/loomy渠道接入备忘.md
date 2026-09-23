@@ -153,6 +153,16 @@ base = `https://loomyad.xunfei.cn`，鉴权 = `Authorization: Bearer <session>`�
 | `GET /api/v1/public/promo-banners` | 促销横幅（**无需鉴权**，`requestPublic`） |
 | `POST /api/v1/asr/recognize` | 语音识别 |
 
+> **余额口径（2026-09-23 实测修正）**：`points/records` 的 `data` 同时下发三个字段 ——
+> `balance`（常规池：注册奖励 / 新手任务 / 充值，长期有效）、
+> `dailyBalance`（每日池：按 `dailyCycleDate` 每日循环，**扣分优先消耗该池**，ledger 里 `consumeSource=daily`）、
+> `availableBalance`（**= 前两者之和，真正可消耗的总额**）。
+> 实测该账号 `balance=15000 / dailyBalance=4800 / availableBalance=19800` ——
+> 只读 `balance` 会把每日积分整块漏掉（面板少显示、pool 路由口径偏低）。
+> 故 wild-work 取 **v1 面**（v1 才有 `availableBalance`；v2 面是聊天聚合形状、无该字段）
+> 并拆成「积分 / 每日积分」两条明细；若 `availableBalance` 缺失则按两池相加兜底。
+> 每日积分的到期时刻上游未下发（只有 `dailyCycleDate`），故条目不填 `expire_at`。
+
 > **签到判定**：`pet-work` 的「快照 + 领奖」是唯一形态的每日任务 → 若上游确实**服务端判定可领**，
 > 签到可作为 `DailyCheckin` 实现；否则按计划 §2.3 豁免（`CheckinMinutes: nil` + `noExplicitCheckin`）。
 
@@ -168,7 +178,7 @@ base = `https://loomyad.xunfei.cn`，鉴权 = `Authorization: Bearer <session>`�
 | 签名 | 移植 `sign.js` 到 Go（`crypto/hmac`+`sha1`+`md5`+`base64`），AK/SK 作为渠道常量（与 qoder 的 cosy 常量同性质） |
 | 推理 | `POST {base}/chat/completions`，头：`Authorization`+`token`+`traceparent`+`loomy-version` |
 | 模型表 | 动态 `GET /models`；静态兜底 `imodel/spark-x` 等 |
-| 积分 | `UserResourceDetail` ← `/points/records`(v2) 或 `/team-points/balance` |
+| 积分 | `UserResourceDetail` ← `/api/v1/points/records`（取 `availableBalance` = 常规池 + 每日池，拆两条明细） |
 | 签到 | `pet-work` 快照+领奖；不确定则豁免 |
 | 思考档位 | **默认不投影**（未发现 reasoning_effort 类字段；`imodel-anthropic` 另走 `/v1/messages`） |
 
@@ -249,7 +259,9 @@ base = `https://loomyad.xunfei.cn`，鉴权 = `Authorization: Bearer <session>`�
    档位来源 = `/models` 的 `reasoning_efforts` + `default_reasoning_effort`（**上游权威值**，无需静态兜底）。
 2. **档位要投影到请求**：客户端档位 → 该模型的 `reasoning_efforts` 就近降级；
    实测 `enable_thinking:false` **不被采纳**（仍返回 reasoning_content）→ 关闭思考应发 `reasoning_effort: "none"`。
-3. **积分**：可用 `usage.points_consumed` 累计，或 `UserResourceDetail` 走 `/points/records`。
+3. **积分**：`UserResourceDetail` 走 **v1 面** `/api/v1/points/records`，取 `availableBalance`
+   （= 常规池 `balance` + 每日池 `dailyBalance`），拆「积分 / 每日积分」两条明细；
+   `usage.points_consumed` 可用于单次调用对账。
 
 > **阶段 C 补充（已实测）**：流式事件形状、错误形态矩阵（**鉴权错误 = HTTP 200 + `code:"100002"`**）、
 > 以及「关闭思考」三件套矩阵（`reasoning_effort:"none"` + `enable_thinking:false` +
