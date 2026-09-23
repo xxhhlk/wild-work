@@ -96,9 +96,13 @@ func aesCBCEncrypt(plain, tempKey []byte) ([]byte, error) {
 	return out, nil
 }
 
-// AuthHeader 计算单次请求的 Authorization 头。
+// AuthHeader 计算单次请求的 Authorization 头，并返回签名所用的时间戳。
 // 签名串：base64(header)\n cosyKey \n ts \n body \n path（path 去 /algo 前缀）。
-func (s *CosySession) AuthHeader(body, rawURL string) (string, error) {
+//
+// 返回的 date 必须原样用于 Cosy-Date 头（上游拿它重算签名）。两次 time.Now()
+// 在长会话下可能跨秒 → 上游回 101 Signature invalid；详见 qoder/cosy.go 同名注释。
+func (s *CosySession) AuthHeader(body, rawURL string) (auth, date string, err error) {
+	date = fmt.Sprintf("%d", time.Now().Unix())
 	header := map[string]string{
 		"version":     "v1",
 		"requestId":   uuid4(),
@@ -108,15 +112,14 @@ func (s *CosySession) AuthHeader(body, rawURL string) (string, error) {
 	}
 	headerB64 := base64.StdEncoding.EncodeToString(mustJSON(header))
 
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return "", err
+	u, perr := url.Parse(rawURL)
+	if perr != nil {
+		return "", "", perr
 	}
 	pathSig := strings.TrimPrefix(u.Path, "/algo")
-	date := fmt.Sprintf("%d", time.Now().Unix())
 	sigInput := headerB64 + "\n" + s.CosyKey + "\n" + date + "\n" + body + "\n" + pathSig
 	sum := md5.Sum([]byte(sigInput))
-	return "Bearer COSY." + headerB64 + "." + hex.EncodeToString(sum[:]), nil
+	return "Bearer COSY." + headerB64 + "." + hex.EncodeToString(sum[:]), date, nil
 }
 
 // ApplyHeadersWithUID 设置推理/模型请求的最小头集。
@@ -124,14 +127,14 @@ func (s *CosySession) AuthHeader(body, rawURL string) (string, error) {
 // 强校验的只有 Authorization / Cosy-Key / Cosy-User / Cosy-Date 四件套。
 // 少传头可规避未来版本漂移（见备忘 §2.4 头容差矩阵）。
 func (s *CosySession) ApplyHeadersWithUID(h map[string]string, body, rawURL, uid string) error {
-	auth, err := s.AuthHeader(body, rawURL)
+	auth, date, err := s.AuthHeader(body, rawURL)
 	if err != nil {
 		return err
 	}
 	h["Authorization"] = auth
 	h["Cosy-Key"] = s.CosyKey
 	h["Cosy-User"] = uid
-	h["Cosy-Date"] = fmt.Sprintf("%d", time.Now().Unix())
+	h["Cosy-Date"] = date // 与签名内时间戳同一值，见 AuthHeader
 	h["Content-Type"] = "application/json"
 	h["Accept"] = "text/event-stream"
 	return nil

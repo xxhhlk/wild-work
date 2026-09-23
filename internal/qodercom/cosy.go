@@ -145,8 +145,15 @@ func aesCBCEncrypt(plain, tempKey []byte) ([]byte, error) {
 	return out, nil
 }
 
-// AuthHeader 计算单次请求的 Authorization 头。
-func (s *CosySession) AuthHeader(body, rawURL, uid string) (string, error) {
+// AuthHeader 计算单次请求的 Authorization 头，并返回签名所用的时间戳。
+//
+// 返回的 date 必须原样用于 cosy-date 头：上游拿 cosy-date 重算签名。
+// 签名串里含整个 body，长会话（数 MB 上下文）时 md5 + 字符串拼接要耗掉
+// 毫秒级时间；若签名与头各自取一次 time.Now()，两次取值就可能跨秒，
+// 使签名内的时间戳与头里的不一致 → 上游回 {"code":"101","message":
+// "Signature invalid"}（表现为长会话里偶发，且 body 越大越频繁）。
+func (s *CosySession) AuthHeader(body, rawURL, uid string) (auth, date string, err error) {
+	date = fmt.Sprintf("%d", time.Now().Unix())
 	payload := map[string]string{
 		"cosyVersion": cosyVersion,
 		"ideVersion":  "",
@@ -156,23 +163,22 @@ func (s *CosySession) AuthHeader(body, rawURL, uid string) (string, error) {
 	}
 	payloadB64 := base64.StdEncoding.EncodeToString(jsonSortedCompact(payload))
 
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return "", err
+	u, perr := url.Parse(rawURL)
+	if perr != nil {
+		return "", "", perr
 	}
 	pathSig := strings.TrimPrefix(u.Path, "/algo")
-	date := fmt.Sprintf("%d", time.Now().Unix())
 	sigInput := payloadB64 + "\n" + s.CosyKey + "\n" + date + "\n" + body + "\n" + pathSig
 	sum := md5.Sum([]byte(sigInput))
 	sig := hex.EncodeToString(sum[:])
-	return "Bearer COSY." + payloadB64 + "." + sig, nil
+	return "Bearer COSY." + payloadB64 + "." + sig, date, nil
 }
 
 // ApplyHeaders 把 qoder2api 形态的 COSY 头全部设置到 req。
 // accept 由调用方传入（GET 查询 application/json；SSE 流 text/event-stream）；
 // sse 仅控制 cache-control。extra 允许追加头（签到路径的 origin 等）。
 func (s *CosySession) ApplyHeaders(req *http.Request, body, rawURL, uid, accept string, sse bool, modelKey string) error {
-	auth, err := s.AuthHeader(body, rawURL, uid)
+	auth, date, err := s.AuthHeader(body, rawURL, uid)
 	if err != nil {
 		return err
 	}
@@ -181,7 +187,7 @@ func (s *CosySession) ApplyHeaders(req *http.Request, body, rawURL, uid, accept 
 	h.Set("content-type", "application/json")
 	h.Set("cosy-machinetype", s.MachineType)
 	h.Set("cosy-clienttype", "5")
-	h.Set("cosy-date", fmt.Sprintf("%d", time.Now().Unix()))
+	h.Set("cosy-date", date) // 与签名内时间戳同一值，见 AuthHeader
 	h.Set("cosy-user", uid)
 	h.Set("cosy-key", s.CosyKey)
 	h.Set("cache-control", "no-cache")
