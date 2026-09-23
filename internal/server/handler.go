@@ -644,7 +644,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) runtimeForModel(model string) (*Runtime, string, error) {
 	parts := strings.SplitN(strings.TrimSpace(model), "/", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return nil, "", fmt.Errorf("model must use explicit prefix: workbuddy/<model> / traework/<model> / qoder/<model> / qodercn/<model> / qwenwork/<model>")
+		return nil, "", fmt.Errorf("model must use explicit prefix: %s", h.prefixHint())
 	}
 	kind := provider.Kind(parts[0])
 	rt := h.cfg.Runtimes[kind]
@@ -655,6 +655,24 @@ func (h *Handler) runtimeForModel(model string) (*Runtime, string, error) {
 		return nil, "", fmt.Errorf("provider %q has no account", kind)
 	}
 	return rt, parts[1], nil
+}
+
+// prefixHint 列出当前已配置渠道的模型前缀，供「必须带前缀」的报错文案使用。
+// 动态生成而非手写：手写列表会随渠道增加而滞后 —— 2026-09-23 发现它漏掉了
+// workbuddyai / qodercom / raccoon / loomy 四个渠道（计划 §5 的触点清单项）。
+func (h *Handler) prefixHint() string {
+	kinds := make([]string, 0, len(h.cfg.Runtimes))
+	for k := range h.cfg.Runtimes {
+		kinds = append(kinds, string(k))
+	}
+	if len(kinds) == 0 {
+		return "<channel>/<model>"
+	}
+	sort.Strings(kinds)
+	for i, k := range kinds {
+		kinds[i] = k + "/<model>"
+	}
+	return strings.Join(kinds, " / ")
 }
 
 // prepareChatBody 改写发往上游的 Chat 请求体：
