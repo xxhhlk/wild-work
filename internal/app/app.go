@@ -232,16 +232,27 @@ func (a *App) firstRuntime() *Runtime {
 // （function=solo_agent）与独立模型集，需各自拉取。
 func (a *App) uniqueRuntimes() []*Runtime {
 	out := make([]*Runtime, 0, len(a.runtimes))
-	seen := map[*pool.Pool]bool{}
 	for _, rt := range a.runtimes {
-		if rt == nil || rt.Pool == nil || seen[rt.Pool] {
+		if rt == nil || rt.Pool == nil {
+			continue
+		}
+		out = append(out, rt)
+	}
+	// 必须**先排序、后去重**：TraeWork 与 TraeCode 共用同一个池，谁先被遍历到
+	// 谁就代表该池。若在排序前按 map 遍历顺序去重，归属渠道会随 Go 的随机
+	// map 顺序漂移（面板上同一个池时而叫 TraeWork、时而叫 TraeCode），
+	// 且 TestUniqueRuntimesDedupesSharedPool 会随机失败。
+	sort.SliceStable(out, func(i, j int) bool { return channelRank(out[i].Kind) < channelRank(out[j].Kind) })
+	seen := map[*pool.Pool]bool{}
+	deduped := out[:0]
+	for _, rt := range out {
+		if seen[rt.Pool] {
 			continue
 		}
 		seen[rt.Pool] = true
-		out = append(out, rt)
+		deduped = append(deduped, rt)
 	}
-	sort.SliceStable(out, func(i, j int) bool { return channelRank(out[i].Kind) < channelRank(out[j].Kind) })
-	return out
+	return deduped
 }
 
 func (a *App) totalAccounts() int {
