@@ -18,8 +18,14 @@ import (
 //
 // 为什么是导入而不是登录：两者的凭据都由各自官方客户端在本机维护
 // （小浣熊 = %USERPROFILE%\.box-agent\config\auth.json 明文 JSON；
-//   Loomy = C:\Users\Public\Loomy\<hash>\userData\auth-session.json），
-// 上游没有可供第三方复现的 OAuth 流程。详见 docs/loomy-raccoon渠道接入计划.md §5.1。
+//   Loomy = C:\Users\Public\Loomy\<hash>\userData\auth-session.json）。
+//
+// 小浣熊其实**有**网页授权码流程：/code/authorize → 深链 office-raccoon://auth/callback?code=…
+// → POST {authApi}/login_with_authorization_code。但回调地址由服务端前端**硬编码**、
+// 全站 JS 无 redirect_uri，第三方拿不到 code；要复现须劫持 office-raccoon 协议注册，
+// 会与官方客户端互斥（见 docs/raccoon渠道接入备忘.md §11）。故当前选择导入。
+// Loomy 走讯飞账号体系（HMAC-SHA1 签名 + 短信/账密），同样无第三方可复现的授权流程。
+// 详见 docs/loomy-raccoon渠道接入计划.md §5.1。
 //
 // 设计要点：
 //   - 路径**自适应探测**（多候选 + 环境变量覆盖），不做硬编码单一路径；

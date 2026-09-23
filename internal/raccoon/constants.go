@@ -33,9 +33,12 @@ const (
 	// 另需合法 `type`；暂无必要，保留备查）。
 	EpPointsBills = "/api/web/points/v1/bills"
 
-	// EpAuthRefresh 桌面端刷新端点（客户端 env: NEXT_PUBLIC_DESKTOP_REMOTE_AUTH_API_PREFIX）。
+	// EpAuthRefresh 桌面端刷新端点（客户端 env: NEXT_PUBLIC_AUTH_API_PREFIX = /api/electron/auth/v1）。
 	EpAuthRefresh = "/api/electron/auth/v1/refresh"
-	// EpAuthRefreshWeb 代码内兜底前缀（DEFAULT_REMOTE_AUTH_API_PREFIX）。
+	// EpAuthRefreshWeb 客户端**优先**使用的远端前缀（env: NEXT_PUBLIC_DESKTOP_REMOTE_AUTH_API_PREFIX
+	// = /api/web/auth/v1）。客户端的 getAuthApiUrl() 优先选它，仅当其为空才回落 electron 前缀。
+	// 两个前缀实测都可用，故这里维持「先 electron、404 回落 web」不影响功能；
+	// 若要改成「先 web」（更贴合上游现状），需先实测 web 前缀的 /refresh 确能轮换 token。
 	EpAuthRefreshWeb = "/api/web/auth/v1/refresh"
 )
 

@@ -287,6 +287,16 @@ default-pets / hyperframes-assets / rg / 7za / elevate.exe
 | **B. 凭据导入器**（次优） | 授权只在客户端内部完成，无法脱离客户端走 OAuth | 按钮文案改为「**从本机客户端导入**」，与"登录"区分 | `internal/login_<ch>/import.go`：以数据所属账户运行 → 解 DPAPI / 读 sqlite → 转标准 auth 文件 |
 | **C. shim / TLS 抓包产物**（兜底） | A、B 都不通 | 同 B（走导入器） | 抓到的 token 同样经 B 落盘 |
 
+> **判定结果（2026-09-23 实测，更正早期判断）**：
+> - **小浣熊 = 形态 B（导入器）**。它**有**网页授权码流程（`/code/authorize` → 深链
+>   `office-raccoon://auth/callback?code=…` → `POST {authApi}/login_with_authorization_code`），
+>   但回调地址由服务端前端**硬编码**、全站 JS 无 `redirect_uri`，第三方拿不到 code。
+>   早期把它列为「形态 A 候选」是因为只查了主进程 `main.js`，而登录实现在独立模块
+>   `build/electron/main/desktopLogin.js`。完整链路见 `docs/raccoon渠道接入备忘.md` §11。
+> - **Loomy = 形态 B（导入器）**。走讯飞账号体系（HMAC-SHA1 签名 + 短信/账密），
+>   无第三方可复现的授权流程。
+> - 若将来要升级为形态 A，唯一路径是**劫持 `office-raccoon` 协议注册**（见备忘 §11.3）。
+
 > 无论 A / B / C，**最终都必须落到 `auths/<channel>-<uid>.json`**——server / pool / scheduler 只认它（R9）。
 > B / C 额外要求：只在 Windows 实现（D6），用 `//go:build windows` 隔离；DPAPI 解密在 Go 侧走
 > `crypt32.dll!CryptUnprotectData`（`syscall` 直调，保持 `CGO_ENABLED=0`），

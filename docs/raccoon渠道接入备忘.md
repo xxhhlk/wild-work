@@ -97,10 +97,19 @@
 
 ### 5.2 凭据流转
 
-`build\electron\main\desktopAuthState.js` + `main.js`：
+`build\electron\main\desktopAuthState.js` + `main.js` + **`desktopLogin.js`**：
 
 ```
-renderer 登录成功 → IPC desktop-auth:update / refreshUserToken → 主进程写 auth.json
+点登录 → IPC desktop-auth:start-login-from-wall → desktopLogin.openDesktopLogin()
+  → shell.openExternal("https://xiaohuanxiong.com/code/authorize
+                        ?login_source=desktop&appname=办公小浣熊客户端")
+  → 用户在系统浏览器完成网页登录
+  → 网页前端跳深链：office-raccoon://auth/callback?code=<授权码>&state=<可选>
+  → 客户端收深链（queueDesktopLogin → parseDesktopLoginCode）
+  → POST {authApi}/login_with_authorization_code  {"authorization_code": "<code>"}
+  → resp.data = {access_token, refresh_token, office_identity, office_org_name, office_org_role}
+  → updateDesktopAuthState(...) 写 auth.json
+
 主进程是权威源：resolveAuthoritativeAccessToken() 忽略 renderer 传来的过期 token，读文件为准
 预热/刷新入口：IPC desktop-auth:ensure-access-token-ready
              → scheduleAuth.prepareBoxAgentAuthForWarmup()
@@ -109,8 +118,16 @@ renderer 登录成功 → IPC desktop-auth:update / refreshUserToken → 主进�
 ```
 
 - **存在 `refresh_token`** → 支持刷新（相对 Loomy 的关键优势）
-- 登录/绑定走 `/api/electron/auth/v1`（桌面专用前缀），渲染层通过 `fetchWithAuth` 注入鉴权
-  （`fetchWithAuth` 定义在公共 chunk，本次未提取 → 留待 A3 抓包确认真实头形态）
+- ⚠️ **这是「登录即授权」的网页授权码流程**（2026-09-23 更正，完整链路见 §11）：
+  - 授权入口固定：`GET https://xiaohuanxiong.com/code/authorize?login_source=desktop&appname=办公小浣熊客户端`
+    （服务端返回 SPA shell，跳转逻辑在前端 JS 里）
+  - **回调地址硬编码**为 `office-raccoon://auth/callback`（服务端 SPA 的 `hl()` 里
+    `new URL("office-raccoon://auth/callback")`），全站 JS **零处** `redirect_uri` → 第三方**改不了回调地址**
+  - 兑换端点 `POST {authApi}/login_with_authorization_code`：请求头只有 `Content-Type`、
+    body 只有 `{authorization_code}` → **无额外鉴权**（谁拿到 code 谁就能兑换）
+  - `{authApi}` = `getAuthApiUrl()`：**优先** `NEXT_PUBLIC_DESKTOP_REMOTE_AUTH_API_PREFIX`（`/api/web/auth/v1`），
+    仅当其为空才回落 `NEXT_PUBLIC_AUTH_API_PREFIX`（`/api/electron/auth/v1`）；两个前缀实测都可用
+  - 授权码一次性，消费即失效（错误码 `200035`）；兑换超时 15s
 
 ### 5.3 agent 侧模型档案
 
@@ -143,7 +160,7 @@ profileId = "hosted:<sha256(apiBase)[:16]>"
 |---|---|
 | Kind / 前缀 | `raccoon`（`raccoon/<model>`） |
 | auth 文件 | `auths/raccoon-<uid>.json`；导入器读 `~/.box-agent/config/auth.json` 后转换（R6.3 嵌套格式） |
-| 登录形态 | **形态 A 优先**：若 `/api/electron/auth/v1` 提供可复现登录（短信/账密）就走 `internal/login_raccoon/`；否则**形态 B 导入器**（读 auth.json，一次性导入） |
+| 登录形态 | **形态 B 导入器**（2026-09-23 定论）：官方走「网页授权码 + 硬编码深链 `office-raccoon://auth/callback`」，第三方改不了回调地址 → 读 `~/.box-agent/config/auth.json` 导入。若要复现登录须劫持 `office-raccoon` 协议（见 §11.3） |
 | 推理 | `POST https://xiaohuanxiong.com/api/web/llm/v2/chat/completions` |
 | 模型表 | 动态 `GET /api/web/llm/v2/model_catalog`；兜底 `raccoon-chat-ml-5-5` |
 | 积分 | **`GET /api/web/points/v1/balance`** → `{available_points, daily_points, monthly_points, reward_points, topup_points, topup_frozen}` |
@@ -259,4 +276,57 @@ resp: { data: { access_token, refresh_token } }      ← refresh_token 会轮换
 > 且**未知模型名会静默回落到默认模型并返回 200** → wild-work 必须本地校验模型名
 > → 见 `docs/loomy-raccoon阶段C探针实测.md`。
 
+---
 
+## 11. 登录流程全貌与「能否复现」（2026-09-23 更正）
+
+> ⚠️ 更正 §5.2 早期表述：小浣熊**不是**「授权只在客户端内部完成」，而是**有网页授权码流程**。
+> 早期判为「无 OAuth」的原因：只查了主进程 `main.js`（那里确实没有 `auth/v1`），
+> 而登录实现是**独立模块** `build/electron/main/desktopLogin.js`（6.4 KB，未被内联）。
+
+### 11.1 完整链路（源码级证据）
+
+```
+① 渲染层（登录墙）→ IPC desktop-auth:start-login-from-wall
+   main.js 校验：isTrustedDesktopAuthSenderUrl + isDesktopOnlinePlusMode
+                + NEXT_PUBLIC_DESKTOP_CLIENT_AUTH==='true' + NEXT_PUBLIC_DESKTOP_TOKEN_BRIDGE==='true'
+② desktopLogin.openDesktopLogin() → shell.openExternal(getDesktopAuthUrl())
+     DESKTOP_AUTH_PATH   = "/code/authorize"
+     DESKTOP_AUTH_PARAMS = { login_source: "desktop", appname: "办公小浣熊客户端" }
+   ⇒ https://xiaohuanxiong.com/code/authorize?login_source=desktop&appname=办公小浣熊客户端
+③ 用户在系统浏览器完成网页登录
+④ 网页前端跳深链（服务端 SPA `index-*.js` 的 hl()）：
+     const n = new URL("office-raccoon://auth/callback");
+     n.searchParams.set("code", code);  state && n.searchParams.set("state", state);
+     window.location.href = n.toString();
+⑤ 客户端收深链 → queueDesktopLogin → parseDesktopLoginCode
+     （校验 protocol==='office-raccoon:' && hostname==='auth' && pathname==='/callback'）
+⑥ POST {authApi}/login_with_authorization_code
+     headers: { Content-Type: application/json }
+     body:    { "authorization_code": "<code>" }
+     timeout: 15s；错误码 200035 = 授权码不存在/过期/已消费
+⑦ resp.data = { access_token, refresh_token, office_identity, office_org_name, office_org_role }
+   → updateDesktopAuthState(...) → 写 auth.json
+```
+
+### 11.2 关键判定
+
+| 项 | 结论 | 依据 |
+|---|---|---|
+| 授权入口 | 固定 `GET /code/authorize?login_source=desktop&appname=…` | `desktopLogin.js` |
+| 回调地址 | **硬编码** `office-raccoon://auth/callback` | 服务端 SPA `hl()` |
+| 能否自定义回调 | **不能**（全站 JS 零处 `redirect_uri`） | 服务端 `index-*.js` grep |
+| 兑换端点 | `POST {authApi}/login_with_authorization_code`，**无额外鉴权头** | `desktopLogin.js` |
+| `{authApi}` | `getAuthApiUrl()`：优先 `/api/web/auth/v1`（`NEXT_PUBLIC_DESKTOP_REMOTE_AUTH_API_PREFIX`），空则回落 `/api/electron/auth/v1`；两者实测都通 | `scheduleAuth.js` + `.env.electron` |
+| 授权码 | 一次性，消费即失效（`200035`） | `desktopLogin.js` |
+| 深链协议 | `HKCU\Software\Classes\office-raccoon`（另有 `raccoon-work`）→ 指向客户端 exe | 注册表实测 |
+
+### 11.3 第三方复现的两条路
+
+| 方案 | 做法 | 代价 / 风险 | 状态 |
+|---|---|---|---|
+| **导入** | 读客户端 `auth.json` | 需先装并登录官方客户端；导入后建议退出客户端（refresh_token 单会话） | ✅ 已实施 |
+| **协议劫持登录** | 登录期间把 `HKCU\Software\Classes\office-raccoon` 临时指向 wild-work → 收深链拿 code → 自己调 `login_with_authorization_code` → 成功后**恢复注册表** | 需改用户级注册表并保证崩溃后可恢复；登录期间官方客户端收不到回调（互斥）；厂商在收紧（源码注释「仅向登录墙暴露专用 IPC」），可能被视为滥用 | ⏸ 未实施，待定 |
+
+> 「劫持」之所以技术上可行，是因为兑换端点**不校验调用方身份**（无 device identity、无签名头）——
+> 谁拿到 code 谁就能换到 token。这是该流程唯一的缺口。
