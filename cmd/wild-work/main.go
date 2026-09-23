@@ -25,13 +25,13 @@ import (
 	"wild-work/internal/auth"
 	"wild-work/internal/config"
 	"wild-work/internal/gateway"
+	"wild-work/internal/loomy"
 	"wild-work/internal/platform"
 	"wild-work/internal/pool"
 	"wild-work/internal/provider"
 	"wild-work/internal/qoder"
 	"wild-work/internal/qodercn"
 	"wild-work/internal/qodercom"
-	"wild-work/internal/loomy"
 	"wild-work/internal/qwenwork"
 	"wild-work/internal/raccoon"
 	"wild-work/internal/reasoning"
@@ -193,8 +193,10 @@ func main() {
 
 	wbSch := scheduler.New(scheduler.Config{Pool: wbPool, Upstream: wbUp, Name: "workbuddy", CheckinMinutes: checkinMinutes, KeepaliveHours: cfg.Schedule.KeepaliveHours})
 	trSch := scheduler.New(scheduler.Config{Pool: trPool, Upstream: trUp, Name: "traework", CheckinMinutes: checkinMinutes, KeepaliveHours: cfg.Schedule.KeepaliveHours})
-	// Qoder 无签到活动：调度器只做 token keepalive（每日 refresh 保活）
-	qdSch := scheduler.New(scheduler.Config{Pool: qdPool, Upstream: qdUp, Name: "qoder", CheckinMinutes: nil, KeepaliveHours: cfg.Schedule.KeepaliveHours})
+	// Qoder 无签到活动（qoder.DailyCheckin 直接返回错误）：调度器只做 token keepalive（每日 refresh 保活）。
+	// 签到必须传**显式空切片** []int{}：传 nil 会被 scheduler.New 当作「未配置」补成默认
+	// 9:00/21:00，导致每天两次必然失败的签到调用与失败日志（与 qwenwork/workbuddyai 同源缺陷）。
+	qdSch := scheduler.New(scheduler.Config{Pool: qdPool, Upstream: qdUp, Name: "qoder", CheckinMinutes: []int{}, KeepaliveHours: cfg.Schedule.KeepaliveHours})
 	// WorkBuddy 国际版：无显式签到（ActivitiesOnly 模式）。
 	// 定时仍对每个账号调用 DailyCheckin，其实现为「免费模型对话保活 + 签到探测」；
 	// 不记录/上报签到状态，保持对用户透明。
@@ -210,9 +212,9 @@ func main() {
 	qwSch := scheduler.New(scheduler.Config{Pool: qwPool, Upstream: qwUp, Name: "qwenwork",
 		CheckinMinutes: []int{}, KeepaliveHours: []int{}})
 	// QoderCN：签到双路径已实现（campaigns 主路径 + daily-check-in 兑底），
-	// 沿用全局签到时段；token keepalive 与 qoder 相同。
+	// 固定 10:15 —— 该渠道活动时段，**不走全局 cfg.Schedule.CheckinTimes**；token keepalive 与 qoder 相同。
 	qcnSch := scheduler.New(scheduler.Config{Pool: qcnPool, Upstream: qcnUp, Name: "qodercn", CheckinMinutes: []int{615}, KeepaliveHours: cfg.Schedule.KeepaliveHours})
-	// QoderCOM：仅 campaigns 活动路径（无 daily-check-in）；其余同 QoderCN。
+	// QoderCOM：仅 campaigns 活动路径（无 daily-check-in），签到同为 10:15；其余同 QoderCN。
 	qcmSch := scheduler.New(scheduler.Config{Pool: qcmPool, Upstream: qcmUp, Name: "qodercom", CheckinMinutes: []int{615}, KeepaliveHours: cfg.Schedule.KeepaliveHours})
 	// 小浣熊：无签到（CheckinMinutes 用显式空切片，nil 会被补成 9:00/21:00）；
 	// access_token 实测仅 ≈2h，而 refresh_token ≈30 天，

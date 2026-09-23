@@ -317,7 +317,7 @@ default-pets / hyperframes-assets / rg / 7za / elevate.exe
 而 `cmd/wild-work/main.go:185` 的千问办公注释写的是「`KeepaliveHours: nil`（无需保活）」——
 **注释与实际行为不符：22:00 仍会跑 token 保活**。
 
-> 2026-09-23 已修复：`scheduler.New` 改为区分「nil = 未配置」与「`[]int{}` = 本渠道无此类任务」，受影响的四个渠道（workbuddyai / qwenwork / raccoon / loomy）已改为显式空切片。
+> 2026-09-23 已修复：`scheduler.New` 改为区分「nil = 未配置」与「`[]int{}` = 本渠道无此类任务」，受影响的渠道已改为显式空切片：workbuddyai / qwenwork / raccoon / loomy，以及**旧 Qoder**（其 `CheckinMinutes` 同为 `nil`，因 `KeepaliveHours` 非空而不落入「全空」分支，故被补成默认签到时段 —— 2026-09-23 第二轮补齐）。
 影响面：qwenwork（推测其他传 nil 的渠道同理）。是否属缺陷需单独核实（也可能是刻意保留的兜底）。
 > 对新渠道的直接影响：**若 Loomy / 小浣熊 确实需要"完全不保活"，不能只传 nil**，须先确认这处行为。
 

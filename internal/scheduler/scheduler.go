@@ -19,6 +19,10 @@ import (
 )
 
 // Config 调度器依赖。
+//
+// 三个时间字段的零值语义见 New 的文档，**加新渠道时务必注意**：
+// nil = 未配置（落默认），[]int{} = 本渠道没有这类任务（保持为空）。
+// 想关掉某类任务却传 nil，会被静默补上默认时间并每天空跑。
 type Config struct {
 	Pool           *pool.Pool
 	Upstream       provider.Upstream

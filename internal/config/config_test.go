@@ -122,6 +122,23 @@ func TestClockTimes(t *testing.T) {
 	}
 }
 
+// 空输入必须返回**非 nil** 空切片：scheduler.New 用 nil 表示「未配置」并补成默认
+// 9:00/21:00，若这里退化成 nil，用户就无法通过在配置里写 "checkin_times": [] 关掉签到。
+func TestClockTimesEmptyIsNonNil(t *testing.T) {
+	for _, in := range [][]string{nil, {}} {
+		got, err := ParseClockTimes(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got == nil {
+			t.Fatalf("ParseClockTimes(%v) 返回 nil，会让 scheduler.New 补成默认签到时段", in)
+		}
+		if len(got) != 0 {
+			t.Fatalf("ParseClockTimes(%v) = %v，want 空", in, got)
+		}
+	}
+}
+
 func TestLoadLegacyCheckinHours(t *testing.T) {
 	dir := t.TempDir()
 	fp := filepath.Join(dir, "c.json")

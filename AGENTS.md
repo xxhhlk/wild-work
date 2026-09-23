@@ -124,6 +124,8 @@ POST /api/quit                     # 退出程序
 > **旧 Qoder（`qoder/*`，QoderWork）已从界面下线**：代码与路由保留，存量账号仍可用；不新增功能，后续可移除。
 > 旧 Qoder 无签到活动：`DailyCheckin` 返回错误，调度器只做 token keepalive；故 `noExplicitCheckin`
 > 排除 `qoder`（面板不显示手动签到按钮），web/app.js 的 `NO_EXPLICIT_CHECKIN` 与之同源。
+> 签到定时任务须用**显式空切片** `CheckinMinutes: []int{}` 关闭（2026-09-23 修复：原为 `nil`，
+> 被 `scheduler.New` 补成默认 9:00/21:00，每天两次必然失败的签到调用与失败日志）。
 > QoderCN / QoderCOM 已实现签到（campaigns 主路径），保留手动按钮。
 > WorkBuddyAI 国际版：`DailyCheckin` 实现为「免费模型对话保活 + 签到探测」（对用户透明，无前端界面）；
 > token 有效期 365 天，故 KeepaliveHours 设为**显式空切片** `[]int{}`（传 nil 会被 `scheduler.New` 补成默认 22:00）。详见 `docs/workbuddy国际版渠道接入备忘.md`。
