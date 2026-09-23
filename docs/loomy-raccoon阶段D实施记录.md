@@ -127,3 +127,13 @@ wild-work 启动时按 `NeedsRefresh(10min)` 主动刷新，而客户端也在�
 
 新增测试 `internal/scheduler/scheduler_defaults_test.go`（4 例：零值默认、显式空关闭、
 混合场景、无任务时 `Run` 阻塞且可被 ctx 取消）。
+
+---
+
+## ⚠️ 后续更正（2026-09-24，`baaff96`）
+
+- `internal/loomy/client.go` 的「三件套档位投影」当时**漏了按模型 ladder 降级**（`reasoning.Caps.Clamp`
+  未调用，与 qoder 三渠道不一致）→ 已补；并补了档位日志（`loomy reasoning: model=... in=... out=...`）。
+- `internal/raccoon/client.go` 当时未处理档位字段 → 已加 `forceUpstreamDeepThinking`
+  （**剥离** `reasoning_effort`，因实测上游默认档最深）+ 剥离日志。
+- 两渠道现均按此语义工作，详见各渠道备忘的档位章节。
