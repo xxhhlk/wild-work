@@ -15,8 +15,9 @@ import (
 )
 
 // Client 商汤小浣熊（官方托管网关 xiaohuanxiong.com）上游客户端。
-// 与既有渠道不同，本渠道**不做登录编排**：凭据由「从本机客户端导入」得到
-// （见 docs/raccoon渠道接入备忘.md §5），因此不实现 FetchNickname 之外的登录态工具。
+// 登录编排不在本包：既有「从本机客户端导入」（internal/app/import_local.go），
+// 也有「协议劫持登录」（internal/login_raccoon，复用本包 protocol*.go 的协议工具）。
+// 本包只负责上游调用与桌面协议底层能力。
 type Client struct {
 	HTTP *http.Client
 }

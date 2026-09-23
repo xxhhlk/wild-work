@@ -20,10 +20,12 @@ import (
 // （小浣熊 = %USERPROFILE%\.box-agent\config\auth.json 明文 JSON；
 //   Loomy = C:\Users\Public\Loomy\<hash>\userData\auth-session.json）。
 //
-// 小浣熊其实**有**网页授权码流程：/code/authorize → 深链 office-raccoon://auth/callback?code=…
-// → POST {authApi}/login_with_authorization_code。但回调地址由服务端前端**硬编码**、
-// 全站 JS 无 redirect_uri，第三方拿不到 code；要复现须劫持 office-raccoon 协议注册，
-// 会与官方客户端互斥（见 docs/raccoon渠道接入备忘.md §11）。故当前选择导入。
+// 小浣熊另有一条**协议劫持登录**路径（2026-09-23 落地，面板主按钮）：
+// /code/authorize → 浏览器登录 → 深链 office-raccoon://auth/callback?code=…
+// → POST {authApi}/login_with_authorization_code。回调地址由服务端前端硬编码、全站 JS 无
+// redirect_uri，但**兑换端点不校验调用方身份**，因此可在登录期间把 office-raccoon 协议
+// 临时指向本工具来截获授权码（实现见 internal/login_raccoon）。
+// 两条路并存：协议登录不依赖客户端登录态；导入则要求客户端已登录。见备忘 §11。
 // Loomy 走讯飞账号体系（HMAC-SHA1 签名 + 短信/账密），同样无第三方可复现的授权流程。
 // 详见 docs/loomy-raccoon渠道接入计划.md §5.1。
 //
@@ -123,6 +125,7 @@ func (a *App) importRaccoon() (*ImportLocalResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	a.reloadAccounts()
 	a.afterAccountAdded(provider.Raccoon)
 	return &ImportLocalResult{
 		Channel: "raccoon", UID: uid, File: filepath.Base(file),
@@ -182,6 +185,7 @@ func (a *App) importLoomy() (*ImportLocalResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	a.reloadAccounts()
 	a.afterAccountAdded(provider.Loomy)
 	return &ImportLocalResult{
 		Channel: "loomy", UID: uid, File: filepath.Base(file),

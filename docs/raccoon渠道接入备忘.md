@@ -160,7 +160,7 @@ profileId = "hosted:<sha256(apiBase)[:16]>"
 |---|---|
 | Kind / 前缀 | `raccoon`（`raccoon/<model>`） |
 | auth 文件 | `auths/raccoon-<uid>.json`；导入器读 `~/.box-agent/config/auth.json` 后转换（R6.3 嵌套格式） |
-| 登录形态 | **形态 B 导入器**（2026-09-23 定论）：官方走「网页授权码 + 硬编码深链 `office-raccoon://auth/callback`」，第三方改不了回调地址 → 读 `~/.box-agent/config/auth.json` 导入。若要复现登录须劫持 `office-raccoon` 协议（见 §11.3） |
+| 登录形态 | **两条并存**（2026-09-23）：①**协议劫持登录**（面板主按钮）—— 登录期间把 `office-raccoon` 协议临时指向本工具截获授权码、自调 `login_with_authorization_code`，结束即恢复注册表（见 §11.3 / §12）；②**导入器**（弹窗次按钮）—— 读 `~/.box-agent/config/auth.json` |
 | 推理 | `POST https://xiaohuanxiong.com/api/web/llm/v2/chat/completions` |
 | 模型表 | 动态 `GET /api/web/llm/v2/model_catalog`；兜底 `raccoon-chat-ml-5-5` |
 | 积分 | **`GET /api/web/points/v1/balance`** → `{available_points, daily_points, monthly_points, reward_points, topup_points, topup_frozen}` |
@@ -326,7 +326,35 @@ resp: { data: { access_token, refresh_token } }      ← refresh_token 会轮换
 | 方案 | 做法 | 代价 / 风险 | 状态 |
 |---|---|---|---|
 | **导入** | 读客户端 `auth.json` | 需先装并登录官方客户端；导入后建议退出客户端（refresh_token 单会话） | ✅ 已实施 |
-| **协议劫持登录** | 登录期间把 `HKCU\Software\Classes\office-raccoon` 临时指向 wild-work → 收深链拿 code → 自己调 `login_with_authorization_code` → 成功后**恢复注册表** | 需改用户级注册表并保证崩溃后可恢复；登录期间官方客户端收不到回调（互斥）；厂商在收紧（源码注释「仅向登录墙暴露专用 IPC」），可能被视为滥用 | ⏸ 未实施，待定 |
+| **协议劫持登录** | 登录期间把 `HKCU\Software\Classes\office-raccoon` 临时指向 wild-work → 收深链拿 code → 自己调 `login_with_authorization_code` → 成功后**恢复注册表** | 需改用户级注册表并保证崩溃后可恢复；登录期间官方客户端收不到回调（互斥）；厂商在收紧（源码注释「仅向登录墙暴露专用 IPC」），可能被视为滥用 | ✅ **已实施**（2026-09-23）：`internal/login_raccoon` + `internal/raccoon/protocol_windows.go`；面板主按钮走此路径，次按钮保留导入 |
 
 > 「劫持」之所以技术上可行，是因为兑换端点**不校验调用方身份**（无 device identity、无签名头）——
 > 谁拿到 code 谁就能换到 token。这是该流程唯一的缺口。
+
+---
+
+## 12. 协议劫持登录实现要点（2026-09-23 落地）
+
+| 环节 | 位置 | 关键约束 |
+|---|---|---|
+| 协议注册表快照/改写/恢复 | `internal/raccoon/protocol_windows.go` | ①先备份落盘再改写（备份写不进去绝不碰注册表）②恢复前校验「当前值仍指向我们」（`shouldRestore`）——官方客户端启动时会重写协议注册，此时放手、只清备份，否则会把注册表改回过期路径 ③恢复幂等 |
+| 深链解析 + 回调落盘 | `internal/raccoon/protocol.go` | 按官方 `parseDesktopLoginCode` 校验 `scheme/host/path`；**不落盘原始深链**（少留一份授权码副本） |
+| 登录编排 | `internal/login_raccoon/login.go` | Start 先清残留回调再劫持；Poll **无论如何先恢复注册表再返回**；兑换先试 `/api/web/auth/v1`，**仅 404/405 才回落** electron 前缀（业务错误如 200035 重试无意义） |
+| 回调子进程 | `cmd/wild-work/main.go` | **最前面**拦 `--raccoon-callback`，只落盘后立即退出（绝不启动服务/托盘，否则撞端口） |
+| 恢复兜底 | `internal/app/app.go` | `pollLogin` 的 **defer 统一恢复**（成功/失败/超时/取消/panic 全覆盖）；`CancelLogin` 补恢复；**启动自愈** `healRaccoonProtocol()`（data/ 有残留备份即恢复） |
+| 面板 | `cmd/wild-work/web/app.js` | 主按钮走协议登录，次按钮「从客户端导入」（`pendingAction` 分发） |
+
+**实测（VM，2026-09-23 19:38–19:43）**
+
+- 假码闭环：劫持 → 深链被接住 → 兑换请求发出 → 上游回 `200035 authorization_code_not_found_error`（预期）
+  → 日志 `raccoon 协议注册表已恢复原状`，注册表还原、`login-state.json` / `raccoon-callback.json` /
+  `raccoon-protocol-backup.json` 三个中间文件全清。
+- 真实登录：`登录成功 uid=<账号昵称>`（access/refresh 各 380 字符），账号进池、积分正常拉取、
+  `/v1/models` 多出 8 个 `raccoon/*`、真实推理返回正常。
+
+**顺带修掉的缺陷**：`app.reloadAccounts()` 原先只覆盖 7 个渠道，**漏了 raccoon 与 loomy** ——
+导致「凭据写对了但账号不进池」，面板账号列表与 `/v1/models` 都看不到（要等下次重启才出现）。
+已补两个分支，并给 `importRaccoon` / `importLoomy` 补上 `reloadAccounts()`。
+
+**两条路的关系**：拿到的是**同一个上游账号**（refresh_token 单会话，会互相踢）；
+协议登录不依赖客户端登录态，但登录期间客户端收不到回调，且客户端一启动就会重写协议注册（劫持失效）。

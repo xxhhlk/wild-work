@@ -49,11 +49,46 @@ var webFS embed.FS
 //go:embed build/trayicon.ico
 var trayIconICO []byte
 
+// protocolCallbackArg 从命令行取出小浣熊协议回调深链（无则返回空串）。
+func protocolCallbackArg(args []string) string {
+	for i, a := range args {
+		if a == raccoon.CallbackFlag && i+1 < len(args) {
+			return args[i+1]
+		}
+		if v, ok := strings.CutPrefix(a, raccoon.CallbackFlag+"="); ok {
+			return v
+		}
+	}
+	return ""
+}
+
+// handleProtocolCallback 协议处理器子进程的落地动作：把深链参数写进 data/ 后立即返回。
+// 主实例的登录轮询（app.pollLogin）每 2 秒读一次该文件，读到即用授权码兑换 token。
+// 这里刻意不做任何 UI/网络动作 —— 本进程的生命周期只有毫秒级。
+func handleProtocolCallback(raw string) {
+	stateDir := "data"
+	if cfg, err := config.Load("config.json"); err == nil {
+		stateDir = filepath.Dir(cfg.StateFile)
+	}
+	if err := raccoon.SaveCallback(stateDir, raw); err != nil {
+		log.Printf("小浣熊协议回调落盘失败：%v", err)
+	}
+}
+
 func main() {
 	// 工作目录：便携/CLI 形态固定为 exe 所在目录，保证相对路径配置（./auths ./data）稳定。
 	// macOS .app bundle 内该目录只读、且随 app 替换被清空，故改用系统数据目录（见 workDir）。
 	_ = os.Chdir(workDir())
 	wd, _ := os.Getwd()
+
+	// 小浣熊协议回调分支（必须最先处理）：Windows 会以
+	//   "<exe>" --raccoon-callback "office-raccoon://auth/callback?code=…"
+	// 唤起本进程投递深链。这条路径只落盘后立即退出，绝不能继续启动 HTTP 服务与托盘
+	// —— 那是主实例的职责，重复启动会撞端口。
+	if raw := protocolCallbackArg(os.Args[1:]); raw != "" {
+		handleProtocolCallback(raw)
+		return
+	}
 
 	cfgPath := "config.json"
 	cfg, err := config.Load(cfgPath)

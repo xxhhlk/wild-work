@@ -295,7 +295,8 @@ default-pets / hyperframes-assets / rg / 7za / elevate.exe
 >   `build/electron/main/desktopLogin.js`。完整链路见 `docs/raccoon渠道接入备忘.md` §11。
 > - **Loomy = 形态 B（导入器）**。走讯飞账号体系（HMAC-SHA1 签名 + 短信/账密），
 >   无第三方可复现的授权流程。
-> - 若将来要升级为形态 A，唯一路径是**劫持 `office-raccoon` 协议注册**（见备忘 §11.3）。
+> - 形态 A 已于 2026-09-23 落地（面板主按钮）：**劫持 `office-raccoon` 协议注册**截获授权码后自兑 token，
+>   实现见 `internal/login_raccoon`，细节见备忘 §11.3 / §12。导入器作为次按钮保留。
 
 > 无论 A / B / C，**最终都必须落到 `auths/<channel>-<uid>.json`**——server / pool / scheduler 只认它（R9）。
 > B / C 额外要求：只在 Windows 实现（D6），用 `//go:build windows` 隔离；DPAPI 解密在 Go 侧走
