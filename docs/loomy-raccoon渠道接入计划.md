@@ -233,7 +233,7 @@ default-pets / hyperframes-assets / rg / 7za / elevate.exe
 | `internal/reasoning/catalog.go` | **仅当实测有档位**：`RealmForKind` + `SupportsEffortKind` 同改 | 守门测试 `TestEffortKindHasOwnRealm` |
 | `cmd/wild-work/web/index.html` | 添加账号按钮 | |
 | `cmd/wild-work/web/app.js` | `CH_LABEL` / `CH_CLASS` / `NO_EXPLICIT_CHECKIN` / 兜底提示 | 三处表 |
-| `config.example.json` | 与 `config.Default()` 同步 | R6.7 |
+| `config.example.json` | 与 `config.Default()` 字段对齐（已核对，`err_threshold` 已修正为 3） | R6.7 |
 | `README.md` / `AGENTS.md` | 渠道表、决议项、文档索引 | |
 | 积分/费率 | `FetchModelPricing` + `UserResourceDetail` + `data/pricing-cache.json` | 复用既有缓存与 1h 刷新 |
 
@@ -327,8 +327,45 @@ default-pets / hyperframes-assets / rg / 7za / elevate.exe
 
 ---
 
-## 8. 下一步
+## 8. 交付与回退（阶段 F）
 
-1. 你回「批准执行」→ 从 **阶段 A（只读取证）** 开工；A3 起需要你配合启动一次客户端。
-2. 阶段 A 结束先交**单项可行性结论**（含 §2.2 三条前置的实测答案），你确认后再进 C/D。
-3. 若 A 阶段发现凭据必须客户端参与刷新（§2.2 第 1 条不满足），我会**立即停下报告**，而不是继续写不能用的适配器。
+阶段 A–E 已全部完成，代码、文档、验收记录均已入库。
+
+### 8.1 支持矩阵
+
+见 `README.md` 的「渠道能力对照」。两渠道的关键差异：
+
+| | 商汤小浣熊 | Loomy（讯飞） |
+|---|---|---|
+| 鉴权头 | `Authorization: Bearer` 单头 | `Authorization` + `token` 双写 + **`traceparent`**（缺则挂死到超时） |
+| 凭据位置 | `%USERPROFILE%\.box-agent\config\auth.json`（**明文 JSON**） | `C:\Users\Public\Loomy\<sha256(用户)[:12]>\userData\auth-session.json` |
+| 续期 | refresh（access ≈2h / refresh ≈30d，**单会话、刷新即轮换**） | **无 refresh 端点**，session ≈14 天，到期重新导入 |
+| 思考档位 | 无（上游不下发，不投影） | 全档位（上游 `/models` 的 `reasoning_efforts` 权威，独占 `RealmLoomy`） |
+| 工具调用 | 实测 8 模型中 6 个 | 实测 8 模型中 7 个 |
+| 积分 | `/api/web/points/v1/balance`（每日/奖励/充值/月度四池） | `/api/v1/points/records`、`/team-points/balance` |
+| 签到 | 无 | 无（`/pet-work` 未实现） |
+| 使用约束 | **导入后退出小浣熊客户端**，否则两边抢刷新 → `refresh_conflict` | 到期后在客户端重登，再点一次「导入」 |
+
+### 8.2 未验证项
+
+见 `docs/loomy-raccoon阶段E验收报告.md` §5。
+
+### 8.3 移除这两个渠道
+
+⚠️ **不要 `git revert` 那个渠道提交** —— 其后的 `2a273cb`（定时任务零值）与 `37093ac`（刷新单飞）
+是**通用修复**、改动了同一批文件，回滚会连带撤销它们。手动移除的完整清单
+（照 `git show <渠道提交> --stat` 逐项对照）：
+
+1. 删包：`internal/raccoon/`、`internal/loomy/`
+2. `internal/provider/provider.go`：去掉 `Raccoon` / `Loomy` 两个 Kind 常量
+3. `internal/auth/auth.go`：去掉 `LoadRaccoonDir` / `LoadLoomyDir`（及 `loadPrefixed` 对应调用）
+4. `internal/reasoning/catalog.go`：去掉 `RealmLoomy` 常量，以及 `RealmForKind` / `SupportsEffortKind`
+   里的 loomy 分支 —— **两处必须同删**，只删一处会让档位表落进 `RealmCN`，污染 WorkBuddy 国内版
+5. `cmd/wild-work/main.go`：去掉两个 Runtime 的装配与 `-channels` 列表项
+6. `internal/app/app.go`：去掉导入渠道分支与费率行
+7. `internal/app/import_local.go`：可整体删除
+8. `cmd/wild-work/web/{index.html,app.js,style.css}`：去掉按钮与 `CH_LABEL` / `CH_CLASS` /
+   `NO_EXPLICIT_CHECKIN` 三处表项
+9. 运行时数据：`rm -f auths/{raccoon,loomy}-*.json data/state-{raccoon,loomy}.json`；
+   `data/pricing-cache.json` 可整体删除（下次启动自动重建）
+10. 重建：`go build -ldflags "-H windowsgui" -o dist/wild-work.exe ./cmd/wild-work`

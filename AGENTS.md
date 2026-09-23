@@ -107,7 +107,7 @@ GET  /api/logs                     # 最近 300 行日志
 POST /api/quit                     # 退出程序
 ```
 
-## 5. 渠道（已实现 WorkBuddyCN + WorkBuddyAI 国际版 + TraeWork + QoderCN + QoderCOM 国际版 + 千问办公；旧 Qoder 已下线）
+## 5. 渠道（已实现 WorkBuddyCN + WorkBuddyAI 国际版 + TraeWork + QoderCN + QoderCOM 国际版 + 千问办公 + 商汤小浣熊 + Loomy；旧 Qoder 已下线）
 
 1. 新建 `internal/<channel>/` 包，实现 `provider.Upstream` 接口
 2. `internal/auth` 增加对应 `Load<Channel>Dir()`（文件名前缀 `<channel>-*.json`；
@@ -345,3 +345,5 @@ git tag vX.Y.Z && git push origin vX.Y.Z
 - [docs/loomy渠道接入备忘.md](docs/loomy渠道接入备忘.md) — Loomy 协议取证（端点/签名算法/登录 API/积分端点 + A3 实测）
 - [docs/raccoon渠道接入备忘.md](docs/raccoon渠道接入备忘.md) — 小浣熊协议取证（端点/凭据文件/refresh 链路 + A3 实测）
 - [docs/loomy-raccoon阶段C探针实测.md](docs/loomy-raccoon阶段C探针实测.md) — 流式/错误形态/关思考矩阵实测记录
+- [docs/loomy-raccoon阶段D实施记录.md](docs/loomy-raccoon阶段D实施记录.md) — 两渠道落地记录（代码触点、端到端实测、修掉的 3 个问题）
+- [docs/loomy-raccoon阶段E验收报告.md](docs/loomy-raccoon阶段E验收报告.md) — 六项验收结果 + 并发刷新竞态的 A/B 对照验证
