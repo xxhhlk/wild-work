@@ -57,10 +57,8 @@ func buildAnthropicBody(raw []byte) ([]byte, error) {
 		// Aggregate 收敛（internal/server/handler.go:558/633）。若透传 false，
 		// 上游会回**单个 JSON 对象**，被 SSE 转换器当作非 `data:` 行整包丢弃
 		// → 静默的空 content + 0 usage（2026-09-24 实测踩到）。
-		"stream": true,
-		// 思考恒关闭：官方客户端托管模型实测下发 `{type:disabled}`；
-		// 本渠道未验证档位语义（评估文档 §8-3），不擅自开启。
-		"thinking": map[string]any{"type": "disabled"},
+		"stream":   true,
+		"thinking": thinkingFor(in),
 	}
 	if v, ok := in["temperature"]; ok {
 		out["temperature"] = v
@@ -98,6 +96,33 @@ func buildAnthropicBody(raw []byte) ([]byte, error) {
 func toolsDisabled(v any) bool {
 	s, _ := v.(string)
 	return s == "none"
+}
+
+// reasoningLevel 取漏斗归一后的顶层 `reasoning_effort`（小写）。
+// 空串表示客户端未表达思考意图（渠道未在 SupportsEffortKind 中，不会注入默认档）。
+func reasoningLevel(in map[string]any) string {
+	s, _ := in["reasoning_effort"].(string)
+	return strings.ToLower(strings.TrimSpace(s))
+}
+
+// thinkingFor 把顶层 `reasoning_effort` 投影成 Anthropic 面的 `thinking` 开关。
+//
+// 2026-09-24 VM 真实上游实测（详见评估文档 §3.13）：
+//   - 上游**默认开着**思考（不传 thinking：64 个 thinking 帧 / output 69）；
+//   - `{type:"disabled"}` 确实关掉（0 帧 / output 14）；
+//   - `{type:"enabled"}` 与「不传」等价（65 帧 / output 70）；
+//   - `budget_tokens` 被接受但**对思考量无可测影响**（1024 → 59 帧/64 out，
+//     与不带 budget 的 65 帧/70 out 同量级），故不下发；
+//   - 官方客户端配置里的 `thinking.effort` **根本不上线**：抓包证实 low 与 high
+//     产出的 body **完全相同**，都是 `{type:"enabled"}`。
+//
+// 因此本面只能表达「开 / 关」两态，没有梯度：客户端明确表达任何档位 → 开；
+// 明确关闭（`none`）或未表达 → 关（遵循 R19「不在客户端未表达时强行开思考」）。
+func thinkingFor(in map[string]any) map[string]any {
+	if l := reasoningLevel(in); l != "" && l != "none" {
+		return map[string]any{"type": "enabled"}
+	}
+	return map[string]any{"type": "disabled"}
 }
 
 // maxTokens 取 max_tokens / max_completion_tokens，缺失或非法时回默认值，

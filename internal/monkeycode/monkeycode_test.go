@@ -234,6 +234,74 @@ func TestToolChoiceNoneDropsTools(t *testing.T) {
 	}
 }
 
+// TestThinkingProjection 两面各自把顶层 `reasoning_effort` 投影成上游方言。
+//
+// anthropic 面只有开/关两态（`thinking.effort` 在该面**没有线上表达**，
+// 抓包证实 low 与 high 产出的 body 完全相同）；responses 面的 `reasoning.effort`
+// 有效（`none` 实测 reasoning_tokens=0），原样转发。
+func TestThinkingProjection(t *testing.T) {
+	cases := []struct {
+		effort     string // 空串 = 客户端未表达
+		wantThink  string // anthropic 面期望的 thinking.type
+		wantReason string // responses 面期望的 reasoning.effort（空 = 不下发）
+	}{
+		{"", "disabled", ""},
+		{"none", "disabled", "none"},
+		{"low", "enabled", "low"},
+		{"medium", "enabled", "medium"},
+		{"high", "enabled", "high"},
+		{"xhigh", "enabled", "xhigh"},
+	}
+
+	for _, tc := range cases {
+		extra := ""
+		if tc.effort != "" {
+			extra = `,"reasoning_effort":"` + tc.effort + `"`
+		}
+		in := `{"model":"basic/deepseek-flash","max_tokens":64,` +
+			`"messages":[{"role":"user","content":"hi"}]` + extra + `}`
+
+		// anthropic 面
+		out, err := buildAnthropicBody([]byte(in))
+		if err != nil {
+			t.Fatalf("anthropic/%q: %v", tc.effort, err)
+		}
+		var got map[string]any
+		if err := json.Unmarshal(out, &got); err != nil {
+			t.Fatalf("anthropic/%q: 输出不是合法 JSON: %v", tc.effort, err)
+		}
+		th, _ := got["thinking"].(map[string]any)
+		if th["type"] != tc.wantThink {
+			t.Errorf("anthropic/%q: thinking.type = %v, want %v", tc.effort, th["type"], tc.wantThink)
+		}
+		// budget_tokens 恒不下发：实测对思考量无可测影响
+		if _, ok := th["budget_tokens"]; ok {
+			t.Errorf("anthropic/%q: 不应下发 budget_tokens", tc.effort)
+		}
+
+		// responses 面
+		out, err = buildResponsesBody([]byte(in))
+		if err != nil {
+			t.Fatalf("responses/%q: %v", tc.effort, err)
+		}
+		var got2 map[string]any
+		if err := json.Unmarshal(out, &got2); err != nil {
+			t.Fatalf("responses/%q: 输出不是合法 JSON: %v", tc.effort, err)
+		}
+		rs, has := got2["reasoning"]
+		if tc.wantReason == "" {
+			if has {
+				t.Errorf("responses/%q: 未表达时不应下发 reasoning，实际 %v", tc.effort, rs)
+			}
+			continue
+		}
+		rm, _ := rs.(map[string]any)
+		if rm["effort"] != tc.wantReason {
+			t.Errorf("responses/%q: reasoning.effort = %v, want %v", tc.effort, rm["effort"], tc.wantReason)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // 本地拒绝（client.go）
 // ---------------------------------------------------------------------------
