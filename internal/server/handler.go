@@ -496,6 +496,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	clientUA := r.UserAgent()
 	// 档位能力表预热（首次请求才触发目录拉取，见 ensureEffortCaps）
 	h.ensureEffortCaps(rt)
+	dumpChatBody(body, clientModel, "client") // WILDWORK_DUMP_DIR 开启时落盘原始 body（可直接重放），默认 no-op
 	body, err = prepareChatBody(body, model, h.reasoningDefaultFor(rt.Kind))
 	if err != nil {
 		if reasoning.IsInvalid(err) {
@@ -774,8 +775,10 @@ func stripChannel(model string) string {
 // prepareChatBody 改写发往上游的 Chat 请求体：
 //  1. 归一化客户端的思考控制为顶层 reasoning_effort（见 internal/reasoning）；
 //     取值非法或同一对象内自相矛盾时返回 reasoning.InvalidError；
-//  2. 客户端未表达思考意图时注入渠道默认档（defaultEffort 为空则跳过）；
-//  3. 覆盖 model 为路由后的真实模型名。
+//  2. 修补「带 tool_calls 的 assistant / tool 消息 content 为空」这种上游会整请求
+//     拒绝的形态（见 normalizeToolTurnContent）；
+//  3. 客户端未表达思考意图时注入渠道默认档（defaultEffort 为空则跳过）；
+//  4. 覆盖 model 为路由后的真实模型名。
 //
 // 渠道层（internal/upstream 等）只负责把标准档位投影成自己协议的方言，
 // 不重复做归一化，避免同一套规则散落多处。
@@ -788,11 +791,58 @@ func prepareChatBody(body []byte, model, defaultEffort string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	normalizeToolTurnContent(normalized)
 	if defaultEffort != "" && control.IsDefault() {
 		normalized["reasoning_effort"] = defaultEffort
 	}
 	normalized["model"] = model
 	return json.Marshal(normalized)
+}
+
+// normalizeToolTurnContent 把「content 为 null 或缺失」的工具轮消息补成空串。
+//
+// 上游（实测 qoder/deepseek-flash，2026-09-24）要求带 tool_calls 的 assistant
+// 消息必须携带**字符串** content，null 或字段缺失会让它整请求拒答，并且报一个
+// 完全误导的错：
+//
+//	Messages with role 'tool' must be a response to a preceding message with 'tool_calls'
+//
+// 实测矩阵（同一份客户端真实请求，只改这一处）：
+//
+//	assistant.content = null  → 200 + provider_error 帧（空流）
+//	assistant.content = ""    → 正常出流
+//	content 字段缺失          → 200 + provider_error 帧（空流）
+//
+// 危害在于**中毒进历史**：WorkBuddy 客户端在「模型只回工具调用、没输出正文」
+// 时会把该 assistant 消息的 content 落成 null，之后这一轮永远留在 messages 里，
+// 于是该会话的每一发请求都被上游拒（重启客户端也不恢复，只能新建会话）。
+// 客户端侧的 jsonl 记录可验证：第 1/2 轮工具正常，第 3 轮起 assistant 出现
+// content=null，同一时刻其它渠道（如 qwen3.8-flash）正常。
+//
+// 放宽到 tool 角色一并处理：工具返回空内容时客户端同样可能给 null，
+// 上游对工具轮是同一套校验。
+func normalizeToolTurnContent(obj map[string]any) {
+	msgs, _ := obj["messages"].([]any)
+	for _, raw := range msgs {
+		m, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		role, _ := m["role"].(string)
+		switch role {
+		case "assistant":
+			// 只在真的带 tool_calls 时补：普通 assistant 消息 content=null 无证据会出问题。
+			if tc, ok := m["tool_calls"].([]any); !ok || len(tc) == 0 {
+				continue
+			}
+		case "tool":
+		default:
+			continue
+		}
+		if c, exists := m["content"]; !exists || c == nil {
+			m["content"] = ""
+		}
+	}
 }
 
 // ChannelModels 返回每个渠道当前生效的模型列表，与 /v1/models 同源

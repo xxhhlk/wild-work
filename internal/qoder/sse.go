@@ -207,6 +207,15 @@ func streamAsOpenAI(w io.Writer, r io.Reader, model string, flush func()) (map[s
 	sawDone := false
 	var contentLen, reasoningLen, toolCallsLen int
 	err := parseNestedSSE(r, func(chunk map[string]any) error {
+		// 上游错误帧：无 choices 会被计数为 0 误判成「空流」，这里显式识别并留原文证据。
+		// 已见两种形态（都是 200 + 无 choices + 客户端只看到「无响应」）：
+		//   JSON-RPC：{"code":-32603,"message":"Internal error","data":{...}}
+		//   provider：{"code":"provider_error","message":"Error in upstream response","details":"…"}
+		// 所以判定放宽到「code 非零数字 / 非空字符串」或带 error 字段。
+		if isUpstreamErrorFrame(chunk) {
+			raw, _ := json.Marshal(chunk)
+			log.Printf("qoder upstream error frame: model=%q frame=%s", model, raw)
+		}
 		// usage 捕获：末帧覆盖前面（OpenAI 语义末帧才是全量），并照常透传
 		if u, ok := chunk["usage"].(map[string]any); ok && len(u) > 0 {
 			usage = u
@@ -257,6 +266,25 @@ func streamAsOpenAI(w io.Writer, r io.Reader, model string, flush func()) (map[s
 		}
 	}
 	return usage, nil
+}
+
+// isUpstreamErrorFrame 判断一个透传 chunk 是否为上游错误帧。
+//
+// 判定依据是「无 choices 且带错误标识」——正常增量 chunk 一定带 choices，
+// 而错误帧只有 code/message/details 这些字段，因此不会误判正常流。
+func isUpstreamErrorFrame(chunk map[string]any) bool {
+	if _, hasErr := chunk["error"]; hasErr {
+		return true
+	}
+	switch c := chunk["code"].(type) {
+	case float64:
+		return c != 0
+	case string:
+		return c != "" && c != "0"
+	case json.Number:
+		return c.String() != "" && c.String() != "0"
+	}
+	return false
 }
 
 // Stream 实现 provider.Upstream：嵌套 SSE → 标准 OpenAI SSE 透传。
