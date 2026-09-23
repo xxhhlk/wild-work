@@ -199,8 +199,12 @@ default-pets / hyperframes-assets / rg / 7za / elevate.exe
 ### 阶段 D：接入 wild-work（触点见 §5）
 按 R10 四步走，额外注意：
 - 新渠道 auth 前缀不能与既有 glob 冲突（`qoder*.json` 会吞 `qodercn-`/`qodercom-`，见 R10 注）
-- 档位投影**默认不做**：仅当阶段 A/B 实测上游真有档位字段才登记 realm，
-  且 `SupportsEffortKind` 与 `RealmForKind` **必须同一次改完**（R23）
+- 档位投影：实测有档位字段才登记 realm，且 `SupportsEffortKind` 与 `RealmForKind` **必须同一次改完**（R23）。
+  两渠道的最终形态（2026-09-24 实测修正）：
+  - **Loomy**：接档位。上游 `/models` 下发 `reasoning_efforts`（8 模型一致：none/low/medium/high/xhigh，
+    default=low），独占 `RealmLoomy`，投影时调 `reasoning.Caps.Clamp` 按该模型 ladder 降级。
+  - **raccoon**：**不接档位**（`SupportsEffortKind` 不含它），且**主动剥离** `reasoning_effort` ——
+    实测上游默认档才是最深思考，下发任何档位反而削弱（详见 `raccoon渠道接入备忘.md` §13）。
 - 定价与 `/v1/models` 的档位**共用** `reasoning.ListingForKind`（唯一出口，不得另写一份）
 
 ### 阶段 E：验收
@@ -351,7 +355,7 @@ default-pets / hyperframes-assets / rg / 7za / elevate.exe
 | 鉴权头 | `Authorization: Bearer` 单头 | `Authorization` + `token` 双写 + **`traceparent`**（缺则挂死到超时） |
 | 凭据位置 | `%USERPROFILE%\.box-agent\config\auth.json`（**明文 JSON**） | `C:\Users\Public\Loomy\<sha256(用户)[:12]>\userData\auth-session.json` |
 | 续期 | refresh（access ≈2h / refresh ≈30d，**单会话、刷新即轮换**） | **无 refresh 端点**，session ≈14 天，到期重新导入 |
-| 思考档位 | 无（上游不下发，不投影） | 全档位（上游 `/models` 的 `reasoning_efforts` 权威，独占 `RealmLoomy`） |
+| 思考档位 | **不接档位**：LLM 网关照收但默认档最深，下发反而削弱 → 主动剥离 `reasoning_effort` | 全档位（上游 `/models` 的 `reasoning_efforts` 权威，独占 `RealmLoomy`，投影时 Clamp） |
 | 工具调用 | 实测 8 模型中 6 个 | 实测 8 模型中 7 个 |
 | 积分 | `/api/web/points/v1/balance`（每日/奖励/充值/月度四池） | `/api/v1/points/records`、`/team-points/balance` |
 | 签到 | 无 | 无（`/pet-work` 未实现） |

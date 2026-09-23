@@ -180,7 +180,7 @@ base = `https://loomyad.xunfei.cn`，鉴权 = `Authorization: Bearer <session>`�
 | 模型表 | 动态 `GET /models`；静态兜底 `imodel/spark-x` 等 |
 | 积分 | `UserResourceDetail` ← `/api/v1/points/records`（取 `availableBalance` = 常规池 + 每日池，拆两条明细） |
 | 签到 | `pet-work` 快照+领奖；不确定则豁免 |
-| 思考档位 | **默认不投影**（未发现 reasoning_effort 类字段；`imodel-anthropic` 另走 `/v1/messages`） |
+| 思考档位 | **投影**：客户端三档（low/medium/high）→ `reasoning_effort` + 三件套；按该模型 `reasoning_efforts` Clamp（见 §11） |
 
 ---
 
@@ -263,9 +263,53 @@ base = `https://loomyad.xunfei.cn`，鉴权 = `Authorization: Bearer <session>`�
    （= 常规池 `balance` + 每日池 `dailyBalance`），拆「积分 / 每日积分」两条明细；
    `usage.points_consumed` 可用于单次调用对账。
 
-> **阶段 C 补充（已实测）**：流式事件形状、错误形态矩阵（**鉴权错误 = HTTP 200 + `code:"100002"`**）、
-> 以及「关闭思考」三件套矩阵（`reasoning_effort:"none"` + `enable_thinking:false` +
-> `chat_template_kwargs.enable_thinking=false` 递减最优，但**最低仍产生 59 字思考**）
+> **阶段 C 补充（已实测）**：流式事件形状、错误形态矩阵（**鉴权错误 = HTTP 200 + `code:"100002"`**）
 > → 见 `docs/loomy-raccoon阶段C探针实测.md`。
+>
+> 该文档的「三件套单调递减」结论**已作废**（单次采样 + 用思考字符数当指标）；
+> 2026-09-24 以 `usage.completion_tokens_details.reasoning_tokens` 为权威指标重测，见 §11。
 
 
+
+## 11. 思考档位的客户端映射与实测（2026-09-24 补测）
+
+### 11.1 客户端原文（asar 取证）
+
+```js
+const hh="loomy:selected-model", mP="loomy:thinking-level";
+const Zd=[{value:"low",label:"低"},{value:"medium",label:"中"},{value:"high",label:"高"}], Ec="medium";
+function hP(e){const n=String(e||"").trim().toLowerCase();return Zd.some(r=>r.value===n)?n:Ec}
+```
+
+- localStorage 键 `loomy:thinking-level`，**三档 low/medium/high（低/中/高）**，默认 `medium`；
+  非法值回落 `medium`（`hP()`）。
+- 使用处：`Qe=await Gv(); be = Qe.thinkingEnabled===!1 ? void 0 : gP();`
+  `Qe.variant=be; A.metadata={...reasoningLevel:be, reasoningEffort:be}` ——
+  写进会话 metadata 的 `reasoningEffort`。
+- 另有一处 SDK 侧映射（`model-metadata.js`）：`MODEL_THINKING_EFFORT = { on:'medium', off:'none' }`，
+  注释明写「OpenCode 原生模型 options；**OpenAI 兼容 SDK 映射为 reasoning_effort**」。
+
+→ 与 wild-work 的投影路径一致：客户端档位 → `reasoning_effort`。
+
+### 11.2 档位对思考量的影响（权威指标 reasoning_tokens）
+
+同一硬推理 prompt（`1000!` 尾零数），直连上游，每档 3 采样：
+
+| 模型 | low | medium | high | 结论 |
+|---|---|---|---|---|
+| `deepseek-v4-flash-0731` | 295 / 109 / 114（均 173） | 421 / 109 / 362（均 297） | 448 / 293 / 635（均 459） | **单调递增** |
+| `MiniMax-M3` | 1362 / 1011 / 624 | 382 / 738 / 586 | 541 / 1218 / — | 噪声大 |
+| `spark-x` | 4129 / 718 / 1300 | 504 超时×3 | 4310 / 超时 / 1188 | 噪声大、上游易 504 |
+
+**结论**：`deepseek-v4-flash-0731` 上三档**确有单调差别**（约 2.6× 跨度），选不同档位实际生效；
+其它模型噪声大（spark-x 的 medium 档持续 504，上游该档不稳）。
+
+> **指标教训**：思考**字符数**完全不可用（值域重叠、非单调）；必须用 `reasoning_tokens`。
+> 阶段 C 的「98→59 字」结论即因此失效。另需把 `max_tokens` 设足够大，否则 ctok 顶到上限会截断思考。
+
+### 11.3 实现：Clamp 已补
+
+`internal/loomy/client.go` 的 `projectEffort` 此前只做三件套投影、**不调 `Clamp`**（与 qoder 三渠道不一致），
+会把客户端发的 `max`/`ultra` 原样下发（上游虽不报错但可能静默忽略）。
+2026-09-24 已补：先 `reasoning.Caps.Clamp(RealmLoomy, model, effort)` 再投影三件套；
+单测 `TestProjectEffortClamp` 覆盖 ladder 内/超限/窄 ladder/关闭语义/能力未知五种情形。

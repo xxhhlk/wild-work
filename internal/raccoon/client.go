@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -158,6 +159,9 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 	if m := modelOf(body); m != "" && !KnownModel(m) {
 		return nil, http.StatusBadRequest, []byte(unknownModelBody(m)), nil
 	}
+	orig := body
+	body = forceUpstreamDeepThinking(body)
+	logReasoningStrip(orig, body)
 
 	req, err := http.NewRequest(http.MethodPost, LLMBase+EpChat, bytes.NewReader(body))
 	if err != nil {
@@ -176,6 +180,71 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 		return nil, resp.StatusCode, raw, nil
 	}
 	return resp.Body, resp.StatusCode, nil, nil
+}
+
+// logReasoningStrip 记一行剥离日志（对齐 qoder 三渠道的排障约定）。
+//
+// 动机：剥离是**静默**的，出问题时无法判断「客户端到底有没有发档位」。
+// 特意打 info 级（不是 debug）：该行为反直觉，日志里留痕便于事后核对。
+func logReasoningStrip(orig, stripped []byte) {
+	// 只有「原本有、剥完没」才算真剥离 —— 逐字节相等说明本就没该字段（或非法 JSON
+	// 原样返回），无信息量不打日志。
+	if bytes.Equal(orig, stripped) {
+		return
+	}
+	var probe struct {
+		Model           string `json:"model"`
+		ReasoningEffort string `json:"reasoning_effort"`
+	}
+	if err := json.Unmarshal(orig, &probe); err != nil {
+		return
+	}
+	log.Printf("raccoon reasoning: model=%q stripped=%q (走上游默认=最深)", probe.Model, probe.ReasoningEffort)
+}
+
+// forceUpstreamDeepThinking 移除 `reasoning_effort`，强制走上游默认（= 深度思考）。
+//
+// 取证结论（2026-09-24 VM 实测，多轮交叉采样）：
+//
+//  1. 官方客户端的「深度思考 / 快速」按钮产出 `enable_deep_thinking`（布尔，默认 false），
+//     但那是 **agent 层**参数（`POST {base}/sessions/{id}/chat-conversations`、
+//     `plans/execute-async` 才吃它）。本渠道对接的 LLM 网关对该字段直接 **500**：
+//     `AsyncCompletions.create() got an unexpected keyword argument 'enable_deep_thinking'`。
+//
+//  2. LLM 网关认的是标准 `reasoning_effort`（客户端 LLM 层是 @ai-sdk/openai-compatible，
+//     其 settings.reasoningEffort → reasoning_effort；SDK 声明域 low/medium/high）。
+//
+//  3. **但实测方向与直觉相反**：同 prompt 交叉采样（reasoning_tokens，权威指标）——
+//
+//     无字段（上游默认）  rtok = 2300 / 2147 / 2133 / 4067 / 1167 / 2241
+//     reasoning_effort=high  rtok = 142 / 260 / 331 / 135 / 98 / 145
+//     reasoning_effort=low   rtok = 0
+//     reasoning_effort=none  rtok = 1803（另有 0 与 7 的样本，见下）
+//
+//     即：**上游默认档本身就是最深思考，下发任何 `reasoning_effort` 都会削弱它**
+//     （litellm 侧把该字段映射成一个偏保守的思考预算）。fast 标签模型上同样成立
+//     （sn-glm-5-3-flash：默认 rtok=26 > high=8 > medium=7 > none=0）。
+//
+// 因此「确保用的是深度思考」的做法是**删除**该字段而非下发 high —— 这正是本渠道
+// 不接入档位（`SupportsEffortKind` 不含 raccoon）的原因：客户端若表达了档位
+// （WorkBuddy 的档位选择器、面板默认档），一律在此被剥离，保证实际走深度思考。
+//
+// 代价：客户端**无法**通过档位让该渠道走"快速"（那需要换用 fast 标签的模型）。
+// 这是取证的必然结果 —— 下发 low 也未必等于快速（实测 0 与 1803 并存，行为不稳定）。
+func forceUpstreamDeepThinking(body []byte) []byte {
+	var obj map[string]any
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return body
+	}
+	if _, ok := obj["reasoning_effort"]; !ok {
+		return body
+	}
+	delete(obj, "reasoning_effort")
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return body
+	}
+	return out
 }
 
 // modelOf 取请求体里的 model（解析失败返回空串）。

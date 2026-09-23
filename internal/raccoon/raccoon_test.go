@@ -244,3 +244,58 @@ func TestParsePointsBalance(t *testing.T) {
 		t.Fatalf("available_points(%d) 应等于可用池之和(%d)", frozen.AvailablePoints, usable)
 	}
 }
+
+// TestForceUpstreamDeepThinking 守门：本渠道必须剥离 `reasoning_effort`，走上游默认（= 深度思考）。
+//
+// 取证（2026-09-24 VM 实测，reasoning_tokens 多轮交叉采样）：
+//
+//	无字段（上游默认）      rtok = 2300 / 2147 / 2133 / 4067
+//	reasoning_effort=high  rtok = 142 / 260 / 331 / 135
+//	reasoning_effort=low   rtok = 0
+//
+// 即上游默认档本身最深，下发任何档位都会削弱思考量。故本渠道对带 `reasoning_effort`
+// 的请求一律剥离（客户端档位选择器/面板默认档在此被中和），确保实际走深度思考。
+func TestForceUpstreamDeepThinking(t *testing.T) {
+	cases := []struct {
+		name       string
+		in         string
+		wantEffort string // 期望残留值；空串 = 字段必须不存在
+	}{
+		{"未表达 → 不改写", `{"model":"m","messages":[]}`, ""},
+		{"high → 剥离", `{"model":"m","reasoning_effort":"high"}`, ""},
+		{"low → 剥离", `{"model":"m","reasoning_effort":"low"}`, ""},
+		{"medium → 剥离", `{"model":"m","reasoning_effort":"medium"}`, ""},
+		{"none → 剥离", `{"model":"m","reasoning_effort":"none"}`, ""},
+		{"空串 → 剥离", `{"model":"m","reasoning_effort":""}`, ""},
+		{"上游未声明的 ultra → 剥离", `{"model":"m","reasoning_effort":"ultra"}`, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := forceUpstreamDeepThinking([]byte(tc.in))
+			var m map[string]any
+			if err := json.Unmarshal(out, &m); err != nil {
+				t.Fatal(err)
+			}
+			got, _ := m["reasoning_effort"].(string)
+			if got != tc.wantEffort {
+				t.Fatalf("reasoning_effort = %q, want %q", got, tc.wantEffort)
+			}
+			// 其它字段不得丢失（model/messages 是路由与模型校验的依赖）。
+			if m["model"] != "m" {
+				t.Fatalf("model 字段丢失: %v", m)
+			}
+		})
+	}
+	t.Run("未表达时输出与输入逐字节一致", func(t *testing.T) {
+		raw := []byte(`{"model":"m","messages":[]}`)
+		if got := string(forceUpstreamDeepThinking(raw)); got != string(raw) {
+			t.Fatalf("未表达档位时不应改写：%s", got)
+		}
+	})
+	t.Run("非法 JSON 原样返回", func(t *testing.T) {
+		raw := []byte(`not-json`)
+		if got := string(forceUpstreamDeepThinking(raw)); got != string(raw) {
+			t.Fatalf("非法 JSON 应原样返回，得到 %s", got)
+		}
+	})
+}

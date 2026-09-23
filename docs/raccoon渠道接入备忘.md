@@ -165,7 +165,7 @@ profileId = "hosted:<sha256(apiBase)[:16]>"
 | 模型表 | 动态 `GET /api/web/llm/v2/model_catalog`；兜底 `raccoon-chat-ml-5-5` |
 | 积分 | **`GET /api/web/points/v1/balance`** → `{available_points, daily_points, monthly_points, reward_points, topup_points, topup_frozen}` |
 | 签到 | 未发现签到概念（有 `schedule_tasks.db`，需 A3 确认） |
-| 思考档位 | **默认不投影**（未发现 reasoning_effort 类字段） |
+| 思考档位 | **不投影且主动剥离** `reasoning_effort`：网关认该字段，但实测默认档最深、下发反而削弱（见 §13） |
 | DPAPI | **不需要**（凭据明文），Windows-only 隔离要求降低 |
 
 ---
@@ -240,7 +240,9 @@ profileId = "hosted:<sha256(apiBase)[:16]>"
 
 > **费率数据源确定**：`billing_multiplier`（0.2–1）+ `billing_category`（normal/lite）→ 直接喂 `FetchModelPricing`。
 > `visible:false` 的 3 个是内部模型（UI 不展示但**可调用**）→ 渠道应支持但标注。
-> **未发现 `reasoning_efforts` 类字段** → 档位投影**默认不做**（与千问办公同处理）。
+> **模型目录未下发 `reasoning_efforts`** → 不声明档位能力（`SupportsEffortKind` 不含 raccoon）。
+> ⚠️ 但**网关仍认** `reasoning_effort`（SDK 声明域 low/medium/high），且实测**默认档最深**：
+> 客户端/面板若下发该字段会削弱思考量 → 渠道层必须**主动剥离**（见 §13，2026-09-24 实测修正）。
 
 ### 凭据刷新链路（官方生产代码确认，`build/electron/main/scheduleAuth.js`）
 
@@ -268,7 +270,7 @@ resp: { data: { access_token, refresh_token } }      ← refresh_token 会轮换
 1. **不需要 DPAPI/OSCrypt**；导入器直接读 `~/.box-agent/config/auth.json`（`BOX_AGENT_CONFIG_DIR` 可覆盖）。
 2. **必须实现 refresh**：access 仅 2h，靠 `POST /api/electron/auth/v1/refresh` + 30 天 refresh_token 自持；
    轮换后的 refresh_token **必须原子落盘**（对齐 wild-work R20「凡调 RefreshToken 必紧接 SaveAtomic」）。
-3. **档位不投影**；费率直接用 `billing_multiplier`。
+3. **档位不投影、且主动剥离 `reasoning_effort`**（默认档最深，见 §13）；费率直接用 `billing_multiplier`。
 4. 默认模型别名：`raccoon-chat-ml-5-5` → 实际 `raccoon-8c4485`（响应回填真实 id 时注意对齐 `/v1/models` 声明）。
 
 > **阶段 C 补充（已实测）**：流式为**真增量**（`firstContentEvent=1`，13 事件）、
@@ -358,3 +360,40 @@ resp: { data: { access_token, refresh_token } }      ← refresh_token 会轮换
 
 **两条路的关系**：拿到的是**同一个上游账号**（refresh_token 单会话，会互相踢）；
 协议登录不依赖客户端登录态，但登录期间客户端收不到回调，且客户端一启动就会重写协议注册（劫持失效）。
+
+## 13. 思考控制：「深度思考」的正确做法是**不发档位**（2026-09-24 实测）
+
+### 13.1 客户端按钮 ≠ 网关字段
+
+| 层 | 字段 | 说明 |
+|---|---|---|
+| 客户端「深度思考 / 快速」开关 | `enable_deep_thinking`（布尔，默认 `false`） | 产出在 `p()` 里：`{enable_deep_thinking: deepThink, enable_web_search, enable_deep_research: true}` |
+| 该字段发给谁 | **agent 层**：`POST /sessions/{id}/chat-conversations`、`plans/{id}/execute-async` | 走 `input_type` / `payload.input` 形状 |
+| 本渠道对接的 LLM 网关 | `POST /api/web/llm/v2/chat/completions` | 对该字段直接 **500**：`AsyncCompletions.create() got an unexpected keyword argument 'enable_deep_thinking'` |
+| LLM 网关认的字段 | 标准 `reasoning_effort` | 客户端 LLM 层是 `@ai-sdk/openai-compatible`，`settings.reasoningEffort → reasoning_effort`，SDK 声明域 `low \| medium \| high` |
+
+`enable_deep_research` 同理 —— 发到 LLM 网关也是 500（同一报错模板）。
+
+### 13.2 关键实测：**上游默认档才是最深**
+
+同 prompt（`1000! 尾零数`，硬推理）+ `reasoning_tokens`（权威指标）交叉采样：
+
+| 请求 | rtok 各次采样 | 含义 |
+|---|---|---|
+| **无 `reasoning_effort`** | 2300 / 2147 / 2133 / 4067 / 1167 / 2241 | **默认档 = 最深** |
+| `reasoning_effort=high` | 142 / 260 / 331 / 135 / 98 / 145 | 反而**锐减 ~90%** |
+| `reasoning_effort=medium` | 1677 | 居中 |
+| `reasoning_effort=low` | 0 | 基本不思考 |
+
+fast 标签模型（`sn-glm-5-3-flash`，短 prompt）同样成立：默认 `rtok=26` > high `8` > medium `7` > none `0`。
+
+> **结论**：`reasoning_effort` 在 litellm 侧被映射成一个**偏保守的思考预算**，下发任何值都比"不告诉它"更保守。
+> 因此本渠道**主动剥离**该字段（`forceUpstreamDeepThinking`），保证实际走深度思考。
+> 代价：客户端无法通过档位让该渠道"快速"——那需要换用 fast 标签的模型。
+
+### 13.3 对 wild-work 的影响
+
+- `SupportsEffortKind` **不含 raccoon**：`/v1/models` 不声明档位，客户端不会因此发出档位选择器。
+- 但 WorkBuddy 侧的**面板默认档**（`currentReasoningEffort()`）与客户端的档位字段仍可能落到请求里
+  （`prepareChatBody` 会写 `reasoning_effort`）→ 渠道层必须自行剥离，不能指望上游忽略。
+- 单测 `TestForceUpstreamDeepThinking` 守住该语义（含"未表达时逐字节不改写"）。

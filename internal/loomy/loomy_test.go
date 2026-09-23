@@ -9,6 +9,7 @@ import (
 
 	"wild-work/internal/auth"
 	"wild-work/internal/provider"
+	"wild-work/internal/reasoning"
 )
 
 // TestClassifyBusinessCodeFirst 守门：Loomy 的鉴权失败是 **HTTP 200 + code 100002**，
@@ -85,6 +86,53 @@ func TestProjectEffort(t *testing.T) {
 			t.Fatalf("调用方自定义的 chat_template_kwargs 被覆盖: %v", ctk)
 		}
 	})
+}
+
+// TestProjectEffortClamp 守门：档位必须按该模型 ladder 降级（与 Qoder 三渠道对齐）。
+//
+// 上游对不认识的档位**静默按默认档处理**（不报错），不降级会让用户以为档位生效。
+// 测试用独立模型名，避免污染其它用例共享的进程级能力表（reasoning.Caps）。
+func TestProjectEffortClamp(t *testing.T) {
+	// 真实形态：上游 8 个模型声明一致（none/low/medium/high/xhigh，default=low）。
+	reasoning.Caps.SetRemote(reasoning.RealmLoomy, map[string]reasoning.Cap{
+		"probe-full": {Efforts: []string{"none", "low", "medium", "high", "xhigh"}, DefaultEffort: "low"},
+		// 窄 ladder：只有 low/high
+		"probe-narrow": {Efforts: []string{"low", "high"}, DefaultEffort: "low"},
+		// 能力未知（目录未拉到）：不降级，原样下发
+		"probe-unknown": {},
+	})
+	cases := []struct {
+		name   string
+		model  string
+		effort string
+		want   string
+		wantOn bool
+	}{
+		{"ladder 内档位原样", "probe-full", "high", "high", true},
+		{"超出 ladder 的 max → 降最高档", "probe-full", "max", "xhigh", true},
+		{"超出 ladder 的 ultra → 降最高档", "probe-full", "ultra", "xhigh", true},
+		{"窄 ladder：xhigh → 降 high", "probe-narrow", "xhigh", "high", true},
+		{"窄 ladder：medium → 降 low（不超发强度）", "probe-narrow", "medium", "low", true},
+		{"窄 ladder：minimal → 降 low（偏离最小）", "probe-narrow", "minimal", "low", true},
+		{"none 保持关闭语义", "probe-full", "none", "none", false},
+		{"能力未知时不降级", "probe-unknown", "ultra", "ultra", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := `{"model":"` + tc.model + `","reasoning_effort":"` + tc.effort + `","messages":[]}`
+			out := projectEffort([]byte(raw))
+			var m map[string]any
+			if err := json.Unmarshal(out, &m); err != nil {
+				t.Fatal(err)
+			}
+			if got := m["reasoning_effort"]; got != tc.want {
+				t.Fatalf("reasoning_effort = %v, want %v", got, tc.want)
+			}
+			if got := m["enable_thinking"]; got != tc.wantOn {
+				t.Fatalf("enable_thinking = %v, want %v", got, tc.wantOn)
+			}
+		})
+	}
 }
 
 // TestParsePoints 守门：上游积分有两个池（balance 常规 + dailyBalance 每日），

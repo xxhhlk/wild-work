@@ -41,7 +41,7 @@ Wild-Work 是 WorkBuddy（国内版+国际版）/TraeWork/Qoder 多渠道账号�
 | R13 | **三接口兼容采用两层结构：内层 handler 不动，新增 `internal/gateway` 边缘层**，经 **in-process 调用**（`io.Pipe` + ResponseWriter 形状）复用内层 | 代码量比内联重构多 20%，但改动面小一个数量级（主链路仅 2 处调用点 + 1 个访问器），回归风险低、可脱离 pool 单测。**不得用 HTTP 自环**（`0.0.0.0` 监听不可作目标、鉴权双份、启动竞态） |
 | R14 | **`Stream`/`Aggregate` 的 model 由调用方显式传入**，渠道不得用实例字段记忆「上次请求的模型名」 | 旧实现 qoder 用全局 `lastModel`，多账号并发会串号；traework 恒为空串。详见 `docs/三接口兼容改造备忘.md` §3 |
 | R15 | **Responses 的 `function_call` 必须是独立 output item**（带 `call_id`），Anthropic 的 tool_use 参数必须走 `input_json_delta` | 参考实现 `tokligence-gateway` 两处写法不合规范（塞进 `message.content`、start 里一次性给完整 input），Codex/Claude Code 会解析失败 |
-| R16 | **思考强度统一走 `internal/reasoning`**：客户端各写法（`reasoning_effort` / `reasoning.effort` / `thinking.*` / `output_config.effort` / `enable_thinking` / `disable_reasoning` / `think`）在**内层 handler**（`prepareChatBody`）归一化成顶层 `reasoning_effort`，非法/自相矛盾回 400 `invalid_reasoning_control`；**渠道层只做方言投影**（WorkBuddy 家族 → low/high/max；Qoder → `is_reasoning` + `parameters.reasoning_effort`/`enable_thinking`；TraeWork 协议无此字段），不重复做兼容字段解析 | 移植自 Buddy2api `reasoning_controls.py`。规则只应存在一处：渠道各自解析会让「同一客户端写法在不同渠道表现不同」。默认档 `compat.reasoning_effort` 只在**客户端未表达**时注入，对 WorkBuddy 双面与 Qoder 生效（Qoder 的具体档位由渠道层按模型 ladder 就近降级） |
+| R16 | **思考强度统一走 `internal/reasoning`**：客户端各写法（`reasoning_effort` / `reasoning.effort` / `thinking.*` / `output_config.effort` / `enable_thinking` / `disable_reasoning` / `think`）在**内层 handler**（`prepareChatBody`）归一化成顶层 `reasoning_effort`，非法/自相矛盾回 400 `invalid_reasoning_control`；**渠道层只做方言投影**（WorkBuddy 家族 → low/high/max；Qoder → `is_reasoning` + `parameters.reasoning_effort`/`enable_thinking`；TraeWork 协议无此字段），不重复做兼容字段解析 | 移植自 Buddy2api `reasoning_controls.py`。规则只应存在一处：渠道各自解析会让「同一客户端写法在不同渠道表现不同」。默认档 `compat.reasoning_effort` 只在**客户端未表达**时注入，对 WorkBuddy 双面与 Qoder 生效（Qoder 的具体档位由渠道层按模型 ladder 就近降级）。Loomy 按 `RealmLoomy` ladder Clamp；**raccoon 例外：必须剥离该字段**（其实测默认档最深，下发档位反而削弱思考量，见 §13 备忘） |
 | R17 | **Responses 的思考链是独立 `reasoning` output item，且必须排在 `output_index=0`**；`output_index` 按实际输出顺序动态分配（思考 → 文本 → 工具），不得硬编码 | 官方顺序要求思考先于回答；硬编码 message=0 会让带思考的响应出现倒序 item。思考增量只在文本开始前接受，文本开始后到达的片段丢弃 |
 | R18 | **档位必须按模型能力就近降级，不得按模型家族固定压档**：能力表优先取上游目录接口的 `reasoning.supportedEfforts`/`defaultEffort`（`provider.ModelInfo.SupportedEfforts` → `internal/reasoning.Caps`），缺失才回落 `internal/reasoning/catalog.go` 的 realm 静态表；未收录模型档位原样透传 | 上游各模型可接受档位差异很大（国内版 `deepseek-v4-pro` 无 `max`、国际版 `deepseek-v4.1-flash` 只认 `high`、`glm-5.1` 只认 `medium`），旧的「deepseek 家族固定压 low/high/max」会发出非法档位。国内版/国际版**分表**，绝不混用（同一模型两面档位不同） |
 | R19 | **DeepSeek 系「开思考」= `thinking:{"type":"enabled"}` + 档位，二者缺一上游按不思考应答**；网关在客户端表达开思考时自动补 `thinking.type`，并给 assistant 消息回填 string 类型的 `reasoning_content`（多轮一致性）。由 `compat.deepseek_thinking`（默认开）统一开关，客户端显式给出的 `thinking.type` 绝不覆盖 | 逆向官方客户端 `codebuddy.js`（`thinkingFormat:"deepseek"` + `requiresReasoningContentOnAssistantMessages`）的结论；此前只发 `reasoning_effort`，DeepSeek 思维链可能一直为空。与参考实现差异：**不在客户端未表达时强行开思考**，避免给不需要思考的请求增加延迟与额度开销 |
@@ -141,11 +141,16 @@ POST /api/quit                     # 退出程序
 > 积分：`GET /api/web/points/v1/balance`（**与推理网关不同前缀** —— 不在 `/api/web/llm/v2` 下，容易找漏）
 > → `available_points` + 四个池子（每日/奖励/充值/月度），`topup_frozen` 标记充值池冻结，
 > 由 `UserResourceDetail` 按池拆分并用 `ResourceItem.Usable` 表达冻结；费率取上游 `billing_multiplier`。
+> **思考**：不接档位且**主动剥离** `reasoning_effort` —— 实测上游默认档才是最深思考，
+> 下发任何档位（含 high）反而让思考量锐减约 90%（`internal/raccoon/client.go` 的
+> `forceUpstreamDeepThinking`）。详见 `docs/raccoon渠道接入备忘.md` §13。
 > 详见 `docs/raccoon渠道接入备忘.md`。
 > **Loomy（`loomy/*`）**：讯飞自有网关 `https://loomyad.xunfei.cn/api/v1`（OpenAI 兼容，SSE）；
 > 请求头必须带 `Authorization` + `token`（双写）+ **`traceparent`**（缺失会挂死到超时）+ `loomy-version`；
 > 凭据来自 `C:\Users\Public\Loomy\<sha256(用户)[:12]>\userData\auth-session.json`（session ≈14 天，**无 refresh 端点**）；
-> 档位来自上游 `/models` 的 `reasoning_efforts`（权威值，独占 `RealmLoomy` 面）。
+> 档位来自上游 `/models` 的 `reasoning_efforts`（权威值，独占 `RealmLoomy` 面），
+> 客户端三档（low/medium/high，客户端 `loomy:thinking-level`）→ `reasoning_effort` + 三件套，
+> 投影时按该模型 ladder `reasoning.Caps.Clamp` 就近降级。
 > 详见 `docs/loomy渠道接入备忘.md`。
 > **OpenCodeZen（`oczen/*`，匿名免费）**：凭证固定字面量 `public`，无账号/无签到/无积分；
 > 免费档有三道闸门（规范 `ses_<12hex><14Base62>` 会话头 + `stream:true` 且 tools 含 `bash`/`read` +

@@ -7,12 +7,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
 
 	"wild-work/internal/auth"
 	"wild-work/internal/provider"
+	"wild-work/internal/reasoning"
 )
 
 // Client 讯飞 Loomy 上游客户端。
@@ -109,6 +111,7 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 		return nil, http.StatusBadRequest, []byte(unknownModelBody(m)), nil
 	}
 	projected := projectEffort(body)
+	logReasoningOnce(body, projected)
 
 	req, err := http.NewRequest(http.MethodPost, GatewayBase+EpChat, bytes.NewReader(projected))
 	if err != nil {
@@ -128,13 +131,21 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 	return resp.Body, resp.StatusCode, nil, nil
 }
 
-// projectEffort 把顶层 `reasoning_effort` 投影成官方客户端的三件套方言。
+// projectEffort 把顶层 `reasoning_effort` 投影成官方客户端的三件套方言，并按模型能力降级档位。
 //
 // 官方形态（桌面版 `llm-completion.js` 实测）：
 //
 //	{ reasoning_effort, enable_thinking, chat_template_kwargs: { enable_thinking } }
 //
-// 阶段 C 实测：三件套能把思考从 98 字降到 59 字（单调递减），但该模型**无法完全关闭**思考。
+// 档位降级（与 Qoder 三渠道对齐）：上游 `/models` 为每个模型声明 `reasoning_efforts`
+// （实测 8 个模型一致，均为 none/low/medium/high/xhigh，default=low）。
+// 客户端可能发上游不认的档位（`max` / `ultra` / `minimal`）—— 上游虽然宽容不报错，
+// 但会静默按默认档处理，让用户以为档位生效。故先 Clamp 到该模型 ladder 内的档位。
+//
+// ⚠️ 阶段 C 文档曾记「三件套让思考单调递减」——那是**单次采样**，2026-09-24 用同一模型
+// 每档 3 次采样发现值域完全重叠（none 1102/1048/1465、high 1085/1526/1455），
+// 该结论不成立。协议层投影正确不代表模型层会精细响应档位，故此处只保证「发出的档位合法」。
+//
 // 只在客户端确实表达了档位时才补字段（未表达时保持原样，避免替客户端做决定 —— 对齐 R19 的思路）。
 func projectEffort(body []byte) []byte {
 	var obj map[string]any
@@ -150,7 +161,12 @@ func projectEffort(body []byte) []byte {
 	if effort == "" {
 		return body
 	}
+	model, _ := obj["model"].(string)
+	if clamped := reasoning.Caps.Clamp(reasoning.RealmLoomy, strings.TrimSpace(model), effort); clamped != "" {
+		effort = clamped
+	}
 	on := effort != "none"
+	obj["reasoning_effort"] = effort
 	obj["enable_thinking"] = on
 	if _, exists := obj["chat_template_kwargs"]; !exists {
 		obj["chat_template_kwargs"] = map[string]any{"enable_thinking": on}
@@ -160,6 +176,27 @@ func projectEffort(body []byte) []byte {
 		return body
 	}
 	return out
+}
+
+// logReasoningOnce 记一行档位日志（对齐 qoder 三渠道的排障约定）。
+//
+// 动机：Loomy 的档位此前完全静默 —— 实测时无法从 app.log 判断
+// 「客户端表达了什么 / Clamp 后下发什么」，只能靠抓包。这里补上最终生效值。
+func logReasoningOnce(orig, projected []byte) {
+	var before, after struct {
+		Model           string `json:"model"`
+		ReasoningEffort string `json:"reasoning_effort"`
+	}
+	if err := json.Unmarshal(orig, &before); err != nil {
+		return
+	}
+	if err := json.Unmarshal(projected, &after); err != nil {
+		return
+	}
+	if before.ReasoningEffort == "" && after.ReasoningEffort == "" {
+		return // 客户端未表达且投影不动：无信息量，不打日志
+	}
+	log.Printf("loomy reasoning: model=%q in=%q out=%q", before.Model, before.ReasoningEffort, after.ReasoningEffort)
 }
 
 // modelOf 取请求体里的 model。
