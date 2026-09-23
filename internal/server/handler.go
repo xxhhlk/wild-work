@@ -622,12 +622,15 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if len(sts) == 0 {
+		log.Printf("503 no_healthy_account platform=%s reason=no_account", rt.Kind)
 		writeOpenAIError(w, http.StatusServiceUnavailable, "no_healthy_account",
 			fmt.Sprintf("渠道 %s 尚未绑定账号：请在面板「账号管理」中添加 %s 账号（或把模型改为已接入渠道，如 workbuddy/glm-5.2）",
 				rt.Kind, rt.Kind))
 		return
 	}
 	if bound == 0 {
+		log.Printf("503 no_healthy_account platform=%s accounts=%d disabled=%d cooling=%d reason=all_unavailable",
+			rt.Kind, len(sts), disabled, cooling)
 		writeOpenAIError(w, http.StatusServiceUnavailable, "no_healthy_account",
 			fmt.Sprintf("渠道 %s 的 %d 个账号当前全部不可用（禁用 %d / 冷却 %d）：可在面板查看原因；%s 账号需重新登录（日志会有 refresh token is invalid）",
 				rt.Kind, len(sts), disabled, cooling, rt.Kind))
@@ -635,8 +638,15 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	msg := fmt.Sprintf("渠道 %s 暂无可用账号（共 %d 个：禁用 %d / 冷却 %d；其余余额耗尽或出错）",
 		rt.Kind, len(sts), disabled, cooling)
+	// 这一支最需要日志：调用方只看到 503，而账号并非禁用/冷却，原因全在 lastErr 里
+	// （2026-09-23 验收时 405a1c 的瞬时 503 因无日志而查不到任何线索，只能靠复测反推）。
 	if lastErr != nil {
+		log.Printf("503 no_healthy_account platform=%s accounts=%d disabled=%d cooling=%d err=%v",
+			rt.Kind, len(sts), disabled, cooling, lastErr)
 		msg += ": " + lastErr.Error()
+	} else {
+		log.Printf("503 no_healthy_account platform=%s accounts=%d disabled=%d cooling=%d reason=no_remaining",
+			rt.Kind, len(sts), disabled, cooling)
 	}
 	writeOpenAIError(w, http.StatusServiceUnavailable, "no_healthy_account", msg)
 }
