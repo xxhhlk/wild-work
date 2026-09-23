@@ -199,6 +199,12 @@ func responsesToChat(in map[string]any, resolvedModel string, maxTokensCap int) 
 	if u := asString(in["user"]); u != "" {
 		out["user"] = u
 	}
+	// 上下文档位提示透传（issue #27）：渠道侧解析 context_length/context_window
+	for _, k := range []string{"context_length", "context_window"} {
+		if n, ok := asInt(in[k]); ok && n > 0 {
+			out[k] = n
+		}
+	}
 	return out, nil
 }
 

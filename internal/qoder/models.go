@@ -19,11 +19,12 @@ import (
 	"wild-work/internal/reasoning"
 )
 
-// DynamicModel 上游 chat scene 单个模型。
+// DynamicModel 上游模型条目（chat/assistant/developer 场景同构）。
 type DynamicModel struct {
 	Key            string  `json:"key"`
 	DisplayName    string  `json:"display_name"`
 	Enable         bool    `json:"enable"`
+	IsDefault      bool    `json:"is_default"`
 	IsReasoning    bool    `json:"is_reasoning"`
 	IsVL           bool    `json:"is_vl"`
 	MaxInputTokens int64   `json:"max_input_tokens"`
@@ -31,6 +32,13 @@ type DynamicModel struct {
 	// MaxOutputTokens 输出上限（桌面端把它写进 parameters.max_tokens）。
 	// 目录缺该字段时按 defaultMaxOutputTokens 兜底。
 	MaxOutputTokens int64 `json:"max_output_tokens"`
+	// Format 上游声明的协议形态；Source 上游声明来源（model_config.source 即思考总开关）。
+	Format string `json:"format"`
+	Source string `json:"source"`
+	// ContextWindow context_config 默认档（is_default）的 token_count；
+	// AvailableWindows 全部档位（升序）。两者是 json:"-"，由 parseSceneModels 解析后回填。
+	ContextWindow    int64   `json:"-"`
+	AvailableWindows []int64 `json:"-"`
 	// ContextConfig 上下文窗口档位表：
 	//   {"200K":{"token_count":200000,"is_default":true},"400K":{"token_count":400000}}
 	// 桌面端把标了 is_default 的那档写进 parameters.context_length。
@@ -107,12 +115,17 @@ func parseDefaultContextWindow(raw json.RawMessage) int64 {
 	if err := json.Unmarshal(raw, &cfg); err != nil {
 		return 0
 	}
+	// 多个档同时标默认时取最小值：确定性 + 保守，不依赖 map 迭代序。
+	var best int64
 	for _, v := range cfg {
-		if v.IsDefault && v.TokenCount > 0 {
-			return v.TokenCount
+		if !v.IsDefault || v.TokenCount <= 0 {
+			continue
+		}
+		if best == 0 || v.TokenCount < best {
+			best = v.TokenCount
 		}
 	}
-	return 0
+	return best
 }
 
 // parseContextOptions 从 context_config 取全部可选窗口档位，升序去重。
@@ -187,29 +200,41 @@ func (c *Client) fetchModels(a *auth.Auth) ([]DynamicModel, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
 		return nil, fmt.Errorf("models parse: %w", err)
 	}
-	chatRaw, ok := apiResp["chat"]
-	if !ok {
-		return nil, fmt.Errorf("no chat scene in models response")
-	}
-	var models []DynamicModel
-	if err := json.Unmarshal(chatRaw, &models); err != nil {
-		return nil, fmt.Errorf("chat scene parse: %w", err)
-	}
-	enabled := make([]DynamicModel, 0, len(models))
-	for _, m := range models {
-		if m.Enable && m.Key != "" {
+	return parseSceneModels(apiResp)
+}
+
+// parseSceneModels 解析模型列表响应：assistant→developer→chat 三级回退。
+// 上游把模型挪场景时（如迁到 assistant）不至于硬失败（上游 issue #27 同批改动）。
+func parseSceneModels(apiResp map[string]json.RawMessage) ([]DynamicModel, error) {
+	for _, scene := range []string{"assistant", "developer", "chat"} {
+		raw, ok := apiResp[scene]
+		if !ok {
+			continue
+		}
+		var models []DynamicModel
+		if err := json.Unmarshal(raw, &models); err != nil {
+			continue
+		}
+		enabled := make([]DynamicModel, 0, len(models))
+		for _, m := range models {
+			if !m.Enable || m.Key == "" {
+				continue
+			}
+			// context_config 解析后回填（两个字段是 json:"-"，不解析永远是零值）
+			m.ContextWindow = parseDefaultContextWindow(m.ContextConfig)
+			m.AvailableWindows = parseContextOptions(m.ContextConfig)
 			enabled = append(enabled, m)
 		}
+		if len(enabled) > 0 {
+			return enabled, nil
+		}
 	}
-	if len(enabled) == 0 {
-		return nil, fmt.Errorf("no enabled chat models")
-	}
-	return enabled, nil
+	return nil, fmt.Errorf("no enabled models in assistant/developer/chat scenes")
 }
 
 // FetchModels 实现 provider.Upstream：动态模型 → provider.ModelInfo。
 // 客户端名 = display_name 规范化（无 display_name 用 key 兜底）。
-// 同时把 客户端名→key 映射缓存到 Client，供 ChatStream 路由。
+// 同时把 客户端名→key 映射与 key→条目表缓存到 Client，供 ChatStream 路由与取 format/source。
 func (c *Client) FetchModels(a *auth.Auth) ([]provider.ModelInfo, error) {
 	dyn, err := c.fetchModels(a)
 	if err != nil {
@@ -231,6 +256,8 @@ func (c *Client) FetchModels(a *auth.Auth) ([]provider.ModelInfo, error) {
 			IsVL:                 m.IsVL,
 			MaxInputTokens:       m.MaxInputTokens,
 			MaxOutputTokens:      m.MaxOutputTokens,
+			Format:               m.Format,
+			Source:               m.Source,
 			DefaultContextWindow: parseDefaultContextWindow(m.ContextConfig),
 			ContextOptions:       opts,
 		}

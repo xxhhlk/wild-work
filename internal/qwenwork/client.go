@@ -531,7 +531,7 @@ func (c *Client) userResource(a *auth.Auth) (int64, []provider.ResourceItem, err
 		}}, nil
 	}
 	items := make([]provider.ResourceItem, 0, 4)
-	add := func(name string, bal float64, expireAt string) {
+	add := func(name, key string, bal float64, expireAt string) {
 		remain := truncCredits(bal)
 		items = append(items, provider.ResourceItem{
 			Name:     name,
@@ -539,6 +539,7 @@ func (c *Client) userResource(a *auth.Auth) (int64, []provider.ResourceItem, err
 			Used:     0,
 			Remain:   remain,
 			ExpireAt: expireAt,
+			Key:      key,  // 钱包类别伪键（daily/longterm/monthly），ledger 差分对账用
 			Usable:   true, // 千问办公无端点分区，所有钱包均可被本工具消耗
 		})
 	}
@@ -552,15 +553,15 @@ func (c *Client) userResource(a *auth.Auth) (int64, []provider.ResourceItem, err
 				break
 			}
 		}
-		add("每日奖励", d, exp)
+		add("每日奖励", "daily", d, exp)
 	}
 	// 长期钱包（欢迎奖励/充值）
 	if l := wallets.LongtermCredits.TotalBalance; l > 0 {
-		add("长期积分", l, "")
+		add("长期积分", "longterm", l, "")
 	}
 	// 月度钱包（订阅权益）
 	if m := wallets.MonthlyCredits.TotalBalance; m > 0 {
-		add("月度积分", m, "")
+		add("月度积分", "monthly", m, "")
 	}
 	if len(items) == 0 {
 		items = append(items, provider.ResourceItem{
@@ -613,8 +614,8 @@ func (c *Client) DailyCheckin(a *auth.Auth) error {
 func (c *Client) Classify(status int, body string) provider.ErrKind { return Classify(status, body) }
 
 // Stream 实现 provider.Upstream（嵌套 SSE → 标准 OpenAI SSE 透传）。
-func (c *Client) Stream(w http.ResponseWriter, r io.Reader, model string) error {
-	return Stream(w, r, model)
+func (c *Client) Stream(w http.ResponseWriter, r io.Reader, model string) (map[string]any, error) {
+	return StreamCapture(w, r, model, nil)
 }
 
 // Aggregate 实现 provider.Upstream（嵌套 SSE 聚合）。
@@ -633,6 +634,7 @@ var hardMarkers = []string{
 	"not enough credit", "credit is not enough",
 	"积分不足", "额度不足", "余额不足", "积分用完", "额度用尽", "没有积分",
 }
+
 // Classify 按 HTTP 状态码 + body 判定错误类别。
 // 429 优先于 hardRule（限流 body 高频带 "quota exceeded"，见 AGENTS.md §6.15）。
 func Classify(status int, body string) provider.ErrKind {

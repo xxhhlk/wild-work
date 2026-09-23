@@ -54,7 +54,7 @@ func (echoUpstream) Classify(int, string) provider.ErrKind {
 }
 
 // Stream 把入参 model 写进每个 chunk，模拟「上游返回 auto、网关回填客户端名」。
-func (echoUpstream) Stream(w http.ResponseWriter, r io.Reader, model string) error {
+func (echoUpstream) Stream(w http.ResponseWriter, r io.Reader, model string) (map[string]any, error) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	if f, ok := w.(http.Flusher); ok {
 		defer f.Flush()
@@ -73,7 +73,7 @@ func (echoUpstream) Stream(w http.ResponseWriter, r io.Reader, model string) err
 		_, _ = fmt.Fprintf(w, "data: %s\n\n", raw)
 	}
 	_, _ = io.WriteString(w, "data: [DONE]\n\n")
-	return nil
+	return nil, nil
 }
 
 func (echoUpstream) Aggregate(r io.Reader, model string) (map[string]any, error) {

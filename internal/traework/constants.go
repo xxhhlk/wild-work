@@ -16,7 +16,19 @@ const (
 	DeviceBrand    = "20Y5A002XX"     // 设备机型示例（指纹头用，可替换为真实机型，无需精确匹配）
 	OSVersion      = "Windows 10 Pro" // 真实客户端系统版本
 	PluginVersion  = "2.3.73734"      // 真实客户端插件版本（登录 URL 用）
-	Function       = "solo_work_lite"
+	Function       = "solo_work_lite" // 办公版（TraeWork）function
+	FunctionCode   = "solo_agent"     // 代码版（TraeCode）function
+
+	// 定价分组：Trae 同一上游有两个 function，各渠道记录自己所用的口径。
+	// PricingFunctionsCode 必须含**无** _remote 后缀的 solo_agent，否则拿不到新版
+	// flash 模型的费率（实测 deepseek-v4.1-flash、glm-5.3-flash 仅在 solo_agent
+	// 分组下发）；_remote 分组用于补齐旧命名模型。
+	// PricingPrimary* 是各渠道「主 function」：同一模型可能在多个分组下倍率不同
+	// （实测豆包 Seed-2.1-Pro：solo_agent=0.08 / _remote=0.8），对话按主 function 计费。
+	PricingFunctionsWork = "solo_agent_remote,solo_work_remote,solo_design_remote"
+	PricingFunctionsCode = "solo_agent,solo_agent_remote,solo_work_remote,solo_design_remote"
+	PricingPrimaryWork   = "solo_work_remote"
+	PricingPrimaryCode   = "solo_agent"
 
 	EpChat          = "/api/agent/v3/llm_utils_chat"
 	EpModels        = "/api/ide/v1/get_detail_param"

@@ -10,24 +10,28 @@ import (
 )
 
 // entUsageBody 构造一份 web_user_ent_usage 响应：
-//   - ep=0 每月登录（可用，500 限额已用 40）
-//   - ep=0 每日签到（可用，200 限额未用）
-//   - ep=1 每日签到（不可用：官方客户端专用池，本工具扣不到）
-//   - ep=0 限额 0 的免费包（应被明细过滤掉）
+//   - product_id=221 每月登录（可用，500 限额已用 40）
+//   - product_id=208 每日签到 150 档（可用，150 限额未用）
+//   - product_id=209 每日签到 200 档（不可用：官方客户端专用池，本工具扣不到）
+//   - ep=1 每日签到（不可用：available_endpoint 历史兜底判据）
+//   - 限额 0 的免费包（应被明细过滤掉）
 //
 // expire_time 用固定值便于断言日期格式化。
 const entUsageBody = `{"is_credits_billing":true,"user_entitlement_pack_list":[
  {"display_desc":"每月登录赠送","group_name":"每月登录积分","group_type":3,"expire_time":1790783999,
-  "entitlement_base_info":{"available_endpoint":0,"quota":{"credits_limit":500}},
+  "entitlement_base_info":{"available_endpoint":0,"product_id":221,"quota":{"credits_limit":500}},
   "usage":{"credits_amount":40}},
  {"display_desc":"签到奖励","group_name":"每日签到","group_type":1,"expire_time":1789779374,
-  "entitlement_base_info":{"available_endpoint":0,"quota":{"credits_limit":200}},
+  "entitlement_base_info":{"available_endpoint":0,"product_id":208,"quota":{"credits_limit":150}},
   "usage":{}},
  {"display_desc":"签到奖励","group_name":"每日签到","group_type":1,"expire_time":1789779374,
-  "entitlement_base_info":{"available_endpoint":1,"quota":{"credits_limit":300}},
+  "entitlement_base_info":{"available_endpoint":0,"product_id":209,"quota":{"credits_limit":200}},
+  "usage":{}},
+ {"display_desc":"签到奖励","group_name":"每日签到","group_type":1,"expire_time":1789779374,
+  "entitlement_base_info":{"available_endpoint":1,"product_id":208,"quota":{"credits_limit":300}},
   "usage":{}},
  {"display_desc":"免费","group_type":0,"expire_time":1790783999,
-  "entitlement_base_info":{"available_endpoint":0,"quota":{"credits_limit":0}},
+  "entitlement_base_info":{"available_endpoint":0,"product_id":0,"quota":{"credits_limit":0}},
   "usage":{}}
 ]}`
 
@@ -47,17 +51,17 @@ func entUsageClient(t *testing.T, body string) *Client {
 	return c
 }
 
-// TestUserResourceExcludesOfficialClientPool 可消耗余额只算 available_endpoint==0，
-// ep=1（官方客户端专用池）必须排除——否则 pool 会按虚高余额选号。
+// TestUserResourceExcludesOfficialClientPool 可消耗余额只算 usable()：
+// product_id=209（200 签到专用池）与 ep=1 必须排除，否则 pool 按虚高余额选号。
 func TestUserResourceExcludesOfficialClientPool(t *testing.T) {
 	c := entUsageClient(t, entUsageBody)
 	remain, err := c.UserResource(&auth.Auth{AccessToken: "at"})
 	if err != nil {
 		t.Fatalf("UserResource: %v", err)
 	}
-	// 460 (每月登录) + 200 (ep=0 签到) = 660；不含 ep=1 的 300。
-	if remain != 660 {
-		t.Errorf("remain=%d want 660 (ep=1 不应计入)", remain)
+	// 460 (每月登录) + 150 (product_id=208 签到) = 610；不含 209 的 200 与 ep=1 的 300。
+	if remain != 610 {
+		t.Errorf("remain=%d want 610 (209 专用池与 ep=1 不应计入)", remain)
 	}
 }
 
@@ -68,17 +72,17 @@ func TestUserResourceDetailMarksUsableAndExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UserResourceDetail: %v", err)
 	}
-	if remain != 660 {
-		t.Errorf("remain=%d want 660", remain)
+	if remain != 610 {
+		t.Errorf("remain=%d want 610", remain)
 	}
-	// 限额 0 的免费包应被过滤，剩 3 条
-	if len(items) != 3 {
-		t.Fatalf("items=%d want 3（限额 0 的包应被过滤）: %+v", len(items), items)
+	// 限额 0 的免费包应被过滤，剩 4 条
+	if len(items) != 4 {
+		t.Fatalf("items=%d want 4（限额 0 的包应被过滤）: %+v", len(items), items)
 	}
 
 	usable, unusable := provider.Summarize(items)
-	if usable != 660 || unusable != 300 {
-		t.Errorf("usable=%d unusable=%d, want 660/300", usable, unusable)
+	if usable != 610 || unusable != 500 {
+		t.Errorf("usable=%d unusable=%d, want 610/500", usable, unusable)
 	}
 
 	byName := map[string][]item{}
@@ -92,22 +96,49 @@ func TestUserResourceDetailMarksUsableAndExpiry(t *testing.T) {
 	if month[0].expire != "2026-09-30" {
 		t.Errorf("每月登录积分到期日=%q want 2026-09-30", month[0].expire)
 	}
-	// 同名条目按 ep 区分可用性：ep=0 可用 / ep=1 不可用
+	// 同名「每日签到」按判据区分可用性：208(可用150) / 209(不可用200) / ep=1(不可用300)
 	checkins := byName["每日签到"]
-	if len(checkins) != 2 {
-		t.Fatalf("每日签到应有 2 条: %+v", checkins)
+	if len(checkins) != 3 {
+		t.Fatalf("每日签到应有 3 条: %+v", checkins)
 	}
-	var avail, unavail bool
+	var avail, unavail209, unavailEp1 bool
 	for _, ci := range checkins {
-		if ci.usable && ci.remain == 200 {
+		if ci.usable && ci.remain == 150 {
 			avail = true
 		}
+		if !ci.usable && ci.remain == 200 {
+			unavail209 = true
+		}
 		if !ci.usable && ci.remain == 300 {
-			unavail = true
+			unavailEp1 = true
 		}
 	}
-	if !avail || !unavail {
-		t.Errorf("每日签到应区分可用(200)/不可用(300): %+v", checkins)
+	if !avail || !unavail209 || !unavailEp1 {
+		t.Errorf("每日签到应区分可用(150)/不可用209(200)/不可用ep1(300): %+v", checkins)
+	}
+}
+
+// TestEntPackageUsable 直接钉住可用性判据：209 专用池与 ep=1 均不可用，其余可用。
+func TestEntPackageUsable(t *testing.T) {
+	cases := []struct {
+		name string
+		ep   int
+		pid  int
+		want bool
+	}{
+		{"每月登录221", 0, 221, true},
+		{"150签到208", 0, 208, true},
+		{"200签到209专用", 0, 209, false},
+		{"ep1历史兜底", 1, 208, false},
+		{"免费订阅0", 0, 0, true},
+	}
+	for _, c := range cases {
+		p := entPackage{}
+		p.EntitlementBaseInfo.AvailableEndpoint = c.ep
+		p.EntitlementBaseInfo.ProductID = c.pid
+		if got := p.usable(); got != c.want {
+			t.Errorf("%s usable()=%v want %v", c.name, got, c.want)
+		}
 	}
 }
 
@@ -123,7 +154,7 @@ type item struct {
 func TestUserResourceDetailNoExpiryWhenUpstreamOmits(t *testing.T) {
 	c := entUsageClient(t, `{"user_entitlement_pack_list":[
 	 {"group_name":"无到期包","group_type":4,
-	  "entitlement_base_info":{"available_endpoint":0,"quota":{"credits_limit":100}},
+	  "entitlement_base_info":{"available_endpoint":0,"product_id":221,"quota":{"credits_limit":100}},
 	  "usage":{"credits_amount":10}}
 	]}`)
 	_, items, err := c.UserResourceDetail(&auth.Auth{AccessToken: "at"})

@@ -1,5 +1,6 @@
 # 编译产物
 dist/
+cmd/wild-work/rsrc_windows_amd64.syso
 cmd/wild-work/icon.ico
 
 # Go 构建缓存与临时目录（本机构建用，不入版本控制）
@@ -13,6 +14,27 @@ config.json
 
 # 参考项目（第三方克隆，不纳入版本控制）
 ref/
+
+# 文档目录白名单制：默认全部不提交，仅显式反选（!）的文档入库。
+# 新增需要入库的文档时，在下方追加一行 `!docs/<文件名>`。
+docs/*
+!docs/TraeWork-api.md
+!docs/loomy-raccoon渠道接入计划.md
+!docs/loomy-raccoon阶段C探针实测.md
+!docs/loomy-raccoon阶段D实施记录.md
+!docs/loomy-raccoon阶段E验收报告.md
+!docs/loomy渠道接入备忘.md
+!docs/qoder2api端点覆盖度对比.md
+!docs/qoderCN-IDE抓包分析备忘.md
+!docs/qoderCN渠道接入备忘.md
+!docs/qoderCOM渠道抓包分析与接入计划.md
+!docs/qoder签到补齐改造方案.md
+!docs/raccoon渠道接入备忘.md
+!docs/upstream-reverse-engineering.md
+!docs/三接口兼容改造备忘.md
+!docs/三端点四能力矩阵.md
+!docs/千问办公QwenWork逆向对比备忘.md
+!docs/用量积分流水记账备忘.md
 
 # 临时文件
 temp/

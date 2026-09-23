@@ -12,9 +12,9 @@ package gateway
 import (
 	"encoding/json"
 	"log"
-	"sync"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"wild-work/internal/reasoning"
@@ -36,6 +36,11 @@ type Config struct {
 	ResponsesReasoningSummary string
 }
 
+// SystemOneHandler 是 systemone 端点的实际处理函数。
+// 签名为 func(w, r, state, questions)。网关负责鉴权、解析 body 后调用。
+// Handler 返回上游 JSON 响应体的状态码与原始字节供透传；错误表示内部故障（如网络错）。
+type SystemOneHandler func(w http.ResponseWriter, r *http.Request, state string, questions map[string]any) (status int, body []byte, err error)
+
 // Gateway 三接口兼容层。零值不可用，须经 New 构造。
 type Gateway struct {
 	inner        http.Handler
@@ -45,7 +50,8 @@ type Gateway struct {
 	maxTokensCap int
 	// summaryMode 见 Config.ResponsesReasoningSummary。
 	summaryMode string
-	mu          sync.RWMutex // 保护 router/maxTokensCap/summaryMode 热更新
+	sysone      SystemOneHandler // 非 nil 时注册 POST /v1/systemone
+	mu          sync.RWMutex     // 保护 router/maxTokensCap/summaryMode 热更新
 }
 
 // New 构造兼容层。inner 为 nil 时返回 nil（调用方据此跳过兼容层，保持旧行为）。
@@ -77,6 +83,13 @@ func normalizeSummaryMode(mode string) string {
 func (g *Gateway) SetAPIKeySource(fn func() string) {
 	if g != nil {
 		g.apiKeySource = fn
+	}
+}
+
+// SetSystemOneHandler 注入 systemone 端点处理器（非 nil 时注册路由 /v1/systemone）。
+func (g *Gateway) SetSystemOneHandler(h SystemOneHandler) {
+	if g != nil {
+		g.sysone = h
 	}
 }
 
@@ -132,7 +145,7 @@ func (g *Gateway) key() string {
 	return g.apiKey
 }
 
-// Routes 在 mux 上注册三接口路由。
+// Routes 在 mux 上注册三接口路由 + 可选的 SystemOne 端点。
 //
 // 说明：仅注册内层没有的路径。POST /v1/chat/completions 与 GET /v1/models 由内层直接服务，
 // 无需本层介入，这样旧客户端的调用栈完全不变。
@@ -143,6 +156,9 @@ func (g *Gateway) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/responses", g.withAuth(g.handleResponses))
 	mux.HandleFunc("POST /v1/messages", g.withAuth(g.handleAnthropicMessages))
 	mux.HandleFunc("POST /v1/messages/count_tokens", g.withAuth(g.handleCountTokens))
+	if g.sysone != nil {
+		mux.HandleFunc("POST /v1/systemone", g.withAuth(g.handleSystemOne))
+	}
 }
 
 // withAuth 校验客户端凭据：同时接受 Anthropic 风格的 x-api-key 与标准 Bearer。
@@ -248,4 +264,33 @@ func (g *Gateway) resolveModel(w http.ResponseWriter, model string, anthropicSha
 		return "", false
 	}
 	return resolved, true
+}
+
+// handleSystemOne 处理 POST /v1/systemone —— Jev 结构化决策端点。
+// 请求体：{"state": "...", "questions": {...}} → 透传到 OpenCode Zen 上游。
+// 网关负责 API key 鉴权与解析；model 固定为 jev-1.13-free（无需客户端传）。
+func (g *Gateway) handleSystemOne(w http.ResponseWriter, r *http.Request) {
+	body, ok := parseJSONBody(w, r, false)
+	if !ok {
+		return
+	}
+	state := asString(body["state"])
+	if state == "" {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "missing required field: state")
+		return
+	}
+	questions, ok := body["questions"].(map[string]any)
+	if !ok || len(questions) == 0 {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "missing required field: questions")
+		return
+	}
+	status, respBody, err := g.sysone(w, r, state, questions)
+	if err != nil {
+		logf("systemone upstream error: %v", err)
+		writeOpenAIError(w, http.StatusBadGateway, "upstream_error", err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_, _ = w.Write(respBody)
 }

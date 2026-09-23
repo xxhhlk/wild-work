@@ -47,7 +47,9 @@ func (errUpstream) DailyCheckin(*auth.Auth) error { return nil }
 func (errUpstream) Classify(status int, body string) provider.ErrKind {
 	return upstream.Classify(status, body)
 }
-func (errUpstream) Stream(w http.ResponseWriter, _ io.Reader, _ string) error { return nil }
+func (errUpstream) Stream(w http.ResponseWriter, _ io.Reader, _ string) (map[string]any, error) {
+	return nil, nil
+}
 func (errUpstream) Aggregate(io.Reader, string) (map[string]any, error) {
 	return map[string]any{}, nil
 }

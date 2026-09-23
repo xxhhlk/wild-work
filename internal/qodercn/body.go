@@ -17,6 +17,7 @@ import (
 //   - tools：客户端传来的 OpenAI tools 数组；为空则不注入 tools 字段
 //   - spec：思考控制（开关 + 档位），见 reasoningSpec
 //   - maxTokens：客户端请求的 max_tokens，<=0 时用模板默认 32768
+//   - contextWindow：选定的上下文档位（200K/400K/1M）；<=0 时不注入 context_length
 //
 // 思考字段投影（与 internal/qoder 的 A6e() 写法一致）：
 //
@@ -29,7 +30,7 @@ import (
 // parameters 构造处与 live_probe_test.go 的 p0/r4）。
 //
 // 注意：developer 角色必须改写为 system。
-func buildAgentBody(messages []map[string]any, mc *ModelEntry, tools []any, spec reasoningSpec, maxTokens int, userType string) ([]byte, error) {
+func buildAgentBody(messages []map[string]any, mc *ModelEntry, tools []any, spec reasoningSpec, maxTokens int, userType string, contextWindow int64) ([]byte, error) {
 	// developer → system（浅拷贝消息避免污染调用方数据）
 	msgs := make([]map[string]any, len(messages))
 	for i, m := range messages {
@@ -78,6 +79,14 @@ func buildAgentBody(messages []map[string]any, mc *ModelEntry, tools []any, spec
 		params["reasoning_effort"] = spec.Effort
 	}
 	params["enable_thinking"] = spec.Enabled
+
+	// 上下文档位透传（issue #27）：官方 worker 仅写 parameters.context_length
+	// （经 TZ 校验 ∈ available_context_windows）；9router 另同步 model_config.max_input_tokens。
+	// 此处对齐 9router：两者都写，避免 catalog max_input_tokens 停在 180000 时档位选了却不生效。
+	if contextWindow > 0 {
+		params["context_length"] = contextWindow
+		modelCfg["max_input_tokens"] = contextWindow
+	}
 
 	base := map[string]any{
 		"request_id":       newUUID,
@@ -135,7 +144,11 @@ type ModelEntry struct {
 	IsVL           bool    `json:"is_vl"`
 	MaxInputTokens int64   `json:"max_input_tokens"`
 	PriceFactor    float64 `json:"price_factor"`
-	ContextWindow  int64   `json:"-"` // context_config.token_count 解析结果
+	Format         string  `json:"format"` // 上游声明的协议形态（实测两渠道恒为 "openai"）
+	Source         string  `json:"source"` // 上游声明来源；model_config.source 即思考总开关
+	ContextWindow  int64   `json:"-"`      // context_config 默认档（is_default）的 token_count
+	// AvailableWindows context_config 全部档位（升序）；空表示无档位表。
+	AvailableWindows []int64 `json:"-"`
 	// ThinkingConfig 上游声明的思考能力（档位 ladder / 是否可关闭），
 	// 形状与 internal/qoder 的 DynamicModel.ThinkingConfig 同源（同一模型目录接口）：
 	//   {"disabled":{"description":"..."},
@@ -157,17 +170,30 @@ type reasoningSpec struct {
 	Effort string
 }
 
+// 上游未下发时的兜底值（实测两渠道 204/204 条目均下发，此处仅防御）。
+const (
+	defaultFormat = "openai"
+	defaultSource = "system"
+)
+
 // modelConfigFrom 构造 model_config（qoder2api baseprompt.json 全字段形态）。
 // reasoningOn 即 spec.Enabled：投影到 is_reasoning，与 parameters.enable_thinking 同源。
 func modelConfigFrom(m *ModelEntry, reasoningOn bool) map[string]any {
 	if m == nil || m.Key == "" {
 		return map[string]any{
-			"key": "auto", "display_name": "Auto", "model": "", "format": "openai",
+			"key": "auto", "display_name": "Auto", "model": "", "format": defaultFormat,
 			"is_vl": false, "is_reasoning": reasoningOn, "api_key": "", "url": "",
-			"source": "system", "max_input_tokens": 180000,
+			"source": defaultSource, "max_input_tokens": 180000,
 		}
 	}
-	format := "openai" // baseprompt 默认；上游未下发 format 字段时兜底
+	format := m.Format
+	if format == "" {
+		format = defaultFormat // 上游偶发未下发时兜底
+	}
+	source := m.Source
+	if source == "" {
+		source = defaultSource
+	}
 	maxIn := m.MaxInputTokens
 	if maxIn <= 0 {
 		maxIn = 180000
@@ -175,13 +201,75 @@ func modelConfigFrom(m *ModelEntry, reasoningOn bool) map[string]any {
 	return map[string]any{
 		"key": m.Key, "display_name": m.DisplayName, "model": "", "format": format,
 		"is_vl": m.IsVL, "is_reasoning": reasoningOn, "api_key": "", "url": "",
-		"source": "system", "max_input_tokens": maxIn,
+		"source": source, "max_input_tokens": maxIn,
 	}
 }
 
 // copyModelConfigLite chat_context.extra.modelConfig 仅需 key/is_reasoning（模板形态）。
 func copyModelConfigLite(mc map[string]any) map[string]any {
 	return map[string]any{"key": mc["key"], "is_reasoning": mc["is_reasoning"]}
+}
+
+// resolveContextWindow 解析本次请求应使用的上下文档位。
+//   - requested：客户端显式传入（context_length/context_window），0 表示未指定
+//   - mc：模型条目，可为 nil
+//
+// 客户端值校验对齐官方 TZ（∈档位表 / ≤max_input_tokens）；默认档与非法值落点
+// 本仓决议取 max(AvailableWindows)（宁高勿低，对齐 workbuddy2api 广告口径），
+// 而非官方 FHA 的 is_default 档：
+//  1. requested>0 且校验通过 → 用 requested
+//  2. 否则 → max(AvailableWindows)（有档位表时）
+//  3. 否则 → ContextWindow（is_default）→ MaxInputTokens → 0（不注入）
+func resolveContextWindow(requested int64, mc *ModelEntry) int64 {
+	if requested > 0 {
+		if mc == nil {
+			return requested
+		}
+		if len(mc.AvailableWindows) > 0 {
+			for _, w := range mc.AvailableWindows {
+				if w == requested {
+					return requested
+				}
+			}
+			// 不在表内 → 落最大档（本仓默认）
+		} else {
+			// 无档位表：≤ max_input_tokens 或无上限则接受（官方 TZ 回退）
+			if mc.MaxInputTokens <= 0 || requested <= mc.MaxInputTokens {
+				return requested
+			}
+		}
+	}
+	if mc == nil {
+		return 0
+	}
+	if n := len(mc.AvailableWindows); n > 0 {
+		return mc.AvailableWindows[n-1] // 升序，取最大档
+	}
+	if mc.ContextWindow > 0 {
+		return mc.ContextWindow
+	}
+	if mc.MaxInputTokens > 0 {
+		return mc.MaxInputTokens
+	}
+	return 0
+}
+
+// parseContextWindowHint 从 OpenAI 请求体读取客户端上下文档位提示。
+// 同时认 context_length（上游参数名）与 context_window（官方 SDK 驼峰名）。
+// 非法/缺省返回 0。
+func parseContextWindowHint(body []byte) int64 {
+	var hint struct {
+		ContextLength int64 `json:"context_length"`
+		ContextWindow int64 `json:"context_window"`
+	}
+	// 只扫两个字段：body 里其余未知字段忽略
+	if err := json.Unmarshal(body, &hint); err != nil {
+		return 0
+	}
+	if hint.ContextLength > 0 {
+		return hint.ContextLength
+	}
+	return hint.ContextWindow
 }
 
 // truncateRunes 截断到 n 个 rune。

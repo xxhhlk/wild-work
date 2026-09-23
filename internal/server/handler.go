@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"wild-work/internal/auth"
+	"wild-work/internal/ledger"
 	"wild-work/internal/pool"
 	"wild-work/internal/provider"
 	"wild-work/internal/reasoning"
@@ -54,6 +55,9 @@ type Config struct {
 	Pool     *pool.Pool
 	Upstream provider.Upstream
 
+	// Ledger 用量/积分流水记账器（非 nil 时成功请求记 token 流水）。
+	Ledger *ledger.Ledger
+
 	MaxRotate    int
 	HardCooldown time.Duration
 	SoftCooldown time.Duration
@@ -80,6 +84,8 @@ type stickyEntry struct {
 type Handler struct {
 	cfg Config
 	mux *http.ServeMux
+
+	ledger *ledger.Ledger // 记账器（cfg.Ledger 透传，nil = 不记账）
 
 	apiMu    sync.RWMutex // 保护 cfg.APIKey（面板可运行时修改）
 	stickyMu sync.RWMutex
@@ -113,7 +119,7 @@ func NewHandler(cfg Config) *Handler {
 	if cfg.RefreshSkew <= 0 {
 		cfg.RefreshSkew = 10 * time.Minute
 	}
-	h := &Handler{cfg: cfg, mux: http.NewServeMux(), sticky: make(map[string]*stickyEntry)}
+	h := &Handler{cfg: cfg, mux: http.NewServeMux(), sticky: make(map[string]*stickyEntry), ledger: cfg.Ledger}
 	h.mux.HandleFunc("POST /v1/chat/completions", h.withAuth(h.chatCompletions))
 	h.mux.HandleFunc("GET /v1/models", h.withAuth(h.models))
 	h.mux.HandleFunc("GET /status", h.withAuth(h.status))
@@ -277,6 +283,18 @@ var workbuddyStaticModels = []provider.ModelInfo{
 var traeworkStaticModels = []provider.ModelInfo{
 	{ID: "glm-5.2"}, {ID: "glm-5-turbo"}, {ID: "glm-5"}, {ID: "DeepSeek-V4-Pro"}, {ID: "DeepSeek-V4-Flash"},
 	{ID: "kimi-k2.6"}, {ID: "kimi-k2.7-code"}, {ID: "minimax-m3"}, {ID: "qwen3-coder"}, {ID: "Doubao-Seed-2.1-Pro"},
+}
+
+// traecode 静态兜底表：TraeCode（solo_agent）与 TraeWork（solo_work_lite）
+// 下发的模型集**不同**，此表按 solo_agent 分组的实际下发清单整理（2026-09 实测）。
+// 与 TraeWork 相比，TraeCode 独有 Doubao-Seed-Code / deepseek-v4.1-flash /
+// glm-5.3-flash / kimi-k2.8-preview / qwen3.8-flash 等新版模型。
+var traecodeStaticModels = []provider.ModelInfo{
+	{ID: "Doubao-Seed-2.1-Pro"}, {ID: "Doubao-Seed-Evolving"}, {ID: "Doubao-Seed-2.1-Turbo"},
+	{ID: "Doubao-Seed-Code"}, {ID: "DeepSeek-V4-Flash-Official"}, {ID: "DeepSeek-V4-Pro-Official"},
+	{ID: "deepseek-v4.1-flash"}, {ID: "glm-5.3-flash"}, {ID: "glm-5.3"}, {ID: "glm-5.2"},
+	{ID: "kimi-k3"}, {ID: "kimi-k2.8-preview"}, {ID: "minimax-m3"}, {ID: "qwen3.8-flash"},
+	{ID: "qwen3.8-max"}, {ID: "qwen-3.7-plus"},
 }
 
 // dynamicModelsCache 保留给旧测试/旧单平台语义；实际多平台缓存放在 Runtime 内。
@@ -558,10 +576,10 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			case provider.ErrNotFound:
 				rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "upstream 404")
 			case provider.ErrContentBlocked, provider.ErrPromptTooLong,
-				provider.ErrImageInvalid, provider.ErrBadParams:
-				// 请求级错误（内容拦截 / 上下文超限 / 图片格式无效 / 出站 body 畸形）：
+				provider.ErrImageInvalid, provider.ErrBadParams, provider.ErrPassthrough:
+				// 请求级错误（内容拦截 / 上下文超限 / 图片格式无效 / 出站 body 畸形 / 请求级拒绝）：
 				// 不冷却不熔断不计错，直接透传原文回客户端。
-				// 这些是请求内容问题，与账号健康无关——同一 body 换任何账号结果都一样，
+				// 这些是请求内容或请求形态问题，与账号健康无关——同一 body 换任何账号结果都一样，
 				// 轮转白费时间，NoteError 还会把健康账号喂到冷却。
 				transparentError(w, status, respBody)
 				return
@@ -592,11 +610,22 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		rt.Pool.NoteSuccess(acct.UID)
 		h.stickySuccess(rt)
 		if peek.Stream {
-			if err := rt.Upstream.Stream(w, rc, clientModel); err != nil && upstream.IsEmptyStreamError(err) {
+			usage, serr := rt.Upstream.Stream(w, rc, clientModel)
+			// 记 token 流水（成功请求口径；usage 缺失记 0 token 仅计请求数）。
+			// 记账失败不干扰主流程——锦上添花功能。
+			if h.ledger != nil {
+				pt, ct, src := usageTokens(usage)
+				h.ledger.AppendUsage(ledger.UsageEntry{Ch: rt.Kind.String(), UID: acct.UID,
+					Model: stripChannel(clientModel), PT: pt, CT: ct, Src: src})
+			}
+			if serr != nil && upstream.IsEmptyStreamError(serr) {
 				// 上游 200 但无有效数据帧：HTTP 头已发出只能 200，客户端会收到我们补的
 				// error 帧（部分客户端因此判定「模型不可用」），这里留痕便于对账。
 				log.Printf("upstream 空流 platform=%s uid=%s model=%s（已下发 error 帧与 [DONE]）",
 					rt.Kind, acct.UID, clientModel)
+			} else if serr != nil {
+				// 上游中断：已尽力透传，错误仅在日志可见
+				log.Printf("stream relay end platform=%s uid=%s err=%v", rt.Kind, acct.UID, serr)
 			}
 			return
 		}
@@ -604,6 +633,12 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			writeOpenAIError(w, http.StatusBadGateway, "upstream_parse", err.Error())
 			return
+		}
+		if h.ledger != nil {
+			u, _ := resp["usage"].(map[string]any)
+			pt, ct, src := usageTokens(u)
+			h.ledger.AppendUsage(ledger.UsageEntry{Ch: rt.Kind.String(), UID: acct.UID,
+				Model: stripChannel(clientModel), PT: pt, CT: ct, Src: src})
 		}
 		writeJSON(w, http.StatusOK, resp)
 		return
@@ -623,6 +658,11 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(sts) == 0 {
 		log.Printf("503 no_healthy_account platform=%s reason=no_account", rt.Kind)
+		if noLoginChannel(rt.Kind) {
+			writeOpenAIError(w, http.StatusServiceUnavailable, "no_healthy_account",
+				fmt.Sprintf("渠道 %s 尚未就绪（虚拟账号未装配）：请重启程序", rt.Kind))
+			return
+		}
 		writeOpenAIError(w, http.StatusServiceUnavailable, "no_healthy_account",
 			fmt.Sprintf("渠道 %s 尚未绑定账号：请在面板「账号管理」中添加 %s 账号（或把模型改为已接入渠道，如 workbuddy/glm-5.2）",
 				rt.Kind, rt.Kind))
@@ -631,9 +671,14 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	if bound == 0 {
 		log.Printf("503 no_healthy_account platform=%s accounts=%d disabled=%d cooling=%d reason=all_unavailable",
 			rt.Kind, len(sts), disabled, cooling)
+		// 匿名渠道没有「重新登录」这个概念，给出针对性提示（否则会误导用户去找登录入口）。
+		hint := fmt.Sprintf("%s 账号需重新登录（日志会有 refresh token is invalid）", rt.Kind)
+		if noLoginChannel(rt.Kind) {
+			hint = "该渠道无需登录，稍后重试即可（若持续失败请查看日志）"
+		}
 		writeOpenAIError(w, http.StatusServiceUnavailable, "no_healthy_account",
-			fmt.Sprintf("渠道 %s 的 %d 个账号当前全部不可用（禁用 %d / 冷却 %d）：可在面板查看原因；%s 账号需重新登录（日志会有 refresh token is invalid）",
-				rt.Kind, len(sts), disabled, cooling, rt.Kind))
+			fmt.Sprintf("渠道 %s 的 %d 个账号当前全部不可用（禁用 %d / 冷却 %d）：可在面板查看原因；%s",
+				rt.Kind, len(sts), disabled, cooling, hint))
 		return
 	}
 	msg := fmt.Sprintf("渠道 %s 暂无可用账号（共 %d 个：禁用 %d / 冷却 %d；其余余额耗尽或出错）",
@@ -650,6 +695,11 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	writeOpenAIError(w, http.StatusServiceUnavailable, "no_healthy_account", msg)
 }
+
+// noLoginChannel 报告渠道是否「无登录概念」（不存在凭证文件、也无重登入口）。
+// 用于把「去面板重新登录」这类引导文案限定在真正适用的渠道上，
+// 避免匿名通道（oczen）被误导去找一个不存在的登录按钮。
+func noLoginChannel(k provider.Kind) bool { return k == provider.Oczen }
 
 func (h *Handler) runtimeForModel(model string) (*Runtime, string, error) {
 	parts := strings.SplitN(strings.TrimSpace(model), "/", 2)
@@ -683,6 +733,42 @@ func (h *Handler) prefixHint() string {
 		kinds[i] = k + "/<model>"
 	}
 	return strings.Join(kinds, " / ")
+}
+
+// usageTokens 从 OpenAI usage 对象提 prompt/completion tokens；
+// 缺失/异常时返回 (0,0,"none")，上游正常时 src="upstream"。
+// 兼容 Anthropic 字段名（input_tokens/output_tokens）——traework 的 SOLO token_usage
+// 可能带非 OpenAI 字段，做一次别名兼容更稳妥。
+func usageTokens(u map[string]any) (pt, ct int64, src string) {
+	if u == nil {
+		return 0, 0, "none"
+	}
+	pt = numField(u, "prompt_tokens", "input_tokens")
+	ct = numField(u, "completion_tokens", "output_tokens")
+	if pt == 0 && ct == 0 {
+		// 有 usage 对象但无有效字段：按缺失处理（不算失败）
+		return 0, 0, "none"
+	}
+	return pt, ct, "upstream"
+}
+
+// numField 取 usage 里首个存在且可转数值的字段。
+func numField(u map[string]any, keys ...string) int64 {
+	for _, k := range keys {
+		if v, ok := u[k].(float64); ok {
+			return int64(v)
+		}
+	}
+	return 0
+}
+
+// stripChannel 去掉模型名的 channel/ 前缀（"workbuddy/glm-5.2" → "glm-5.2"），
+// 供流水按渠道内裸模型名聚合；无前缀时原样返回。
+func stripChannel(model string) string {
+	if i := strings.IndexByte(model, '/'); i >= 0 {
+		return model[i+1:]
+	}
+	return model
 }
 
 // prepareChatBody 改写发往上游的 Chat 请求体：
@@ -802,6 +888,9 @@ func WorkBuddyStaticModels() []provider.ModelInfo {
 }
 func TraeWorkStaticModels() []provider.ModelInfo {
 	return append([]provider.ModelInfo{}, traeworkStaticModels...)
+}
+func TraeCodeStaticModels() []provider.ModelInfo {
+	return append([]provider.ModelInfo{}, traecodeStaticModels...)
 }
 
 // WorkBuddyAIStaticModels 国际版静态模型表实际定义在 internal/workbuddyai 包，

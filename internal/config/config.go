@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -130,6 +131,9 @@ type Config struct {
 		CheckinHours   []int    `json:"checkin_hours,omitempty"` // 旧格式：[9,21]
 		CheckinTimes   []string `json:"checkin_times,omitempty"` // 新格式：["09:00","21:30"]
 		KeepaliveHours []int    `json:"keepalive_hours"`         // [22]
+		// ExpiringThresholdHours 临期阈值（小时）：到期日在此范围内的积分视为「临期」,
+		// Pick() 临期优先消耗。默认 24，下限 24（低于 24 会被钳到 24）。
+		ExpiringThresholdHours int `json:"expiring_threshold_hours,omitempty"`
 	} `json:"schedule"`
 
 	Upstream struct {
@@ -178,10 +182,21 @@ type Config struct {
 		ContextWindows map[string]int64 `json:"context_windows"`
 	} `json:"compat"`
 
+	// Proxies 单渠道上游代理：key 为渠道 kind（workbuddy/traework/qoder/qodercn/
+	// qodercom/workbuddyai/qwenwork/oczen），value 为代理 URL（http/https/socks5）。
+	// 空串或未列出的渠道直连。主要用途：给 oczen 等有区域限制的渠道走代理。
+	Proxies map[string]string `json:"proxies,omitempty"`
+
+	// OczenAPIKey OpenCodeZen 渠道自定义 API key（sk-...）；空 = 匿名凭证（public）。
+	// 自定义 key 有独立配额（不受匿名通道共享限流），且可调用付费模型（需账户余额）。
+	OczenAPIKey string `json:"oczen_api_key,omitempty"`
+
 	// 解析后
 	HardCreditDur  time.Duration `json:"-"`
 	SoftRateDur    time.Duration `json:"-"`
 	ErrCooldownDur time.Duration `json:"-"`
+	// ExpiringThresholdDur 临期阈值解析结果（normalize 里钳到 >= 24h）。
+	ExpiringThresholdDur time.Duration `json:"-"`
 }
 
 // DeepseekThinkingEnabled DeepSeek 思考改写是否启用（字段未设置视为启用）。
@@ -210,9 +225,11 @@ func Default() *Config {
 	c.Schedule.CheckinHours = []int{9, 21}
 	c.Schedule.CheckinTimes = []string{"09:00", "21:00"}
 	c.Schedule.KeepaliveHours = []int{22}
+	c.Schedule.ExpiringThresholdHours = 24
 	c.Upstream.TimeoutSeconds = 120
 	c.Compat.DefaultChannel = "workbuddy"
 	c.Compat.MaxTokensCap = 32000
+	c.Proxies = map[string]string{}
 	return c
 }
 
@@ -420,6 +437,14 @@ func (c *Config) normalize() error {
 	if c.Upstream.TimeoutSeconds <= 0 {
 		c.Upstream.TimeoutSeconds = 120
 	}
+	// 临期阈值：默认 24h，下限 24h（日期粒度的到期判定低于一天没有意义）。
+	if c.Schedule.ExpiringThresholdHours <= 0 {
+		c.Schedule.ExpiringThresholdHours = 24
+	}
+	if c.Schedule.ExpiringThresholdHours < 24 {
+		c.Schedule.ExpiringThresholdHours = 24
+	}
+	c.ExpiringThresholdDur = time.Duration(c.Schedule.ExpiringThresholdHours) * time.Hour
 	if c.Compat.MaxTokensCap < 0 {
 		c.Compat.MaxTokensCap = 0 // 负数视为「不限制」，避免误用导致 max_tokens 被置 0
 	}
@@ -444,6 +469,24 @@ func (c *Config) normalize() error {
 	c.Compat.ResponsesReasoningSummary = mode
 	if c.Listen.Port <= 0 {
 		c.Listen.Port = 7863
+	}
+	// 代理配置清洗：剔除空值，校验 URL 形态（http/https/socks5）。
+	for k, v := range c.Proxies {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			delete(c.Proxies, k)
+			continue
+		}
+		u, err := url.Parse(v)
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			return fmt.Errorf("proxies[%s]: 无效代理地址 %q（应为 http://host:port 或 socks5://host:port）", k, v)
+		}
+		switch u.Scheme {
+		case "http", "https", "socks5":
+		default:
+			return fmt.Errorf("proxies[%s]: 不支持的代理协议 %q（仅 http/https/socks5）", k, u.Scheme)
+		}
+		c.Proxies[k] = v
 	}
 	if c.Region == "" {
 		c.Region = "cn"

@@ -77,7 +77,7 @@ func TestSummarizeExpiring(t *testing.T) {
 		{Remain: 200, Usable: false},
 	}
 	u, un := Summarize(items)
-	e := ExpiringWithin(items, 24 * time.Hour)
+	e := ExpiringWithin(items, 24*time.Hour)
 	if u != 100 || un != 200 || e != 100 {
 		t.Fatalf("usable=%d unusable=%d expiring=%d want 100/200/100", u, un, e)
 	}

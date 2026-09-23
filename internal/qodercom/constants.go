@@ -11,9 +11,9 @@ import (
 
 // 上游域名与端点（COM only）。
 const (
-	OpenAPIBase = "https://openapi.qoder.sh"  // 业务 API（dt- Bearer，无签名）
-	GatewayBase = "https://api1.qoder.sh"     // 推理网关（COSY 签名）
-	ModelsBase  = "https://api2.qoder.sh"     // 模型列表（COSY 签名）
+	OpenAPIBase = "https://openapi.qoder.sh" // 业务 API（dt- Bearer，无签名）
+	GatewayBase = "https://api1.qoder.sh"    // 推理网关（COSY 签名）
+	ModelsBase  = "https://api2.qoder.sh"    // 模型列表（COSY 签名）
 
 	EpQuotaUsage = "/api/v2/quota/usage"
 	EpCampaigns  = "/sash/api/v1/me/campaigns" // 活动列表+领取（COM 唯一签到路径；无 daily-check-in）

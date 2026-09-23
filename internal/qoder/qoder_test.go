@@ -92,7 +92,7 @@ func TestBuildAgentBodyDeveloperToSystem(t *testing.T) {
 		{"role": "system", "content": "保持简洁"},
 		{"role": "user", "content": "你好"},
 	}
-	raw, err := buildAgentBody(msgs, "dmodel", nil, reasoningSpec{})
+	raw, err := buildAgentBody(msgs, "dmodel", nil, reasoningSpec{}, 0)
 	if err != nil {
 		t.Fatalf("buildAgentBody: %v", err)
 	}
@@ -147,10 +147,11 @@ func TestBuildAgentBodyWireShape(t *testing.T) {
 		}},
 		{"role": "user", "content": "看看当前目录有什么文件"},
 	}
-	raw, err := buildAgentBodyMeta(msgs, modelMeta{
+	meta := modelMeta{
 		Key: "qfmodel", DisplayName: "Qwen3.8-Flash", IsVL: true,
 		MaxInputTokens: 180000, MaxOutputTokens: 32000, DefaultContextWindow: 200000,
-	}, nil, reasoningSpec{Enabled: true, Effort: "xhigh"})
+	}
+	raw, err := buildAgentBodyMeta(msgs, meta, nil, reasoningSpec{Enabled: true, Effort: "xhigh"}, pickContextWindow(meta, 0))
 	if err != nil {
 		t.Fatalf("buildAgentBodyMeta: %v", err)
 	}
@@ -217,7 +218,8 @@ func TestBuildAgentBodyWireShape(t *testing.T) {
 	for k, v := range map[string]any{
 		"key": "qfmodel", "display_name": "Qwen3.8-Flash", "model": "",
 		"format": "openai", "is_vl": true, "is_reasoning": true,
-		"api_key": "", "url": "", "source": "system", "max_input_tokens": float64(180000),
+		// max_input_tokens 与 parameters.context_length 双写同步（上游 issue #27）
+		"api_key": "", "url": "", "source": "system", "max_input_tokens": float64(200000),
 	} {
 		if mc[k] != v {
 			t.Errorf("model_config.%s = %#v, want %#v", k, mc[k], v)
@@ -246,7 +248,7 @@ func TestBuildAgentBodyWireShape(t *testing.T) {
 // 模型元数据缺失时回落默认值：不猜窗口（不下发 context_length），
 // max_tokens 用目录里 14 个模型一致的 32000。
 func TestBuildAgentBodyMetaDefaults(t *testing.T) {
-	raw, err := buildAgentBody([]map[string]any{{"role": "user", "content": "hi"}}, "dmodel", nil, reasoningSpec{})
+	raw, err := buildAgentBody([]map[string]any{{"role": "user", "content": "hi"}}, "dmodel", nil, reasoningSpec{}, 0)
 	if err != nil {
 		t.Fatalf("buildAgentBody: %v", err)
 	}
@@ -398,7 +400,7 @@ func TestBuildAgentBodyReasoningFields(t *testing.T) {
 	msgs := []map[string]any{{"role": "user", "content": "hi"}}
 
 	// 有档位：parameters 同时写 reasoning_effort 与 enable_thinking。
-	raw, err := buildAgentBody(msgs, "qfmodel", nil, reasoningSpec{Enabled: true, Effort: "medium"})
+	raw, err := buildAgentBody(msgs, "qfmodel", nil, reasoningSpec{Enabled: true, Effort: "medium"}, 0)
 	if err != nil {
 		t.Fatalf("buildAgentBody: %v", err)
 	}
@@ -420,7 +422,7 @@ func TestBuildAgentBodyReasoningFields(t *testing.T) {
 	}
 
 	// 关闭：三处一致为 false。
-	raw, _ = buildAgentBody(msgs, "qfmodel", nil, reasoningSpec{Enabled: false, Effort: "none"})
+	raw, _ = buildAgentBody(msgs, "qfmodel", nil, reasoningSpec{Enabled: false, Effort: "none"}, 0)
 	body.Parameters, body.ModelConfig = nil, nil
 	_ = json.Unmarshal(raw, &body)
 	if body.ModelConfig["is_reasoning"] != false {
@@ -434,7 +436,7 @@ func TestBuildAgentBodyReasoningFields(t *testing.T) {
 	// 但 enable_thinking **必须下发且为 false** —— 它是关闭思考的必要字段。
 	// 依据：桌面版 A6e() 里 h 始终非空（至少写 max_tokens），且 enable_thinking
 	// 与 is_reasoning 同源恒写；实测缺它时上游关不掉思考（见 live_probe 用例 1）。
-	raw, _ = buildAgentBody(msgs, "qfmodel", nil, reasoningSpec{})
+	raw, _ = buildAgentBody(msgs, "qfmodel", nil, reasoningSpec{}, 0)
 	var plain map[string]any
 	_ = json.Unmarshal(raw, &plain)
 	p, _ := plain["parameters"].(map[string]any)
@@ -452,7 +454,7 @@ func TestBuildAgentBodyReasoningFields(t *testing.T) {
 // mustAgentBody 构造请求体并解回 map（测试辅助）。
 func mustAgentBody(t *testing.T, msgs []map[string]any, meta modelMeta) map[string]any {
 	t.Helper()
-	raw, err := buildAgentBodyMeta(msgs, meta, nil, reasoningSpec{})
+	raw, err := buildAgentBodyMeta(msgs, meta, nil, reasoningSpec{}, pickContextWindow(meta, contextWindowFor(meta.ClientName)))
 	if err != nil {
 		t.Fatalf("buildAgentBodyMeta: %v", err)
 	}
@@ -523,8 +525,10 @@ func TestBuildAgentBodyHonorsContextWindow(t *testing.T) {
 	if got := body["parameters"].(map[string]any)["context_length"]; got != float64(200000) {
 		t.Errorf("未配置档位应发上游默认档 200000，得到 %v", got)
 	}
-	if got := body["model_config"].(map[string]any)["max_input_tokens"]; got != float64(180000) {
-		t.Errorf("max_input_tokens 应保持上游原值 180000，得到 %v", got)
+	// 上游 issue #27：context_length 与 model_config.max_input_tokens 双写
+	// （只写 parameters 时 catalog 仍停在 180000，档位选了却不生效）。
+	if got := body["model_config"].(map[string]any)["max_input_tokens"]; got != float64(200000) {
+		t.Errorf("max_input_tokens 应与 context_length 同步为 200000，得到 %v", got)
 	}
 
 	SetContextWindows(map[string]int64{"qwen3.8-flash": 1000000})
@@ -546,5 +550,160 @@ func TestBuildAgentBodyHonorsContextWindow(t *testing.T) {
 	body = mustAgentBody(t, msgs, narrow)
 	if got := body["parameters"].(map[string]any)["context_length"]; got != float64(400000) {
 		t.Errorf("模型不支持 1M 时应就近取 400K，得到 %v", got)
+	}
+}
+
+// TestParseSceneModelsContextWindow 验证场景三级回退 + context_config 解析。
+// 回归：旧实现只读 chat 场景（且缺字段时硬失败）、完全丢弃 context_config。
+func TestParseSceneModelsContextWindow(t *testing.T) {
+	// ① 只有 assistant 场景 → 三级回退命中（旧实现会报 "no chat scene"）
+	raw := map[string]json.RawMessage{
+		"assistant": json.RawMessage(`[
+			{"key":"qmodel_38max","display_name":"Qwen3.8-Max","enable":true,"is_default":true,
+			 "is_reasoning":true,"is_vl":true,"max_input_tokens":180000,"price_factor":0.5,
+			 "format":"openai","source":"system",
+			 "context_config":{"default":{"is_default":true,"token_count":200000},
+			                   "1M":{"is_default":false,"token_count":1000000}}},
+			{"key":"dmodel","display_name":"DeepSeek-V4-Pro","enable":true,"max_input_tokens":96000,
+			 "price_factor":0.1,"context_config":[]},
+			{"key":"off","display_name":"OFF","enable":false}
+		]`),
+	}
+	ms, err := parseSceneModels(raw)
+	if err != nil {
+		t.Fatalf("parseSceneModels: %v", err)
+	}
+	if len(ms) != 2 {
+		t.Fatalf("enabled len = %d, want 2 (off 应被过滤)", len(ms))
+	}
+	// ② is_default 那项胜出，而不是 max_input_tokens 的 180000
+	if ms[0].ContextWindow != 200000 {
+		t.Errorf("is_default token_count not parsed: %+v", ms[0])
+	}
+	if ms[0].Format != "openai" || ms[0].Source != "system" {
+		t.Errorf("format/source not parsed: %+v", ms[0])
+	}
+	// ③ 形状不符（数组）只损失本字段，不应让整批解析失败
+	if ms[1].ContextWindow != 0 {
+		t.Errorf("malformed context_config should degrade to 0: %+v", ms[1])
+	}
+
+	// ④ chat 缺失、developer 存在 → 回退 developer
+	raw = map[string]json.RawMessage{
+		"developer": json.RawMessage(`[{"key":"dk","display_name":"Dev","enable":true}]`),
+	}
+	if ms, err := parseSceneModels(raw); err != nil || len(ms) != 1 || ms[0].Key != "dk" {
+		t.Errorf("developer fallback: %v %v", ms, err)
+	}
+
+	// ⑤ 三场景都空 → 报错
+	raw = map[string]json.RawMessage{"chat": json.RawMessage(`[]`)}
+	if _, err := parseSceneModels(raw); err == nil {
+		t.Error("empty scenes should error")
+	}
+
+	// ⑥ assistant 优先于 chat
+	raw = map[string]json.RawMessage{
+		"chat":      json.RawMessage(`[{"key":"ck","enable":true}]`),
+		"assistant": json.RawMessage(`[{"key":"ak","enable":true}]`),
+	}
+	if ms, err := parseSceneModels(raw); err != nil || len(ms) != 1 || ms[0].Key != "ak" {
+		t.Errorf("assistant precedence: %v %v", ms, err)
+	}
+}
+
+// TestBuildAgentBodyFormatSourceFromUpstream 验证 model_config 带上上游的 format/source。
+// 回归：旧实现的 model_config 只有 {key,is_reasoning}，完全不下发 source
+// （DEVELOPMENT.md §8 已记为 issue #32：旧 Qoder 思考过程不暴露）。
+func TestBuildAgentBodyFormatSourceFromUpstream(t *testing.T) {
+	body, err := buildAgentBodyMeta([]map[string]any{{"role": "user", "content": "hi"}},
+		modelMeta{Key: "k1", Format: "up-format", Source: "up-source"}, nil, reasoningSpec{}, 0)
+	if err != nil {
+		t.Fatalf("buildAgentBody: %v", err)
+	}
+	var parsed struct {
+		ModelConfig map[string]any `json:"model_config"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("unmarshal body: %v", err)
+	}
+	if parsed.ModelConfig["key"] != "k1" {
+		t.Errorf("model_config.key = %v", parsed.ModelConfig["key"])
+	}
+	if parsed.ModelConfig["format"] != "up-format" {
+		t.Errorf("model_config.format = %v, want upstream value", parsed.ModelConfig["format"])
+	}
+	if parsed.ModelConfig["source"] != "up-source" {
+		t.Errorf("model_config.source = %v, want upstream value", parsed.ModelConfig["source"])
+	}
+
+	// 静态表兜底路径（mc == nil）→ 用兜底常量
+	body, err = buildAgentBody([]map[string]any{{"role": "user", "content": "hi"}},
+		"dmodel", nil, reasoningSpec{}, 0)
+	if err != nil {
+		t.Fatalf("buildAgentBody(nil entry): %v", err)
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("unmarshal body(nil entry): %v", err)
+	}
+	if parsed.ModelConfig["format"] != defaultModelFormat || parsed.ModelConfig["source"] != defaultModelSource {
+		t.Errorf("nil entry should use fallback: %+v", parsed.ModelConfig)
+	}
+}
+
+// TestBuildAgentBodyContextLength 验证 context_length 注入（issue #27）。
+func TestBuildAgentBodyContextLength(t *testing.T) {
+	mc := modelMeta{Key: "k", MaxInputTokens: 180000, DefaultContextWindow: 200000}
+	raw, err := buildAgentBodyMeta([]map[string]any{{"role": "user", "content": "hi"}},
+		mc, nil, reasoningSpec{}, 400000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body struct {
+		Parameters  map[string]any `json:"parameters"`
+		ModelConfig map[string]any `json:"model_config"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Parameters["context_length"] != float64(400000) {
+		t.Errorf("context_length = %v", body.Parameters["context_length"])
+	}
+	if body.ModelConfig["max_input_tokens"] != float64(400000) {
+		t.Errorf("max_input_tokens = %v", body.ModelConfig["max_input_tokens"])
+	}
+	// window=0：parameters 仍恒下发（含 max_tokens / enable_thinking），但不得带 context_length
+	raw, err = buildAgentBodyMeta([]map[string]any{{"role": "user", "content": "hi"}},
+		mc, nil, reasoningSpec{}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body2 struct {
+		Parameters map[string]any `json:"parameters"`
+	}
+	if err := json.Unmarshal(raw, &body2); err != nil {
+		t.Fatal(err)
+	}
+	if _, has := body2.Parameters["context_length"]; has {
+		t.Errorf("context_length should be absent when window=0: %v", body2.Parameters)
+	}
+	if body2.Parameters["enable_thinking"] != false {
+		t.Errorf("parameters.enable_thinking 应恒下发为 false：%v", body2.Parameters)
+	}
+}
+
+// TestResolveContextWindow TZ 校验 + 本仓默认最大档。
+func TestResolveContextWindow(t *testing.T) {
+	mc := &DynamicModel{Key: "m", MaxInputTokens: 180000, ContextWindow: 200000,
+		AvailableWindows: []int64{200000, 400000, 1000000}}
+	if got := resolveContextWindow(400000, mc); got != 400000 {
+		t.Errorf("valid: got %d", got)
+	}
+	// 非法值与未指定 → 最大档（本仓默认，非官方 is_default）
+	if got := resolveContextWindow(999, mc); got != 1000000 {
+		t.Errorf("invalid → max: got %d, want 1000000", got)
+	}
+	if got := resolveContextWindow(0, mc); got != 1000000 {
+		t.Errorf("default → max: got %d, want 1000000", got)
 	}
 }

@@ -291,7 +291,6 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 		log.Printf("qoder chat_stream uid=%s model=%q: no upstream key, fallback to raw model name", a.UID, reqOpenAI.Model)
 		modelKey = reqOpenAI.Model
 	}
-
 	// 思考控制：服务端（internal/server.prepareChatBody）已把 reasoning_effort /
 	// reasoning.effort / thinking.* / enable_thinking 等写法归一化为顶层 reasoning_effort，
 	// 这里按官方 bve() 的写法投影成 is_reasoning + parameters{reasoning_effort, enable_thinking}。
@@ -301,7 +300,14 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 
 	meta := c.modelMetaFor(modelKey)
 	meta.ClientName = reqOpenAI.Model // 逐模型上下文档位按客户端模型名查
-	rawBody, err := buildAgentBodyMeta(reqOpenAI.Messages, meta, reqOpenAI.Tools, spec)
+	// 上下文档位（上游 issue #27）：客户端 context_length/context_window 提示优先，
+	// 其次面板逐模型配置（本地 SetContextWindows）；目标值统一走 pickContextWindow
+	// 就近落地（不取超目标的档位），无任何配置时回落上游 is_default 档。
+	target := parseContextWindowHint(body)
+	if target == 0 {
+		target = contextWindowFor(meta.ClientName)
+	}
+	rawBody, err := buildAgentBodyMeta(reqOpenAI.Messages, meta, reqOpenAI.Tools, spec, pickContextWindow(meta, target))
 	if err != nil {
 		return nil, 0, nil, fmt.Errorf("build qoder body: %w", err)
 	}
@@ -400,10 +406,10 @@ func (c *Client) UserResourceDetail(a *auth.Auth) (int64, []provider.ResourceIte
 	}
 	total := int64(q.UserQuota.Remaining + q.AddOnQuota.Remaining)
 	items := []provider.ResourceItem{
-		{Name: "用户套餐", Total: int64(q.UserQuota.Total), Used: int64(q.UserQuota.Used), Remain: int64(q.UserQuota.Remaining), Usable: true},
+		{Name: "用户套餐", Total: int64(q.UserQuota.Total), Used: int64(q.UserQuota.Used), Remain: int64(q.UserQuota.Remaining), Key: "userQuota", Usable: true},
 	}
 	if q.AddOnQuota.Total > 0 || q.AddOnQuota.Remaining > 0 {
-		items = append(items, provider.ResourceItem{Name: "赠送额度", Total: int64(q.AddOnQuota.Total), Used: int64(q.AddOnQuota.Used), Remain: int64(q.AddOnQuota.Remaining), Usable: true})
+		items = append(items, provider.ResourceItem{Name: "赠送额度", Total: int64(q.AddOnQuota.Total), Used: int64(q.AddOnQuota.Used), Remain: int64(q.AddOnQuota.Remaining), Key: "addOnQuota", Usable: true})
 	}
 	return total, items, nil
 }
@@ -418,8 +424,8 @@ func (c *Client) Classify(status int, body string) provider.ErrKind { return Cla
 
 // Stream 实现 provider.Upstream（嵌套 SSE → 标准 OpenAI SSE 透传）。
 // model 为客户端请求的模型名，直接注入每个 chunk（上游恒为 "auto"）。
-func (c *Client) Stream(w http.ResponseWriter, r io.Reader, model string) error {
-	return Stream(w, r, model)
+func (c *Client) Stream(w http.ResponseWriter, r io.Reader, model string) (map[string]any, error) {
+	return StreamCapture(w, r, model, nil)
 }
 
 // Aggregate 实现 provider.Upstream（嵌套 SSE 聚合）。

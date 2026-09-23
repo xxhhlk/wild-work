@@ -52,7 +52,7 @@ func TestBodyOverLimit413(t *testing.T) {
 }
 
 // TestBodyAtLimitOK 恰好 8MiB：未超限，应正常通过读取阶段
-//（无上游配置时停在账号选择失败，但绝不能是 413/invalid_model）。
+// （无上游配置时停在账号选择失败，但绝不能是 413/invalid_model）。
 func TestBodyAtLimitOK(t *testing.T) {
 	h := NewHandler(Config{APIKey: ""})
 	body := oversizedBody(MaxRequestBody)

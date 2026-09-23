@@ -49,6 +49,8 @@ type modelMeta struct {
 	IsVL                 bool    // is_vl
 	MaxInputTokens       int64   // max_input_tokens
 	MaxOutputTokens      int64   // max_output_tokens（→ parameters.max_tokens）
+	Format               string  // 上游声明的协议形态（回落 defaultModelFormat）
+	Source               string  // 上游声明来源（model_config.source 即思考总开关，回落 defaultModelSource）
 	DefaultContextWindow int64   // 上游标了 is_default 的档位
 	ContextOptions       []int64 // 上游允许的全部窗口档位（升序）
 }
@@ -93,8 +95,8 @@ func pickContextWindow(meta modelMeta, target int64) int64 {
 }
 
 // buildAgentBody 构造请求体（无模型元数据时的兼容入口，元数据按默认值补）。
-func buildAgentBody(messages []map[string]any, modelKey string, tools []any, spec reasoningSpec) ([]byte, error) {
-	return buildAgentBodyMeta(messages, modelMeta{Key: modelKey}, tools, spec)
+func buildAgentBody(messages []map[string]any, modelKey string, tools []any, spec reasoningSpec, contextWindow int64) ([]byte, error) {
+	return buildAgentBodyMeta(messages, modelMeta{Key: modelKey}, tools, spec, contextWindow)
 }
 
 // buildAgentBodyMeta 构造请求体。
@@ -109,7 +111,8 @@ func buildAgentBody(messages []map[string]any, modelKey string, tools []any, spe
 //	parameters.reasoning_effort          = spec.Effort     （仅非空时写）
 //	parameters.enable_thinking           = spec.Enabled    （**恒写**，与 is_reasoning 同源）
 //	parameters.max_tokens                = meta.MaxOutputTokens（恒下发）
-//	parameters.context_length            = 用户目标档位就近取值，回落 meta.DefaultContextWindow（>0 才写）
+//	parameters.context_length            = contextWindow（调用方按「客户端提示 → 面板配置 → 上游默认档」解析，>0 才写）
+//	model_config.format / source         = meta.Format / meta.Source（上游真值，缺失才回落常量）
 //
 // ⚠️ enable_thinking 必须恒写，不能只在档位非空时写 —— 详见 buildAgentBodyMeta
 // 里 parameters 构造处的实测说明（缺它时上游关不掉思考）。
@@ -117,7 +120,7 @@ func buildAgentBody(messages []map[string]any, modelKey string, tools []any, spe
 // 注意 1：developer 角色必须改写为 system。
 // 注意 2：桌面端把 system 文本块**同时**放在顶层 system 与 messages[0]
 // （A6e() 里 `E.unshift({role:"system", content:d})`），这里保持一致。
-func buildAgentBodyMeta(messages []map[string]any, meta modelMeta, tools []any, spec reasoningSpec) ([]byte, error) {
+func buildAgentBodyMeta(messages []map[string]any, meta modelMeta, tools []any, spec reasoningSpec, contextWindow int64) ([]byte, error) {
 	// developer → system（浅拷贝消息避免污染调用方数据）
 	msgs := make([]map[string]any, len(messages))
 	for i, m := range messages {
@@ -157,7 +160,6 @@ func buildAgentBodyMeta(messages []map[string]any, meta modelMeta, tools []any, 
 	if tools == nil {
 		tools = []any{}
 	}
-
 	now := time.Now()
 	requestID := uuid4()
 	requestSetID := uuid4()
@@ -176,8 +178,35 @@ func buildAgentBodyMeta(messages []map[string]any, meta modelMeta, tools []any, 
 		params["reasoning_effort"] = spec.Effort
 	}
 	params["enable_thinking"] = spec.Enabled
-	if cw := pickContextWindow(meta, contextWindowFor(meta.ClientName)); cw > 0 {
-		params["context_length"] = cw
+
+	// format/source 取上游真值，未下发（或走静态表兜底）时才用兜底常量。
+	// ⚠️ model_config.source 即思考总开关：完全不下发该字段会让上游不暴露思考过程（上游 issue #32）。
+	format := meta.Format
+	if format == "" {
+		format = defaultModelFormat
+	}
+	source := meta.Source
+	if source == "" {
+		source = defaultModelSource
+	}
+	modelCfg := map[string]any{
+		"key":              meta.Key,
+		"display_name":     displayName,
+		"model":            "",
+		"format":           format,
+		"is_vl":            meta.IsVL,
+		"is_reasoning":     spec.Enabled,
+		"api_key":          "",
+		"url":              "",
+		"source":           source,
+		"max_input_tokens": maxInput,
+	}
+	// 上下文档位透传（上游 issue #27）：parameters.context_length + model_config.max_input_tokens
+	// 双写 —— 只写 parameters 时 model_config 仍停在目录里的 max_input_tokens（多为 180000），
+	// 档位选了却不生效。
+	if contextWindow > 0 {
+		params["context_length"] = contextWindow
+		modelCfg["max_input_tokens"] = contextWindow
 	}
 
 	base := map[string]any{
@@ -207,22 +236,11 @@ func buildAgentBodyMeta(messages []map[string]any, meta modelMeta, tools []any, 
 			"chatPrompt": "",
 			"imageUrls":  nil,
 		},
-		"model_config": map[string]any{
-			"key":              meta.Key,
-			"display_name":     displayName,
-			"model":            "",
-			"format":           defaultModelFormat,
-			"is_vl":            meta.IsVL,
-			"is_reasoning":     spec.Enabled,
-			"api_key":          "",
-			"url":              "",
-			"source":           defaultModelSource,
-			"max_input_tokens": maxInput,
-		},
-		"system":     systemBlocks(msgs),
-		"messages":   msgs,
-		"tools":      tools,
-		"parameters": params,
+		"model_config": modelCfg,
+		"system":       systemBlocks(msgs),
+		"messages":     msgs,
+		"tools":        tools,
+		"parameters":   params,
 		"business": map[string]any{
 			"product":  "app",
 			"version":  clientVersion,
@@ -275,4 +293,58 @@ func truncateRunes(s string, n int) string {
 		return s
 	}
 	return string(r[:n])
+}
+
+// resolveContextWindow 解析本次请求应使用的上下文档位。
+// 客户端值校验对齐官方 TZ；默认档与非法值落点取 max(AvailableWindows)
+// （宁高勿低，对齐 workbuddy2api 广告口径），而非官方 FHA 的 is_default：
+//  1. requested>0 且校验通过 → 用 requested
+//  2. 否则 → max(AvailableWindows)（有档位表时）
+//  3. 否则 → ContextWindow → MaxInputTokens → 0（不注入）
+func resolveContextWindow(requested int64, mc *DynamicModel) int64 {
+	if requested > 0 {
+		if mc == nil {
+			return requested
+		}
+		if len(mc.AvailableWindows) > 0 {
+			for _, w := range mc.AvailableWindows {
+				if w == requested {
+					return requested
+				}
+			}
+		} else {
+			if mc.MaxInputTokens <= 0 || requested <= mc.MaxInputTokens {
+				return requested
+			}
+		}
+	}
+	if mc == nil {
+		return 0
+	}
+	if n := len(mc.AvailableWindows); n > 0 {
+		return mc.AvailableWindows[n-1] // 升序，取最大档
+	}
+	if mc.ContextWindow > 0 {
+		return mc.ContextWindow
+	}
+	if mc.MaxInputTokens > 0 {
+		return mc.MaxInputTokens
+	}
+	return 0
+}
+
+// parseContextWindowHint 从 OpenAI 请求体读取客户端上下文档位提示。
+// 同时认 context_length（上游参数名）与 context_window（官方 SDK 驼峰名）。
+func parseContextWindowHint(body []byte) int64 {
+	var hint struct {
+		ContextLength int64 `json:"context_length"`
+		ContextWindow int64 `json:"context_window"`
+	}
+	if err := json.Unmarshal(body, &hint); err != nil {
+		return 0
+	}
+	if hint.ContextLength > 0 {
+		return hint.ContextLength
+	}
+	return hint.ContextWindow
 }

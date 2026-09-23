@@ -209,7 +209,7 @@ func TestStreamAndAggregate(t *testing.T) {
 		"data: [DONE]\n\n"
 
 	rec := httptest.NewRecorder()
-	if err := Stream(rec, strings.NewReader(in), "loomy/spark-x"); err != nil {
+	if _, err := Stream(rec, strings.NewReader(in), "loomy/spark-x"); err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
 	if !strings.Contains(rec.Body.String(), `"model":"loomy/spark-x"`) {

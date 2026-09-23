@@ -310,22 +310,24 @@ func sortInts(a []int) {
 // Stream 流式转换：SOLO SSE → OpenAI SSE chunk，每 chunk flush，保证至少一个 [DONE]。
 // 调用方必须先设置过 status 200；本函数自设 SSE headers。
 func Stream(w http.ResponseWriter, r io.Reader) error {
-	return streamOpts(w, r, nil, "")
+	_, err := streamOpts(w, r, nil, "", nil)
+	return err
 }
 
 // StreamWithModel 同 Stream，额外把 model 回填到每个 chunk（上游 SOLO 事件不带模型名）。
-func StreamWithModel(w http.ResponseWriter, r io.Reader, model string) error {
-	return streamOpts(w, r, nil, model)
+func StreamWithModel(w http.ResponseWriter, r io.Reader, model string) (map[string]any, error) {
+	return streamOpts(w, r, nil, model, nil)
 }
 
 // StreamWithError 同 Stream，额外在遇到上游 event:error 时回调 onErr（非 nil），
 // 供调用方冷却账号/记录日志；错误信息同时注入 SSE 事件流。
 func StreamWithError(w http.ResponseWriter, r io.Reader, onErr func(*SOLOStreamError)) error {
-	return streamOpts(w, r, onErr, "")
+	_, err := streamOpts(w, r, onErr, "", nil)
+	return err
 }
 
-// streamOpts Stream 的可选参数版本。
-func streamOpts(w http.ResponseWriter, r io.Reader, onErr func(*SOLOStreamError), model string) error {
+// streamOpts Stream 的可选参数版本；onUsage 非 nil 时回调 token_usage 事件的 usage。
+func streamOpts(w http.ResponseWriter, r io.Reader, onErr func(*SOLOStreamError), model string, onUsage func(map[string]any)) (map[string]any, error) {
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("Cache-Control", "no-cache")
@@ -378,10 +380,11 @@ func streamOpts(w http.ResponseWriter, r io.Reader, onErr func(*SOLOStreamError)
 		return nil
 	}
 
+	var usage map[string]any
 	for {
 		line, err := br.ReadString('\n')
 		if err != nil && err != io.EOF {
-			return err
+			return usage, err
 		}
 		if ev := scanLine(st, strings.TrimRight(line, "\r\n")); ev != nil {
 			switch ev.Event {
@@ -413,19 +416,23 @@ func streamOpts(w http.ResponseWriter, r io.Reader, onErr func(*SOLOStreamError)
 				}
 				if len(delta) > 0 {
 					if err := writeChunk(delta, ""); err != nil {
-						return err
+						return usage, err
 					}
 				}
 			case "token_usage":
 				pendingUsage = ev.Usage
+				if onUsage != nil && ev.Usage != nil {
+					onUsage(ev.Usage)
+				}
 			case "done":
 				if err := writeChunk(map[string]any{}, ev.FinishReason); err != nil {
-					return err
+					return usage, err
 				}
 				if err := writeDONE(); err != nil {
-					return err
+					return usage, err
 				}
 				sawDone = true
+				usage = pendingUsage
 			case "error":
 				// 上游 SOLO 业务错误（1005 权益/1001 模型不可用等）：
 				// 以标准 OpenAI SSE chunk 的 delta.content 返回错误描述，
@@ -436,10 +443,10 @@ func streamOpts(w http.ResponseWriter, r io.Reader, onErr func(*SOLOStreamError)
 				}
 				msg := fmt.Sprintf("solo error code=%d msg=%s", ev.ErrorCode, ev.ErrorMessage)
 				if err := writeChunk(map[string]any{"content": msg}, "stop"); err != nil {
-					return err
+					return usage, err
 				}
 				if err := writeDONE(); err != nil {
-					return err
+					return usage, err
 				}
 				sawDone = true
 			}
@@ -450,9 +457,10 @@ func streamOpts(w http.ResponseWriter, r io.Reader, onErr func(*SOLOStreamError)
 	}
 	if !sawDone {
 		// 幂等兜底：上游中断（无 done）仍写 [DONE]。
-		return writeDONE()
+		werr := writeDONE()
+		return usage, werr
 	}
-	return nil
+	return usage, nil
 }
 
 func jsonEscape(s string) string {

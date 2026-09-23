@@ -501,6 +501,8 @@ func (c *Client) UserResourceDetail(a *auth.Auth) (int64, []provider.ResourceIte
 			Used:     used,
 			Remain:   remain,
 			ExpireAt: acct.expireAt(),
+			// 套餐名+到期日组合伪键：上游无显式 ID，同名录包靠周期结束时间区分
+			Key:    fmt.Sprintf("%s|%s", acct.PackageName, acct.expireAt()),
 			Usable:   true, // 国内版无端点分区，所有套餐均可被本工具消耗
 		})
 	}
@@ -620,7 +622,12 @@ func (c *Client) DailyCheckin(a *auth.Auth) error {
 func (c *Client) Classify(status int, body string) provider.ErrKind { return Classify(status, body) }
 
 // Stream 实现 provider.Upstream（WorkBuddy 上游已是 OpenAI SSE，直接透传）。
-func (c *Client) Stream(w http.ResponseWriter, r io.Reader, model string) error { return Stream(w, r) }
+// 返回值为末帧捕获的 usage（供记账，上游未返回时为 nil）。
+func (c *Client) Stream(w http.ResponseWriter, r io.Reader, model string) (map[string]any, error) {
+	var usage map[string]any
+	err := StreamCapture(w, r, func(u map[string]any) { usage = u })
+	return usage, err
+}
 
 // Aggregate 实现 provider.Upstream（WorkBuddy OpenAI SSE 聚合）。
 func (c *Client) Aggregate(r io.Reader, model string) (map[string]any, error) { return Aggregate(r) }

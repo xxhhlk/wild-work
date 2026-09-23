@@ -471,14 +471,27 @@ func normalizeFrame(obj map[string]any) map[string]any {
 // error.gateway_hint 字段——message 原文不动，hint 并列补充；hintFn 返回空串
 // 或 nil 时与 Stream 行为逐字节一致。
 func Stream(w http.ResponseWriter, r io.Reader) error {
-	return StreamHint(w, r, nil)
+	return StreamCapture(w, r, nil)
 }
 
+// StreamCapture 同 Stream，额外把末帧捕获的 usage（OpenAI 形状）回调给 onUsage
+// （非 nil 时；上游未返回 usage 则不回调）。供 handler 记 token 流水。
+// usage 帧同时仍透传给客户端，客户端行为零变化。
+func StreamCapture(w http.ResponseWriter, r io.Reader, onUsage func(map[string]any)) error {
+	return streamCore(w, r, nil, onUsage)
+}
+
+// streamCore 流式透传核心：hintFn 注入 gateway_hint，onUsage 捕获末帧 usage。
+//
 // StreamHint 同 Stream，但上游 error 帧透出前把 hintFn(payload) 的返回值写入
 // error.gateway_hint。hintFn 为 nil 或返回空串 → 原样透传（零改写）。
 // 空流兜底 error 帧（"empty upstream stream"）不带 hint（网关本地故障形态
 // 未覆盖，不编造）。
 func StreamHint(w http.ResponseWriter, r io.Reader, hintFn func(string) string) error {
+	return streamCore(w, r, hintFn, nil)
+}
+
+func streamCore(w http.ResponseWriter, r io.Reader, hintFn func(string) string, onUsage func(map[string]any)) error {
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("Cache-Control", "no-cache")
@@ -524,6 +537,12 @@ func StreamHint(w http.ResponseWriter, r io.Reader, hintFn func(string) string) 
 		var obj map[string]any
 		valid := 0
 		if json.Unmarshal([]byte(payload), &obj) == nil {
+			// usage 捕获：非空 usage 对象回调给记账方（末帧覆盖前面，OpenAI 语义末帧才是全量）
+			if onUsage != nil {
+				if u, ok := obj["usage"].(map[string]any); ok && len(u) > 0 {
+					onUsage(u)
+				}
+			}
 			// 上游错误帧透传（error-passthrough）：带 error 键的帧**原样写出**，不走
 			// normalizeFrame 白名单——白名单会剥掉 error 字段，客户端就看不到上游
 			// code/msg/requestId。error.message 即上游原文（如 6004 限流、审核拦截），

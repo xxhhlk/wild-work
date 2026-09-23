@@ -91,7 +91,7 @@ func TestStreamRewritesModelAndEmitsDone(t *testing.T) {
 	}) + "data: [DONE]\n\n"
 
 	rec := httptest.NewRecorder()
-	if err := Stream(rec, strings.NewReader(in), "raccoon/sn-kimi-k3"); err != nil {
+	if _, err := Stream(rec, strings.NewReader(in), "raccoon/sn-kimi-k3"); err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
 	body := rec.Body.String()
@@ -110,7 +110,7 @@ func TestStreamRewritesModelAndEmitsDone(t *testing.T) {
 func TestStreamAppendsDoneWhenUpstreamOmitsIt(t *testing.T) {
 	in := sseLine(map[string]any{"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"content": "x"}}}})
 	rec := httptest.NewRecorder()
-	if err := Stream(rec, strings.NewReader(in), "m"); err != nil {
+	if _, err := Stream(rec, strings.NewReader(in), "m"); err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
 	if !strings.Contains(rec.Body.String(), "data: [DONE]") {
@@ -187,6 +187,7 @@ func TestAggregateMergesToolCallArguments(t *testing.T) {
 		t.Fatalf("arguments 拼接结果 = %v", fn["arguments"])
 	}
 }
+
 // TestJwtExp 覆盖 refresh 后从 JWT 取到期时间的路径。
 func TestJwtExp(t *testing.T) {
 	// {"exp":1790089841}

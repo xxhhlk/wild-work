@@ -135,6 +135,11 @@ func normalizeToolChoice(obj map[string]any) {
 // Stream 透传上游 SSE 到 w。
 func Stream(w http.ResponseWriter, r io.Reader) error { return upstream.Stream(w, r) }
 
+// StreamCapture 同 Stream，额外捕获末帧 usage（记账用）。
+func StreamCapture(w http.ResponseWriter, r io.Reader, onUsage func(map[string]any)) error {
+	return upstream.StreamCapture(w, r, onUsage)
+}
+
 // Aggregate 聚合 SSE 为单个响应。
 func Aggregate(r io.Reader) (map[string]any, error) { return upstream.Aggregate(r) }
 

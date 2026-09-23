@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"wild-work/internal/auth"
+	"wild-work/internal/ledger"
 	"wild-work/internal/pool"
 	"wild-work/internal/provider"
 )
@@ -35,6 +36,13 @@ type Config struct {
 	// （用于账号活跃保活），但不记录、不上报签到状态，保持对用户透明。
 	// WorkBuddy 国际版使用该模式。
 	ActivitiesOnly bool
+
+	// ExpiringThreshold 临期阈值（config.schedule.expiring_threshold_hours）。
+	// 0 = 24h 兜底。用于签到后计算临期额度（Pick() 的第一排序键）。
+	ExpiringThreshold time.Duration
+
+	// Ledger 积分流水记账器（非 nil 时签到后余额刷新触发差分记账）。
+	Ledger *ledger.Ledger
 }
 
 // Scheduler 调度器。
@@ -69,6 +77,9 @@ func New(cfg Config) *Scheduler {
 	}
 	if cfg.KeepaliveHours == nil {
 		cfg.KeepaliveHours = []int{22}
+	}
+	if cfg.ExpiringThreshold <= 0 {
+		cfg.ExpiringThreshold = 24 * time.Hour
 	}
 	return &Scheduler{cfg: cfg, wake: make(chan struct{}, 1)}
 }
@@ -371,10 +382,14 @@ func (s *Scheduler) checkinOne(uid string) CheckinResult {
 		}
 	} else {
 		_, unusable := provider.Summarize(items)
-		expiring := provider.ExpiringWithin(items, 24*time.Hour)
+		expiring := provider.ExpiringWithin(items, s.cfg.ExpiringThreshold)
 		r.Remain, r.HasRemain = usable, true
 		log.Printf("checkin credits platform=%s uid=%s remain=%d expiring=%d unusable=%d", name, uid, usable, expiring, unusable)
 		s.cfg.Pool.ReenableIfCredits(uid, usable, expiring, unusable)
+		// 差分记账：与上次快照对比产出 earn/spend/expire 流水
+		if s.cfg.Ledger != nil {
+			s.cfg.Ledger.DiffCredits(name, uid, usable, items)
+		}
 	}
 	return s.finishCheckin(uid, r)
 }

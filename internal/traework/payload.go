@@ -6,7 +6,10 @@ import (
 )
 
 // PrepareBody 把 OpenAI chat/completions 请求改写为 Trae SOLO llm_utils_chat 请求。
-func PrepareBody(src []byte) []byte {
+//
+// function 由调用方（渠道 Client）传入，用于区分办公版（solo_work_lite）与
+// 代码版（solo_agent）——两者是同一上游下的不同 function，模型与计费口径均不同。
+func PrepareBody(src []byte, function string) []byte {
 	if len(src) == 0 {
 		return src
 	}
@@ -15,7 +18,7 @@ func PrepareBody(src []byte) []byte {
 		return src
 	}
 	obj["stream"] = true
-	obj["function"] = Function
+	obj["function"] = function
 	if msgs, ok := obj["messages"].([]any); ok {
 		for _, mi := range msgs {
 			m, ok := mi.(map[string]any)

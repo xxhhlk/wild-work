@@ -201,9 +201,14 @@ func sortInts(a []int) {
 
 // streamAsOpenAI 把嵌套 SSE 流边读边转写为标准 OpenAI SSE 给客户端。
 // 每个 chunk 重写 model 字段为客户端模型名；末尾补 data: [DONE]。
-func streamAsOpenAI(w io.Writer, r io.Reader, model string, flush func()) error {
+func streamAsOpenAI(w io.Writer, r io.Reader, model string, flush func()) (map[string]any, error) {
+	var usage map[string]any
 	sawDone := false
 	err := parseNestedSSE(r, func(chunk map[string]any) error {
+		// usage 捕获：末帧覆盖前面（OpenAI 语义末帧才是全量），并照常透传
+		if u, ok := chunk["usage"].(map[string]any); ok && len(u) > 0 {
+			usage = u
+		}
 		chunk["model"] = model
 		raw, _ := json.Marshal(chunk)
 		if _, err := fmt.Fprintf(w, "data: %s\n\n", raw); err != nil {
@@ -215,21 +220,27 @@ func streamAsOpenAI(w io.Writer, r io.Reader, model string, flush func()) error 
 		return nil
 	})
 	if err != nil {
-		return err
+		return usage, err
 	}
 	if !sawDone {
 		if _, err := io.WriteString(w, "data: [DONE]\n\n"); err != nil {
-			return err
+			return usage, err
 		}
 		if flush != nil {
 			flush()
 		}
 	}
-	return nil
+	return usage, nil
 }
 
 // Stream 实现 provider.Upstream：嵌套 SSE → 标准 OpenAI SSE 透传。
-func Stream(w http.ResponseWriter, r io.Reader, model string) error {
+// 返回值为末帧捕获的 usage（供记账，上游未返回时为 nil）。
+func Stream(w http.ResponseWriter, r io.Reader, model string) (map[string]any, error) {
+	return StreamCapture(w, r, model, nil)
+}
+
+// StreamCapture 同 Stream，额外把末帧 usage 回调给 onUsage（非 nil 时）。
+func StreamCapture(w http.ResponseWriter, r io.Reader, model string, onUsage func(map[string]any)) (map[string]any, error) {
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("Cache-Control", "no-cache")
@@ -241,5 +252,9 @@ func Stream(w http.ResponseWriter, r io.Reader, model string) error {
 			fl.Flush()
 		}
 	}
-	return streamAsOpenAI(w, r, model, flush)
+	usage, err := streamAsOpenAI(w, r, model, flush)
+	if err == nil && onUsage != nil && usage != nil {
+		onUsage(usage)
+	}
+	return usage, err
 }

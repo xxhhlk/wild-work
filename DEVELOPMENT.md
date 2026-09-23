@@ -14,7 +14,7 @@
 ## 1. 代码地图
 
 ```
-cmd/wild-work/main.go         # daemon 入口：装配三渠道 → 启动 HTTP → 调度器 → 托盘/无头
+cmd/wild-work/main.go         # daemon 入口：装配各渠道 Runtime → 启动 HTTP → 调度器 → 托盘/无头
 cmd/wild-work/web/             # 纯静态 Web UI（index.html / app.js / style.css）
 cmd/genicon/                   # 图标生成（纯 Go）
 internal/
@@ -27,10 +27,12 @@ internal/
 ├── reasoning/                  # 思考强度归一化（reasoning.go）+ 档位能力表/就近降级（catalog.go）
 ├── upstream/                   # WorkBuddy(CodeBuddy) 上游：chat/billing/auth/模型/定价/脱敏
 ├── workbuddyai/                # WorkBuddy 国际版上游（www.workbuddy.ai，与国内版独立）
-├── traework/                   # TraeWork 上游：chat(SOLO)/billing/checkin/模型/定价
+├── traework/                   # TraeWork/TraeCode 上游：chat(SOLO)/billing/checkin/模型/定价（TraeCode=NewTraeCode()，同上游不同函数）
 ├── qoder/                      # 旧 Qoder(QoderWork) 上游：已下线，路由保留
 ├── qodercn/                    # QoderCN 上游：qoder2api 参数形态（cosyVersion 1.0.10 / 双路径签到）
 ├── qodercom/                   # QoderCOM 国际版上游：三域分离（openapi/api1/api2.qoder.sh）
+├── qwenwork/                   # 千问办公上游（gateway.qwenwork.cn）
+├── oczen/                      # OpenCodeZen 匿名免费通道：无账号（Bearer public）+ 三道闸门构造
 ├── login/                      # WorkBuddy OAuth 登录编排
 ├── login_trae/                 # TraeWork 登录编排（PKCE + 回调轮询）
 ├── login_qoder/                # 旧 Qoder 登录编排（已下线）
@@ -44,7 +46,8 @@ internal/
 
 ## 2. 关键不变量（改了会出事）
 
-1. **`PrepareBody` 三改写勿动**：强制 `stream=true`、`tool_choice` 归一化、`role=developer→system`——三渠道各自的 `PrepareBody` 均需保持。
+1. **`PrepareBody` 三改写勿动**：强制 `stream=true`、`tool_choice` 归一化、`role=developer→system`——各渠道各自的 `PrepareBody` 均需保持。
+   例外：`oczen` 的强制 `stream=true` 是上游闸门要求（非兼容便利），且 `tool_choice` 只允许在「客户端未带 tools」时置 `none`，否则会破坏客户端的工具调用。
 2. **日志/面板零 token**：任何输出不得含 access token / refresh token / GitHub token。
 3. **auth 文件格式**：嵌套形 `{auth:{...},account:{...}}`，`internal/auth.Parse` 与各 login.SaveAuth 写入必须一致。新增字段必须同时加入 Parse 和 SaveAtomic。
 4. **config.listen 兼容**：新对象格式 `{"host","port"}` + 旧字符串格式 `":7863"` 都要能解析。
@@ -93,7 +96,14 @@ Global: chatBase=`www.workbuddy.ai`, billingBase=`www.workbuddy.ai`
 
 Agent: `trae-api-cn.mchost.guru`, UG: `api.trae.cn`, OAuth: `api.trae.com.cn`
 
-模型定价：`GET work.trae.cn/api/remote/v1/models`，`features.consumption_rate.rate`（JSON 字符串需二次解析），discount 优先。
+**TraeCode（`traecode/*`）**：同一上游的 `function=solo_agent`（TraeWork 是 `solo_work_lite`），
+账号体系与签到调度完全共享（`traework.NewTraeCode()`），仅模型集与定价分组不同。
+
+模型定价：`GET work.trae.cn/api/remote/v1/models`，`features.consumption_rate.rate`（JSON 字符串需二次解析），discount 优先；
+TraeWork/TraeCode 分组去重按主 function 优先（同一模型在 `solo_agent` 与 `_remote` 下倍率可能不同）。
+
+**积分可用性判据（R19，2026-09-23 更新）**：`ep==1 || product_id==209` 不可用。
+上游已不再下发 ep=1，200 档每日签到（pid=209）仅靠 product_id 识别；208（150 签到）/221（每月登录）均可消耗。
 
 ### Qoder 系（qodercn / qodercom）
 
@@ -157,13 +167,40 @@ Anthropic 转 `thinking` 内容块（`anthropic_stream.go`）；Responses 转 `r
 面板费率表（`app.buildFeesChannels`）走同一个 `reasoning.ListingForKind` 入口，把档位随
 `/api/fees` 一并下发（`supported_efforts` / `default_effort`）——面板上看到的档位就是投影会下发的档位。
 
+### OpenCodeZen（oczen，匿名免费）
+
+| 用途 | 端点 | 鉴权 |
+|------|------|------|
+| 聊天 | `POST https://opencode.ai/zen/v1/chat/completions` | `Bearer public`（字面量，匿名） |
+| 模型列表 | `GET https://opencode.ai/zen/v1/models` | 同上 |
+
+**无刷新/无余额/无签到**：匿名凭证是常量，`RefreshToken` 为空实现，`UserResource*` 恒 0，
+`DailyCheckin` 返回「无签到活动」（调度器配置为 `CheckinMinutes/KeepaliveHours` 均 nil，不会调用）。
+
+三道闸门（缺一即 403 FreeTierError，详见渠道备忘）：
+1. `x-opencode-session` 必须是 `ses_<12位小写hex><14位Base62>`（由对话首轮哈希稳定派生）；
+2. 请求体必须 `stream:true` 且 `tools` 内同含 `bash`/`read` function（缺则注入桩工具；
+   客户端无工具时同时置 `tool_choice:"none"`，有工具时保留其 `tool_choice`）；
+3. 伪装头齐套：`User-Agent: opencode/1.18.x`、`x-opencode-client: cli`、
+   `x-session-affinity`/`X-Session-Id`（同会话值）、`x-opencode-request`、`x-opencode-project`。
+
+模型暴露：只保留 ID 含 `free` 或恰为 `big-pickle` 的模型（地域受限的也保留）；
+上游不可达时回静态清单（`internal/oczen/free.go`）。定价恒为 `Rate=0, Explicit=true`。
+model 字段回填：`Aggregate` 直接改字段；`Stream` 用 `modelRewriter` 逐行替换。
+
 ## 4. 渠道扩展点
 
-新增渠道只需三步：
+新增渠道一般只需三步：
 
 1. 新建 `internal/<channel>/` 包，实现 `provider.Upstream` 接口
 2. 新建 `internal/login_<channel>/` 包，实现登录编排
 3. 在 `cmd/wild-work/main.go` 装配处注册 Runtime
+
+> **例外：无账号渠道（oczen）**不需要第 2 步，也不需要 `internal/auth` 的 `Load<X>Dir()`：
+> 虚拟账号由 `oczen.AnonymousAuth()` 在 `main` 装配时注入 pool（`FilePath` 为空），
+> 且 **不得** 纳入 `app.reloadAccounts`——`pool.SyncToDir` 会把「目录里扫不到」的账号剔除。
+> 其 `Classify` 只能对 429 返回冷却类错误，其余 4xx 一律 `ErrPassthrough`（单账号不可轮换）。
+> 详见 `docs/opencodezen渠道接入备忘.md`。
 
 `provider.Upstream` 接口：
 ```go

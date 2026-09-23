@@ -17,7 +17,7 @@ import (
 // 参考：阶段 C 实测的 13 个事件序列与 delta 形状。
 
 // Stream 实现 provider.Upstream。
-func (c *Client) Stream(w http.ResponseWriter, r io.Reader, model string) error {
+func (c *Client) Stream(w http.ResponseWriter, r io.Reader, model string) (map[string]any, error) {
 	return Stream(w, r, model)
 }
 
@@ -27,7 +27,9 @@ func (c *Client) Aggregate(r io.Reader, model string) (map[string]any, error) {
 }
 
 // Stream 边读边把上游 SSE 转写为标准 OpenAI SSE 给客户端（每个 chunk 重写 model）。
-func Stream(w http.ResponseWriter, r io.Reader, model string) error {
+// 返回末帧捕获的 usage（OpenAI 形状，供 handler 记 token 流水）；上游未返回时为 nil。
+func Stream(w http.ResponseWriter, r io.Reader, model string) (map[string]any, error) {
+	var usage map[string]any
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("Cache-Control", "no-cache")
@@ -50,16 +52,20 @@ func Stream(w http.ResponseWriter, r io.Reader, model string) error {
 			// 上游已收尾，直接把 DONE 转发给客户端并结束。
 			_, _ = io.WriteString(w, "data: [DONE]\n\n")
 			flush()
-			return nil
+			return usage, nil
 		}
 		var chunk map[string]any
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
 			// 解析不了的行原样透传：宁可让客户端看到上游原文，也不要吞掉信息。
 			if _, werr := fmt.Fprintf(w, "data: %s\n\n", payload); werr != nil {
-				return werr
+				return usage, werr
 			}
 			flush()
 			continue
+		}
+		// usage 捕获：末帧覆盖前面（OpenAI 语义末帧才是全量），并照常透传
+		if u, ok := chunk["usage"].(map[string]any); ok && len(u) > 0 {
+			usage = u
 		}
 		chunk["model"] = model
 		raw, err := json.Marshal(chunk)
@@ -67,17 +73,17 @@ func Stream(w http.ResponseWriter, r io.Reader, model string) error {
 			continue
 		}
 		if _, err := fmt.Fprintf(w, "data: %s\n\n", raw); err != nil {
-			return err
+			return usage, err
 		}
 		flush()
 	}
 	if err := sc.Err(); err != nil {
-		return err
+		return usage, err
 	}
 	// 上游异常收尾（无 [DONE]）时补一个，避免客户端一直等。
 	_, _ = io.WriteString(w, "data: [DONE]\n\n")
 	flush()
-	return nil
+	return usage, nil
 }
 
 // aggregate 把上游响应转成单个 chat.completion（非流式请求走这里）。

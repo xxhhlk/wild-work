@@ -69,7 +69,9 @@ func (f *fakeUpstream) Classify(status int, body string) provider.ErrKind {
 	return provider.ErrNone
 }
 
-func (f *fakeUpstream) Stream(w http.ResponseWriter, r io.Reader, model string) error { return nil }
+func (f *fakeUpstream) Stream(w http.ResponseWriter, r io.Reader, model string) (map[string]any, error) {
+	return nil, nil
+}
 
 func (f *fakeUpstream) Aggregate(r io.Reader, model string) (map[string]any, error) { return nil, nil }
 
@@ -346,9 +348,11 @@ func TestBuildFeesChannelsContextFlag(t *testing.T) {
 }
 
 // 档位与 /v1/models 同源：有档位能力的渠道透出，TraeWork 不透出。
+// 注：旧 Qoder 渠道已从面板下线，buildFeesChannels 会跳过它，故此处用 QoderCN 代表
+// 「有档位能力的渠道」（三个 Qoder 渠道的档位投影同源）。
 func TestBuildFeesChannelsEfforts(t *testing.T) {
 	models := map[provider.Kind][]provider.ModelInfo{
-		provider.Qoder: {
+		provider.QoderCN: {
 			{ID: "glm-5.3", SupportsReasoning: true,
 				SupportedEfforts: []string{"low", "high", "max"}, DefaultEffort: "max"},
 		},
@@ -357,13 +361,13 @@ func TestBuildFeesChannelsEfforts(t *testing.T) {
 				SupportedEfforts: []string{"low", "high"}},
 		},
 	}
-	channels := buildFeesChannels(models, nil, []provider.Kind{provider.Qoder, provider.TraeWork}, nil)
+	channels := buildFeesChannels(models, nil, []provider.Kind{provider.QoderCN, provider.TraeWork}, nil)
 	byCh := map[string][]feesModelRow{}
 	for _, ch := range channels {
 		byCh[ch.Channel] = ch.Models
 	}
-	if r := byCh["qoder"][0]; len(r.SupportedEfforts) != 3 || r.DefaultEffort != "max" {
-		t.Errorf("Qoder 应透出档位：%+v", r)
+	if r := byCh["qodercn"][0]; len(r.SupportedEfforts) != 3 || r.DefaultEffort != "max" {
+		t.Errorf("QoderCN 应透出档位：%+v", r)
 	}
 	if r := byCh["traework"][0]; len(r.SupportedEfforts) != 0 || r.DefaultEffort != "" {
 		t.Errorf("TraeWork 协议无档位字段，不应透出：%+v", r)
@@ -457,16 +461,17 @@ func TestResourceDetailNoRefreshTokenStillErrors(t *testing.T) {
 // TestBuildFeesChannelsContextWindows 逐模型档位随行透出：可选档位来自上游，
 // 当前选择取逐模型配置（key 与 /v1/models 的 id 同格式）。
 func TestBuildFeesChannelsContextWindows(t *testing.T) {
+	// 旧 Qoder 已从面板下线（buildFeesChannels 跳过它），用 QoderCN 代表档位渠道。
 	models := map[provider.Kind][]provider.ModelInfo{
-		provider.Qoder: {
+		provider.QoderCN: {
 			{ID: "qwen3.8-flash", ContextWindow: 1000000, ContextFromAPI: true,
 				ContextOptions: []int64{200000, 400000, 1000000}},
 			{ID: "minimax-m2.7", ContextWindow: 200000, ContextFromAPI: true,
 				ContextOptions: []int64{200000}},
 		},
 	}
-	got := buildFeesChannels(models, nil, []provider.Kind{provider.Qoder},
-		map[string]int64{"qoder/qwen3.8-flash": 1000000})
+	got := buildFeesChannels(models, nil, []provider.Kind{provider.QoderCN},
+		map[string]int64{"qodercn/qwen3.8-flash": 1000000})
 	if len(got) != 1 || len(got[0].Models) != 2 {
 		t.Fatalf("want 1 channel / 2 rows, got %+v", got)
 	}

@@ -21,37 +21,40 @@
     <div class="top-info">
       <div class="info-cell">
         <span class="info-label">OpenAI接口</span>
-        <code class="info-value" id="apiAddr" title="点击复制地址"><span class="val"></span></code>
-        <span class="icon-edit" title="修改">✎</span>
+        <code class="info-value" id="apiAddr" title="点击复制地址；进入设置修改"><span class="val"></span></code>
       </div>
       <div class="info-cell">
         <span class="info-label">API-Key</span>
-        <code class="info-value" id="apiKeyDisplay" title="点击复制密钥"><span class="val"></span></code>
-        <span class="icon-edit" title="修改">✎</span>
+        <code class="info-value" id="apiKeyDisplay" title="点击复制密钥；进入设置修改"><span class="val"></span></code>
       </div>
     </div>
     <div class="top-icons">
+      <span class="icon-link gear" id="btnSettings" title="设置">⚙</span>
       <span class="icon-link" id="btnHelp" title="帮助">?</span>
       <span class="icon-link" id="btnAbout" title="关于">i</span>
     </div>
   </header>
 
-  <!-- 账号管理 -->
+  <!-- 主面板：账号管理 / 用量与流水 双 Tab -->
   <section class="panel">
+    <div class="main-tabs">
+      <button class="mtab active" data-mtab="accounts">账号管理</button>
+      <button class="mtab" data-mtab="usage">用量与流水 <span class="ver" id="usageSince"></span></button>
+    </div>
+
+    <!-- ===== Tab: 账号管理 ===== -->
+    <div class="mtab-body" id="mtabAccounts">
     <div class="panel-head">
-      <h2>账号管理</h2>
       <div class="panel-actions-wrap">
         <!-- 左组：刷新积分/全部签到，整体靠左 -->
         <div class="pa-group pa-left">
-        <button class="btn primary" id="btnRefreshAll">刷新积分</button>
-        <button class="btn" id="btnCheckinAll">全部签到</button>
+          <button class="btn primary" id="btnRefreshAll">刷新积分</button>
+          <button class="btn" id="btnCheckinAll">全部签到</button>
         </div>
         <!-- 中间弹性空白由 flex:1 撑开 -->
         <div class="pa-spacer"></div>
         <!-- 右组：渠道添加三列 grid，整体靠右；末列留白 -->
-        <!-- 布局：行1 = WorkBuddyCN | QoderCN | TraeWork；行2 = WorkBuddyAI | QoderCOM | 千问办公；
-             行3 = 商汤小浣熊 | Loomy（导入型：读本机已登录客户端的凭据）；
-             旧 Qoder 渠道已下线（代码保留，仅删界面入口） -->
+        <!-- 布局：行1 = WorkBuddyCN | QoderCN | TraeWork；行2 = WorkBuddyAI | QoderCOM | 千问办公；旧 Qoder 渠道已下线（代码保留，仅删界面入口） -->
         <div class="pa-group pa-right">
           <button class="btn primary" id="btnAddWB" style="grid-column:1;grid-row:1">＋ WorkBuddyCN</button>
           <button class="btn primary alt qodercn" id="btnAddQoderCN" style="grid-column:2;grid-row:1">＋ QoderCN</button>
@@ -66,26 +69,46 @@
     </div>
     <div id="acctList" class="acct-grid"></div>
     <div id="acctEmpty" class="empty hidden">还没有账号，点击上方按钮添加</div>
-  </section>
+    </div>
 
-  <!-- 自动签到 + 开机自启 -->
-  <section class="panel">
-    <div class="panel-head"><h2>自动签到</h2></div>
-    <div class="config-grid">
-      <div class="config-left">
-        <div class="row wrap">
-          <div id="timesBox" class="times"></div>
-          <button class="icon-btn" id="btnAddTime" title="增加一个签到时间">＋</button>
+    <!-- ===== Tab: 用量与流水 ===== -->
+    <div class="mtab-body hidden" id="mtabUsage">
+    <div class="panel-head">
+      <div class="pa-group">
+        <div class="seg" id="usageRange">
+          <button class="seg-btn" data-days="1">今日</button>
+          <button class="seg-btn active" data-days="7">7日</button>
+          <button class="seg-btn" data-days="30">30日</button>
         </div>
-        <div class="hint">保活 22:00 自动 · 下次 <span id="nextCheckin">-</span></div>
+        <button class="btn small" id="btnRefreshUsage">刷新</button>
       </div>
-      <div class="config-right">
-        <div class="row">
-          <span>开机自启</span>
-          <label class="switch"><input type="checkbox" id="chkAutostart"><span class="slider"></span></label>
-        </div>
-        <div class="hint">程序随系统启动自动运行</div>
+    </div>
+    <div class="usage-cards">
+      <div class="ucard"><div class="ucard-label">Token 总量</div><div class="ucard-value" id="ucTokens">—</div></div>
+      <div class="ucard"><div class="ucard-label">请求数</div><div class="ucard-value" id="ucReqs">—</div></div>
+      <div class="ucard"><div class="ucard-label">积分消耗</div><div class="ucard-value warn" id="ucSpend">—</div></div>
+      <div class="ucard"><div class="ucard-label">积分入项</div><div class="ucard-value ok" id="ucEarn">—</div></div>
+    </div>
+    <div class="tabs">
+      <button class="tab active" data-tab="token">Token 用量</button>
+      <button class="tab" data-tab="credit">积分流水</button>
+    </div>
+    <div class="tab-body" id="tabToken">
+      <div id="usageChart" class="chart-box">图表库加载中…</div>
+      <table class="table" id="tblModels">
+        <thead><tr><th>模型</th><th>渠道</th><th class="num">请求数</th><th class="num">Token</th><th class="num">日均</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="tab-body hidden" id="tabCredit">
+      <div id="creditChart" class="chart-box">图表库加载中…</div>
+      <div class="pager" id="recentPager">
+        <button class="btn small" id="pgPrev">‹ 上一页</button>
+        <span class="pg-info" id="pgInfo">- / -</span>
+        <button class="btn small" id="pgNext">下一页 ›</button>
       </div>
+      <div id="recentList" class="recent"></div>
+    </div>
     </div>
   </section>
 
@@ -142,106 +165,125 @@
   </div>
 </div>
 
-<!-- API 配置弹层 -->
-<div class="overlay hidden" id="apiConfigOverlay">
-  <div class="modal">
-    <div class="modal-title">API 配置</div>
-    <div class="modal-body">
-      <div class="row">
-        <label class="lbl">监听</label>
-        <select id="selHost" class="select">
-          <option value="127.0.0.1">127.0.0.1（本机）</option>
-          <option value="0.0.0.0">0.0.0.0（全部）</option>
-          <option value="__custom__">自定义…</option>
-        </select>
-        <span class="muted">:</span>
-        <input id="inPort" class="input port" type="number" min="1" max="65535">
-      </div>
-      <div id="customHostRow" class="row hidden"><input id="inHost" class="input grow" placeholder="如 192.168.1.100" spellcheck="false"></div>
-      <div class="risk-tip">⚠️ 监听 0.0.0.0 时，局域网内任何设备都可访问本 API 与账号管理，风险请自行评估。</div>
-      <hr>
-      <div class="row" style="margin-top:8px"><label class="lbl">默认渠道</label>
-        <select id="selCh" class="select"></select>
-      </div>
-      <div class="row"><label class="lbl">封顶 tokens</label>
-        <input id="inMaxTok" class="input port" type="number" min="0" step="1000">
-        <span class="hint" style="margin-left:6px">0=不限制</span>
-      </div>
-      <div class="row"><label class="lbl">思考强度</label>
-        <select id="selEffort" class="select">
-          <option value="">不注入（跟随客户端）</option>
-          <option value="low">low</option>
-          <option value="medium">medium</option>
-          <option value="high">high</option>
-          <option value="xhigh">xhigh</option>
-          <option value="max">max</option>
-        </select>
-        <span class="hint" style="margin-left:6px">WorkBuddy / Qoder 生效</span>
-      </div>
-      <div class="hint" style="margin:-2px 0 6px">客户端未指定思考强度时的兜底档；客户端显式指定（含关闭）时一律以客户端为准。档位会按模型能力自动降级（如 WorkBuddy 国内版 deepseek-v4-pro 只认 low/high/xhigh）；Qoder 不内置档位表，一律以其模型目录声明的 ladder 为准。</div>
-      <div class="row" style="align-items:center">
-        <label class="lbl">DeepSeek 开关</label>
-        <label style="display:flex;align-items:center;gap:6px;font-size:13px">
-          <input type="checkbox" id="chkDsThink">
-          <span>补 thinking 字段 + 回填 reasoning_content</span>
-        </label>
-      </div>
-      <div class="hint" style="margin:-2px 0 6px">仅 WorkBuddy 国内版/国际版的 deepseek 系模型：官方客户端开思考需同时带 <code>thinking.type=enabled</code>，缺该字段上游按「不思考」应答；assistant 消息也需回填 reasoning_content 以保持多轮一致。上游若对该字段报错可关闭。</div>
-      <div class="row" style="align-items:center">
-        <label class="lbl">档位兜底表</label>
-        <label style="display:flex;align-items:center;gap:6px;font-size:13px">
-          <input type="checkbox" id="chkEffortFallback">
-          <span>上游未声明档位时用内置表补齐</span>
-        </label>
-      </div>
-      <div class="hint" style="margin:-2px 0 6px">内置表仅在上游模型目录未下发档位能力时生效（远端下发值始终优先）。关闭后只认上游声明，未声明的模型不做降级、模型列表里也不暴露档位——用于对照实测上游真实能力。</div>
-      <div class="row"><label class="lbl">思考摘要</label>
-        <select id="selSummary" class="select">
-          <option value="auto">auto（客户端索要时下发）</option>
-          <option value="on">on（总是下发）</option>
-          <option value="off">off（不下发）</option>
-        </select>
-        <span class="hint" style="margin-left:6px">仅 Responses 接口</span>
-      </div>
-      <div class="hint" style="margin:-2px 0 6px">是否把上游思考链转成 Responses 的 reasoning item（Codex 据此显示思考摘要）。</div>
-      <div class="row" style="align-items:center">
-        <label class="lbl">映射表</label>
-        <span class="btn small" id="btnCompatMap">编辑</span>
-        <span class="hint" id="mapSummary" style="margin-left:6px"></span>
-      </div>
-      <div id="mapEditor" class="map-editor hidden">
-        <div class="hint" style="margin-bottom:4px">一行一条，格式：<code>客户端模型名 = 渠道/模型名</code>；支持通配 <code>claude-* = workbuddy/glm-5.2</code>；以 # 开头为注释。</div>
-        <textarea id="mapText" class="input map-text" spellcheck="false" rows="6"></textarea>
-        <div class="hint" style="margin-top:5px">
-          缺省建议（点击插入）：<span id="mapPresets"></span>
+<!-- 设置弹层（统一配置入口：监听/API-Key/模型路由/渠道代理） -->
+<div class="overlay hidden" id="settingsOverlay">
+  <div class="modal modal-wide">
+    <div class="modal-title">设置</div>
+    <div class="modal-body settings-body">
+
+      <!-- 接口与鉴权 -->
+      <div class="cfg-section">
+        <div class="cfg-heading">接口与鉴权</div>
+        <div class="row">
+          <label class="lbl wide">监听</label>
+          <select id="selHost" class="select">
+            <option value="127.0.0.1">127.0.0.1（本机）</option>
+            <option value="0.0.0.0">0.0.0.0（全部）</option>
+            <option value="__custom__">自定义…</option>
+          </select>
+          <span class="muted">:</span>
+          <input id="inPort" class="input port" type="number" min="1" max="65535">
         </div>
-        <div class="hint" id="mapErr" style="color:var(--danger);margin-top:4px"></div>
+        <div id="customHostRow" class="row hidden"><input id="inHost" class="input grow" placeholder="如 192.168.1.100" spellcheck="false"></div>
+        <div class="row">
+          <label class="lbl wide">API-Key</label>
+          <input id="keyInput" class="input grow" spellcheck="false" placeholder="留空 = 不鉴权">
+        </div>
+        <div class="risk-tip">⚠️ 监听 0.0.0.0 时，局域网内任何设备都可访问本 API 与账号管理，风险请自行评估。</div>
       </div>
+
+      <!-- 模型路由（cc/codex 映射） -->
+      <div class="cfg-section">
+        <div class="cfg-heading">模型路由（Claude Code / Codex 映射）</div>
+        <div class="row">
+          <label class="lbl wide">默认渠道</label>
+          <select id="selCh" class="select"></select>
+        </div>
+        <div class="row">
+          <label class="lbl wide">封顶 tokens</label>
+          <input id="inMaxTok" class="input port" type="number" min="0" step="1000">
+          <span class="hint" style="margin-left:6px">0=不限制</span>
+        </div>
+        <div class="row" style="align-items:center">
+          <label class="lbl wide">映射表</label>
+          <span class="btn small" id="btnCompatMap">编辑</span>
+          <span class="hint" id="mapSummary" style="margin-left:6px"></span>
+        </div>
+        <div id="mapEditor" class="map-editor hidden">
+          <div class="hint" style="margin-bottom:4px">一行一条，格式：<code>客户端模型名 = 渠道/模型名</code>；支持通配 <code>claude-* = workbuddy/glm-5.2</code>；以 # 开头为注释。</div>
+          <textarea id="mapText" class="input map-text" spellcheck="false" rows="6"></textarea>
+          <div class="hint" style="margin-top:5px">
+            缺省建议（点击插入）：<span id="mapPresets"></span>
+          </div>
+          <div class="hint" id="mapErr" style="color:var(--danger);margin-top:4px"></div>
+        </div>
+      </div>
+
+      <!-- 自动签到与开机自启 -->
+      <div class="cfg-section">
+        <div class="cfg-heading">自动签到与开机自启</div>
+        <div class="row">
+          <label class="lbl wide">签到时间</label>
+          <div id="timesBox" class="times"></div>
+          <button class="icon-btn" id="btnAddTime" title="增加一个签到时间">＋</button>
+        </div>
+        <div class="hint">保活 22:00 自动 · 下次 <span id="nextCheckin">-</span></div>
+        <div class="row" style="margin-top:8px">
+          <label class="lbl wide" title="到期日在此范围内的积分视为临期，调度器优先消耗，减少到期作废">临期阈值</label>
+          <select id="selExpiring" class="input" style="width:100px">
+            <option value="1">1 天</option>
+            <option value="2">2 天</option>
+            <option value="3">3 天</option>
+          </select>
+          <span class="hint" style="margin-left:8px">该范围内到期的积分优先消耗</span>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <label class="lbl wide">开机自启</label>
+          <label class="switch"><input type="checkbox" id="chkAutostart"><span class="slider"></span></label>
+          <span class="hint" style="margin-left:8px">程序随系统启动自动运行</span>
+        </div>
+      </div>
+
+      <!-- 单渠道上游代理 -->
+      <div class="cfg-section">
+        <div class="cfg-heading">渠道上游代理</div>
+        <div class="hint" style="margin:0 0 8px">给指定渠道的上游请求单独配置代理（http/https/socks5），留空 = 直连。典型用途：OpenCodeZen 的区域限制模型需要经代理访问。</div>
+        <div class="hint" style="margin:0 0 8px">OC Zen Key 留空 = 匿名凭证；填入 sk-… 自定义 key 可解锁独立配额与付费模型。</div>
+        <div id="proxyList" class="proxy-list"></div>
+        <div class="row" style="margin-top:8px">
+          <label class="lbl wide" title="OpenCodeZen 自定义 API key">OC Zen Key</label>
+          <input id="oczenKeyInput" class="input grow" spellcheck="false" placeholder="留空 = 匿名凭证 public（sk-… 可解锁独立配额/付费模型）">
+          <button class="btn small" id="btnOczenTest">测试</button>
+        </div>
+        <div class="hint" id="proxyErr" style="color:var(--danger)"></div>
+      </div>
+
     </div>
     <div class="modal-actions">
-      <button class="btn small" id="btnApiCancel">取消</button>
-      <button class="btn small primary" id="btnApiSave">保存</button>
+      <button class="btn small" id="btnSettingsCancel">取消</button>
+      <button class="btn small primary" id="btnSettingsSave">保存</button>
     </div>
   </div>
 </div>
 
-<!-- API Key 弹层 -->
-<div class="overlay hidden" id="apiKeyOverlay">
+<!-- 显示名修改弹层 -->
+<div class="overlay hidden" id="renameOverlay">
   <div class="modal">
-    <div class="modal-title">修改 API-Key</div>
+    <div class="modal-title">修改显示名</div>
     <div class="modal-body">
-      <input id="keyInput" class="input grow" style="width:100%" spellcheck="false" placeholder="留空 = 不鉴权">
+      <div class="hint" style="margin:0 0 6px">账号：<span id="rnUid" style="font-family:ui-monospace,monospace"></span></div>
+      <input id="rnInput" class="input grow" style="width:100%" spellcheck="false" maxlength="60" placeholder="输入新的显示名（1-60 字符）">
     </div>
     <div class="modal-actions">
-      <button class="btn small" id="btnKeyCancel">取消</button>
-      <button class="btn small primary" id="btnKeySave">保存</button>
+      <button class="btn small" id="btnRenameCancel">取消</button>
+      <button class="btn small primary" id="btnRenameSave">保存</button>
     </div>
   </div>
 </div>
 
 <!-- 帮助弹层 -->
 <div class="overlay hidden" id="helpOverlay">
-  <div class="modal" style="max-width:540px">
+  <div class="modal modal-wide">
     <div class="modal-title">配置说明</div>
     <div class="modal-body docs">
       <p>1. 添加账号后自动完成登录（WorkBuddy 国际版无需手动签到，定时自动领取日活奖励；Qoder 渠道无签到活动，仅 API 转发）。</p>
@@ -252,20 +294,25 @@
         · Anthropic Messages：<code>POST /v1/messages</code>（claude CLI，Base URL 不带 <code>/v1</code>）<br>
         Anthropic 客户端用 <code>x-api-key</code> 或 <code>Authorization: Bearer</code> 均可。</p>
       <p>4. 模型 ID 建议带渠道前缀：<code>workbuddy/&lt;model&gt;</code>、<code>workbuddyai/&lt;model&gt;</code>、<code>traework/&lt;model&gt;</code>、<code>qoder/&lt;model&gt;</code>；
-        也支持裸名（走 <code>config.json</code> 的 <code>compat.default_channel</code> / <code>model_map</code>）。</p>
-      <p>5. 思考强度：客户端可用 <code>reasoning_effort</code> / <code>reasoning.effort</code> / <code>thinking</code> 等写法指定档位
-        （none/minimal/low/medium/high/xhigh/max/ultra）；API 配置里的「思考强度」是客户端未指定时的兜底档，
-        对 WorkBuddy 双面与 Qoder 生效（TraeWork 协议无此字段）。</p>
-      <p>5.1 Qoder 的思考档位来自其模型目录（每个模型的 ladder 不同，与 WorkBuddy 的表相互独立），
-        客户端要「关闭」而该模型不支持关闭时会自动降到最低档；投影按官方客户端的三处同源字段下发
-        （<code>model_config.is_reasoning</code> + <code>parameters.reasoning_effort</code> + <code>parameters.enable_thinking</code>）。
-        <code>agent_chat_generation</code> 端点会下发可见思考链：Chat 接口透传 <code>reasoning_content</code>，
-        Anthropic 接口转 <code>thinking</code> 块，Responses 接口转 <code>reasoning</code> item
-        （Responses 侧另受 API 配置里「思考摘要」策略控制）。</p>
-      <p>6. 积分会随聊天消耗实时变化，"全部刷新积分"可即时获取最新余额。</p>
-      <p>7. 日志文件位于 exe 目录下 <code>data/app.log</code>，可从托盘菜单"查看日志"打开。</p>
-      <p>8. 退出程序：右键托盘图标选择"退出"。</p>
-      <p>9. 本工具仅供个人学习使用，请遵守各上游平台服务条款。</p>
+        也支持裸名（走「设置 → 模型路由」的 <code>默认渠道</code> / <code>映射表</code> 配置）。</p>
+      <p>5. 账号显示名可点击卡片上的名字直接修改；顶栏齿轮进入统一设置（监听 / API-Key / 模型路由 / 渠道上游代理）。</p>
+      <p>6. 渠道上游代理：给单个渠道的上游请求配置独立代理（http/https/socks5），留空即直连；
+        OpenCodeZen 的区域限制模型需经代理访问时可在此配置。</p>
+      <p>7. 积分会随聊天消耗实时变化，"全部刷新积分"可即时获取最新余额。</p>
+      <p>8. 日志文件位于 exe 目录下 <code>data/app.log</code>，可从托盘菜单"查看日志"打开。</p>
+      <p>9. 退出程序：右键托盘图标选择"退出"。</p>
+      <div class="risk-block">
+        <div class="risk-title">⚠️ 风险警告与免责声明</div>
+        <ul class="risk-list">
+          <li>本工具基于对上游平台接口的<b>逆向工程</b>实现，非官方支持，随时可能因上游改版而失效。</li>
+          <li>使用本工具可能<b>违反上游平台的服务条款</b>，存在<b>账号被限制、封禁或追责的风险</b>，请自行评估并承担全部后果。</li>
+          <li>请使用小号或可承受损失的账号接入，<b>切勿将主力账号用于本工具</b>。</li>
+          <li>本工具仅限<b>个人学习与研究</b>用途，严禁用于商业用途或大规模滥用；请遵守各上游平台服务条款与当地法律法规。</li>
+          <li>监听 <code>0.0.0.0</code> 会将 API 与账号管理暴露给局域网，请确认网络环境可信。</li>
+          <li>本软件按"现状"提供，作者不对使用本软件造成的任何直接或间接损失（含账号损失、积分损失、数据丢失等）承担责任。</li>
+          <li>本软件与上游各平台（WorkBuddy/CodeBuddy、TraeWork、Qoder、千问办公、OpenCode 等）无任何关联，商标权归其各自所有者。</li>
+        </ul>
+      </div>
     </div>
     <div class="modal-actions">
       <button class="btn small primary" id="btnHelpClose">知道了</button>
@@ -292,6 +339,7 @@
 
 <div id="toast" class="toast hidden"></div>
 
+<script src="https://cdn.staticfile.org/echarts/4.3.0/echarts.min.js"></script>
 <script src="./app.js"></script>
 </body>
 </html>
