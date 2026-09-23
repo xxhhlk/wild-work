@@ -229,7 +229,7 @@ default-pets / hyperframes-assets / rg / 7za / elevate.exe
 | `internal/login_<ch>/` | 走 OAuth 时按 `login_qwenwork` 模板；否则做**凭据导入器** | 二选一，取决于 §2.1 结论 |
 | `cmd/wild-work/main.go` | 加载凭证 → Pool → Upstream → Scheduler → 两个 Runtime map → 启动日志计数 → `-channels` 列表 | 5 处 |
 | `internal/app/app.go` | 登录分支、`complete<Ch>Login`、reload、刷新观察者、`noExplicitCheckin`、费率行（`ListingForKind` 调用处） | 6 处 |
-| `internal/server/handler.go` | 模型前缀报错文案 | 1 处 |
+| `internal/server/handler.go` | 模型前缀报错文案（**2026-09-23 补齐**：此前是手写串、漏了 workbuddyai/qodercom/raccoon/loomy，已改为按 `Config.Runtimes` 动态生成） | 1 处 |
 | `internal/reasoning/catalog.go` | **仅当实测有档位**：`RealmForKind` + `SupportsEffortKind` 同改 | 守门测试 `TestEffortKindHasOwnRealm` |
 | `cmd/wild-work/web/index.html` | 添加账号按钮 | |
 | `cmd/wild-work/web/app.js` | `CH_LABEL` / `CH_CLASS` / `NO_EXPLICIT_CHECKIN` / 兜底提示 | 三处表 |

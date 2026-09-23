@@ -199,6 +199,9 @@ refresh_token 被轮换后两边互相作废。**与本次改动无关**（改�
 本次 405a1c 的瞬时 503 因此在 `app.log` 里**查不到任何线索**，只能靠复测反推。
 建议：三个分支各补一行日志（渠道、账号计数、`lastErr`）。
 
+> **2026-09-23 已修复**（`404ec45`）：三处各补一行 `log.Printf`，沿用既有 `key=value` 风格 ——
+> `reason=no_account` / `reason=all_unavailable` / 第三支按有无 `lastErr` 打 `err=` 或 `reason=no_remaining`。
+
 ---
 
 ## 5. 未验证项
