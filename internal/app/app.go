@@ -222,22 +222,40 @@ func (a *App) firstRuntime() *Runtime {
 	return nil
 }
 
+// uniqueRuntimes 返回「账号维度」去重后的运行时列表（按渠道固定序，见 channelRank）。
+//
+// TraeWork 与 TraeCode 共用同一个账号池（同一上游账号体系，见 cmd/wild-work 装配，
+// 目的是避免 refresh_token 轮换冲突）。因此凡是按账号统计/展示的地方都必须按池去重，
+// 否则同一账号会被列两次（面板上出现两个 traework，账号总数虚高，刷新全部时同账号被刷两遍）。
+//
+// 注意：模型/费率等「渠道维度」的遍历不走此函数——TraeCode 有独立 Upstream
+// （function=solo_agent）与独立模型集，需各自拉取。
+func (a *App) uniqueRuntimes() []*Runtime {
+	out := make([]*Runtime, 0, len(a.runtimes))
+	seen := map[*pool.Pool]bool{}
+	for _, rt := range a.runtimes {
+		if rt == nil || rt.Pool == nil || seen[rt.Pool] {
+			continue
+		}
+		seen[rt.Pool] = true
+		out = append(out, rt)
+	}
+	sort.SliceStable(out, func(i, j int) bool { return channelRank(out[i].Kind) < channelRank(out[j].Kind) })
+	return out
+}
+
 func (a *App) totalAccounts() int {
 	n := 0
-	for _, rt := range a.runtimes {
-		if rt != nil && rt.Pool != nil {
-			n += len(rt.Pool.List())
-		}
+	for _, rt := range a.uniqueRuntimes() {
+		n += len(rt.Pool.List())
 	}
 	return n
 }
 
 func (a *App) allStatuses() []pool.Status {
 	out := []pool.Status{}
-	for _, rt := range a.runtimes {
-		if rt != nil && rt.Pool != nil {
-			out = append(out, rt.Pool.List()...)
-		}
+	for _, rt := range a.uniqueRuntimes() {
+		out = append(out, rt.Pool.List()...)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].UID < out[j].UID })
 	return out
@@ -278,10 +296,11 @@ func noExplicitCheckin(k provider.Kind) bool {
 }
 
 func (a *App) findRuntimeAuth(uid string) (*Runtime, *auth.Auth) {
-	for _, rt := range a.runtimes {
-		if rt == nil || rt.Pool == nil {
-			continue
-		}
+	// 走 uniqueRuntimes 而非直接遍历 runtimes：共享池账号（TraeWork/TraeCode）
+	// 必须稳定归属主渠道。否则 map 遍历顺序随机，同一个 trae 账号可能落到
+	// TraeCode 上——它没有 Scheduler（手动签到直接失败），Upstream 的 function
+	// 也不同（额度查询口径不一致）。
+	for _, rt := range a.uniqueRuntimes() {
 		if au := rt.Pool.AuthByUID(uid); au != nil {
 			return rt, au
 		}
@@ -1294,8 +1313,10 @@ func (a *App) RefreshAll() RefreshSummary {
 		a.refreshMu.Unlock()
 	}()
 	sum := RefreshSummary{Platforms: map[string]PlatformSummary{}}
-	for _, rt := range a.runtimes {
-		if rt == nil || rt.Pool == nil || rt.Upstream == nil {
+	// 账号维度：共享池（TraeWork/TraeCode）只刷一次——否则同一账号被刷两遍、
+	// 汇总里出现两个同名平台、Total 虚高。
+	for _, rt := range a.uniqueRuntimes() {
+		if rt.Upstream == nil {
 			continue
 		}
 		// oczen 无积分可刷：纳入只会产生一条无意义的「无积分」失败记录。
@@ -2228,10 +2249,9 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		// enrich：uid → 昵称/渠道（查 pool 状态，仅一次遍历）
 		nameOf := map[string]string{}
 		chOf := map[string]string{}
-		for _, rt := range a.runtimes {
-			if rt == nil || rt.Pool == nil {
-				continue
-			}
+		// 账号维度去重：否则共享池渠道（TraeWork/TraeCode）会让账务里的渠道名
+		// 随 map 遍历顺序在两者间漂移。
+		for _, rt := range a.uniqueRuntimes() {
 			for _, st := range rt.Pool.List() {
 				nameOf[st.UID] = st.Nickname
 				chOf[st.UID] = rt.Kind.String()
