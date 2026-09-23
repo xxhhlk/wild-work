@@ -81,13 +81,23 @@ func buildAnthropicBody(raw []byte) ([]byte, error) {
 			}
 		}
 	}
-	if tools := convertTools(in["tools"]); len(tools) > 0 {
+	// `tool_choice: "none"` 时必须**整个不下发 tools**：Anthropic 没有 none 语义，
+	// 只发 tools 而不发 tool_choice 时模型照样会调工具（实测 finish_reason=tool_calls），
+	// 直接违反 OpenAI 契约。两面统一按「裁掉 tools」处理，不依赖上游是否尊重 none。
+	if tools := convertTools(in["tools"]); len(tools) > 0 && !toolsDisabled(in["tool_choice"]) {
 		out["tools"] = tools
 		if tc := convertToolChoice(in["tool_choice"]); tc != nil {
 			out["tool_choice"] = tc
 		}
 	}
 	return json.Marshal(out)
+}
+
+// toolsDisabled 报告客户端是否用 `tool_choice: "none"` 明确要求不要调用工具。
+// 命中时调用方必须裁掉整个 tools 字段（见 buildAnthropicBody / buildResponsesBody）。
+func toolsDisabled(v any) bool {
+	s, _ := v.(string)
+	return s == "none"
 }
 
 // maxTokens 取 max_tokens / max_completion_tokens，缺失或非法时回默认值，
@@ -413,8 +423,8 @@ func convertToolChoice(v any) map[string]any {
 		case "required", "any":
 			return map[string]any{"type": "any"}
 		case "none":
-			// Anthropic 无 none；不发送 tool_choice 时模型仍可能调用工具，
-			// 因此配合「不下发 tools」由调用方保证（见 client.go 的裁剪逻辑）。
+			// Anthropic 无 none 语义；此处返回 nil，由 toolsDisabled 在调用方
+			// 裁掉整个 tools 字段来落实「不调用工具」。
 			return nil
 		}
 	case map[string]any:

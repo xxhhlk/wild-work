@@ -179,6 +179,61 @@ func TestBuildAnthropicBodyForcesStream(t *testing.T) {
 	}
 }
 
+// TestToolChoiceNoneDropsTools `tool_choice: "none"` 必须让整个 tools 字段消失。
+//
+// 两面统一按「裁掉 tools」处理：Anthropic 没有 none 语义，只发 tools 而不发
+// tool_choice 时模型照样会调工具（VM 真实上游实测 finish_reason=tool_calls，
+// 直接违反 OpenAI 契约）；Responses 面上游虽尊重 none，但统一处理可少依赖
+// 一条上游行为。
+func TestToolChoiceNoneDropsTools(t *testing.T) {
+	const tools = `"tools":[{"type":"function","function":{"name":"get_weather","description":"d","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}}]`
+
+	builders := []struct {
+		name string
+		body func([]byte) ([]byte, error)
+	}{
+		{"anthropic", buildAnthropicBody},
+		{"responses", buildResponsesBody},
+	}
+
+	for _, b := range builders {
+		// none：tools 与 tool_choice 都必须消失
+		in := `{"model":"basic/deepseek-flash","max_tokens":64,` + tools +
+			`,"tool_choice":"none","messages":[{"role":"user","content":"hi"}]}`
+		out, err := b.body([]byte(in))
+		if err != nil {
+			t.Fatalf("%s: %v", b.name, err)
+		}
+		var got map[string]any
+		if err := json.Unmarshal(out, &got); err != nil {
+			t.Fatalf("%s: 输出不是合法 JSON: %v", b.name, err)
+		}
+		if _, ok := got["tools"]; ok {
+			t.Fatalf("%s: tool_choice=none 时 tools 必须被裁掉，实际仍在", b.name)
+		}
+		if _, ok := got["tool_choice"]; ok {
+			t.Fatalf("%s: tool_choice=none 时不应下发 tool_choice", b.name)
+		}
+
+		// 对照组：auto / required / 指定函数 都必须保留 tools
+		for _, tc := range []string{`"auto"`, `"required"`, `{"type":"function","function":{"name":"get_weather"}}`} {
+			in := `{"model":"basic/deepseek-flash","max_tokens":64,` + tools +
+				`,"tool_choice":` + tc + `,"messages":[{"role":"user","content":"hi"}]}`
+			out, err := b.body([]byte(in))
+			if err != nil {
+				t.Fatalf("%s/%s: %v", b.name, tc, err)
+			}
+			var got map[string]any
+			if err := json.Unmarshal(out, &got); err != nil {
+				t.Fatalf("%s/%s: 输出不是合法 JSON: %v", b.name, tc, err)
+			}
+			if tl, _ := got["tools"].([]any); len(tl) != 1 {
+				t.Fatalf("%s: tool_choice=%s 时 tools 必须保留，实际 %v", b.name, tc, got["tools"])
+			}
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // 本地拒绝（client.go）
 // ---------------------------------------------------------------------------

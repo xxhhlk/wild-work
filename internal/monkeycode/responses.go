@@ -70,7 +70,9 @@ func buildResponsesBody(raw []byte) ([]byte, error) {
 	if v, ok := in["top_p"]; ok {
 		out["top_p"] = v
 	}
-	if tools := convertResponsesTools(in["tools"]); len(tools) > 0 {
+	// 同 anthropic 面：`tool_choice: "none"` 时裁掉整个 tools（见 toolsDisabled）。
+	// 上游其实尊重 none（实测未调用），但两面统一处理可少依赖一条上游行为。
+	if tools := convertResponsesTools(in["tools"]); len(tools) > 0 && !toolsDisabled(in["tool_choice"]) {
 		out["tools"] = tools
 		if tc := convertResponsesToolChoice(in["tool_choice"]); tc != nil {
 			out["tool_choice"] = tc
