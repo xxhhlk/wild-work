@@ -127,6 +127,25 @@ prompt 为「9 球称 3 次找异常球」多步推理题。
 4. ⚠️ `xhigh` 档在该模型上思考极长（180s 未结束）。这不是投影错误而是上游行为，
    但意味着**客户端选最高档可能撞超时**（本渠道 client timeout 180s）。
 
+**2026-09-24 经网关端到端复核**（验证「归一化 → 投影 → 上游」在 wild-work 全链路下同样生效）：
+
+副本实例（独立端口 / 独立 auths，不碰生产进程）+ 同一道推理题 × 2 次采样，
+指标取 `usage.completion_tokens_details.reasoning_tokens`（rtok；**不用思考字符数**）：
+
+| 档位 | rc_len | rtok |
+| --- | --- | --- |
+| 未表达 | 0 / 0 | — |
+| low | 1620 / 1612 | **429 / 429** |
+| xhigh | 4585 / 1340 | 1082 / 285 |
+
+→ 与 §8 探针结论一致（low 稳定、xhigh 更高）。另注意 **未表达 = 完全不思考**（rc_len 0）：
+面板 `panel_default_effort` 为空时不下发档位，上游把「无档位」当「不思考」——
+这与 `workbuddyai` 未表达仍有 ~90 rtok 的行为不同。
+
+同批复核的另两个渠道：`workbuddyai/gpt-5.6-luna` ✅ 生效（low 72/120 → xhigh 516/242 rtok）；
+`traework/qwen3.8-max` ❌ 无效（rtok 上游不返回、rc_len 无单调）→ 印证「TraeWork 不投影」正确
+（`PrepareBody` 原地改写、不删未知字段，故 `reasoning_effort` 确已透传到上游，只是上游无响应）。
+
 ### internal/qoder（QoderWork）同步实测并修复（2026-09-22）
 
 `internal/qoder` 的投影与 QoderCN 同构，**同一缺陷同样存在**，本次一并修复。

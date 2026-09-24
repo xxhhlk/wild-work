@@ -314,8 +314,9 @@ func reasoningSpecFor(clientModel, reasoningEffort string, thinking *thinkingPar
 		// 保守策略（让「对外声明」与「实际下发」严格对齐）：能力未知的模型只翻开关、
 		// 不下发档位字段——面板与 /v1/models 对未声明 thinking_config 的模型同样不暴露档位
 		// （reasoning.ListingForKind 返回空），两端口径一致。
-		// ⚠️ 本渠道的档位下发**尚未经线上实测**（上游是否认 parameters.reasoning_effort 未知）。
-		// 实测确认后，可放开为与 internal/qoder 一致（未知模型也原样透传档位）。
+		// ⚠️ 本渠道未单独实测（无账号）；body / 投影与 internal/qodercn 完全同构，后者已实测
+		// （2026-09-22 探针，见 docs/qoderCN渠道接入备忘.md §8；2026-09-24 网关端到端复核）。
+		// 拿到 COM 账号后跑 `go test -tags live ./internal/qodercom/ -run TestLiveProbe -v` 即可复测。
 		cap, ok := reasoning.Caps.Lookup(realm, clientModel)
 		if !ok {
 			return reasoningSpec{Enabled: true}
