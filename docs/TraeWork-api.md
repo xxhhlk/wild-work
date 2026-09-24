@@ -61,15 +61,47 @@
 - native 模块 `ai_agent.dll` / `harness.dll` 里 `struct CustomModel with 31 elements` **含 `reasoning_effort` 与 `reasoning_effort_level` 两个字段**；
 - 客户端支持多个 function：`solo_agent` / `solo_agent_lite` / `solo_work_lite` / `solo_agent_remote` / `solo_work_remote` / `solo_design_lite` …
 
-> **推论（回答「客户端为什么有档位」）**：档位选择器只在 `support_thinking:true` 时渲染，而 `solo_work_lite`（wild-work 的 traework）整族为 false ——
-> 所以**客户端里能看到档位，说明客户端那条入口走的不是 `solo_work_lite`，而是 `agent` 族某个 function**
-> （最可能是 `solo_agent_lite`：客户端数据目录名就是 `solo-lite`、前端包也是 `@byted-icube/solo-lite`）。
-> 两者不是同一条上游路径，故「客户端有档位」与「wild-work traework 无档位」并不矛盾。
->
-> 可用**模型列表**反查客户端实际走哪条：`agent` 族独有 `Doubao-Seed-Code` / `Doubao_1_6` / `glm-5.1` / `qwen-3.5` / `search_agent_qwen_fast*`，
+**客户端运行日志的实测证据**（`%APPDATA%\TRAE SOLO CN\logs\*\window1\renderer.log`，2026-09-24 抽取）：
+
+客户端对每个模型首次打开模型选择浮层时会打一条 `[ModelSelectPresentation][TooltipDiagnostic] first open`，
+内含服务端下发的 feature 路由与**实际渲染出的区块**。逐条解析 41 条记录（覆盖 13 个模型）后：
+
+| 观测项 | 结果 |
+|---|---|
+| `configuredRendererSections` 含 `reasoning_effort_selector` | **13/13 模型 = 有**（服务端确实下发了该渲染器配置） |
+| `renderedSections` 含 `reasoning_effort_selector` | **0/41 条 = 从未真正渲染** |
+| `rawFeatures` 里出现 `reasoning_effort` | **从未出现**（只有 `reasoning`，且 `dataKeys: []`） |
+| `resolvedFeatureRoutes` | 只解析出 `consumption_rate` / `discount` 等**计费类**路由，**档位路由始终不在其中** |
+| 日志中 `extra_high` / `light` 等档位值 | **全量日志 0 命中**（档位值从未出现在客户端任何日志里） |
+
+日志样例（`glm-5.3`，其余 12 个模型同构）：
+
+```
+rawFeatures: [access, consumption_rate, discount, reasoning(enable=true,dataKeys=[]), context_windows]
+configFeatureOrder:  [..., consumption_rate, reasoning_effort, max_mode, ...]
+configuredRendererSections: [{featureRoute:max_mode, renderer:max_mode_switch},
+                             {featureRoute:reasoning_effort, renderer:reasoning_effort_selector}]
+resolvedFeatureRoutes: [consumption_rate, discount/member_discount]   ← 无 reasoning_effort
+renderedSections:      [consumption_rate, discount/member_discount]   ← 无档位选择器
+```
+
+→ **修正先前的推论**：并非「客户端走 agent 族所以有档位」。真相是 ——
+**档位选择器在客户端是「配置里有、运行时没渲染」的状态**：服务端在 `configFeatureOrder` /
+`configuredRendererSections` 里声明了 `reasoning_effort`，但它没有进入 `resolvedFeatureRoutes`
+（未通过 feature 开关校验），因此从未出现在 `renderedSections`。客户端 JS 侧的下游逻辑
+（`support_thinking===true ? default_level : undefined`）也因此从未被触发。
+
+> 可用**模型列表**反查客户端实际走哪条 function：`agent` 族独有 `Doubao-Seed-Code` / `Doubao_1_6` / `glm-5.1` / `qwen-3.5` / `search_agent_qwen_fast*`，
 > `work` 族独有 `Doubao-Seed-2.0-Code` / `glm-5-turbo` / `sagitta` / `aquila` / `seed-code-pro-0430` / `file_search_agent` / `explore_sub_agent_v2`。
+> 日志中出现的 13 个模型（`DeepSeek-V4-Flash/Pro 正式版`、`GLM-5.2/5.3`、`Kimi-K2.6/K2.7-Code/K3`、
+> `MiniMax-M3`、`Qwen3.7-Plus`、`Qwen3.8-Max`、`Seed-2.1-Pro-0915/Turbo`、`Seed-Evolving`）在两族中都有，
+> **无法据此反查 function**；但 `renderedSections` 的结论与 function 无关 —— 13 个模型全部未渲染档位。
 
 **实测（经本渠道所用端点 `/api/agent/v3/llm_utils_chat`，模型 `deepseek-v4.1-flash`）**：
+
+> ⚠️ **全部探针的 `function` 字段写的都是 `solo_agent`** —— 即**测的就是 TraeCode 那条路径**
+> （TraeWork 的 `solo_work_lite` 只在 cross-function 对照中作为基线出现）。
+> 下文所有「无分离」结论均直接适用于 **traecode 渠道**。
 
 | 字段位置 | 结果 |
 |---|---|
@@ -77,17 +109,62 @@
 | `custom_model.reasoning_effort`（n=2） | ⚠️ 看似分离（light 6020 vs high 8230） |
 | `custom_model.reasoning_effort`（n=3 复测） | ❌ **无分离**（light median 1746 vs high median 1747，组内波动更大） |
 | `custom_model.reasoning_effort_level`（n=2） | ❌ 无差异 |
-| **非法值哨兵**：上述 4 个位置传 `bogus_value_xyz` | 全部 **200 无报错** → 上游**不解析**这些字段 |
+| **非法值哨兵**：4 个位置传 `bogus_value_xyz` | 全部 **200 无报错** → 上游**不解析**这些字段 |
+| **类型哨兵**（更强判据，见下） | `reasoning_effort` 传 number/object/array → **全部 200 且正常生成** |
+| `temperature=0` 确定性复测 | ❌ 仍无分离（base 6305/5709；top.light 3466/3569；top.xhigh 3841/5211；cm.light 6759；cm.xhigh 3048 反转） |
+| **跨 function 基线对照** | `solo_work_lite` 基线 rtok 1283/1966；`solo_agent` 基线 1663/2058 —— 同题同模型，两族默认思考量同量级，traework 也能思考（思考≠档位） |
+
+**类型哨兵为什么比非法值更强**（2026-09-24 round9/10，决定性）：
+
+| 请求 | 上游响应 | 说明 |
+|---|---|---|
+| `function=123`（错类型） | **HTTP 400** 直接拒绝 | 端点**有强类型校验** |
+| `function=bogus_fn_xyz`（不存在的名字） | `event:error` `code:4001` `the param is invalid` | 端点**有两层校验且都会报错** |
+| `cm.reasoning_effort=123`（错类型） | **200 + 正常生成**（len 2639，content=1） | 该字段**未被反序列化** |
+| `cm.reasoning_effort={}` / `["x"]` | **200 + 正常生成** | 同上 |
+| `top.reasoning_effort=123` / `reasoning_effort_level=123` | **200 + 正常生成** | 同上 |
+| `application_config.reasoning_effort` / `extra_config.reasoning_effort` 传 bogus | 200 + 正常生成 | 亦不解析 |
+| **全字段齐射**（round13）：一次性同时发 12 个候选位置 × `extra_high` | ❌ 与基线无差异（base 4364/5060 vs shotgun 5403/4613，区间重叠） | 穷举后仍无字段生效 |
+
+→ 结论：`llm_utils_chat` 的请求 schema 里**根本没有档位字段**。若字段存在，Rust serde 会在**类型不匹配时直接报错**（已用 `function` 证明该机制有效）。
 
 指标用 `usage.reasoning_tokens`（solo_agent 下该字段有返回；TraeWork 不返回）。
+
+**端到端验证（经 wild-work 网关，两渠道同账号同模型，2026-09-24）**：
+
+同一账号（traework/traecode 共用池）、同一模型 `deepseek-v4.1-flash`、同一难题、`temperature=0`，
+经网关 `/v1/chat/completions` 各采样 6 次：
+
+| 渠道 | base（未表达档位） | xhigh（显式最高档） | 判定 |
+|---|---|---|---|
+| `traework/deepseek-v4.1-flash` | 3592 / 3587（n=2） | 2102 / 6150（n=2） | ❌ 无分离 |
+| `traecode/deepseek-v4.1-flash` | 3065 / 5792 / 4944 / **6812** / 4714 / 6438 | **7056** / 6515 / 5629 / **5242** / 5034 / 5253 | ❌ **无分离** |
+
+- base 区间 **3065–6812**，xhigh 区间 **5034–7056**，**完全重叠**；
+- 关键反例：`base.4 = 6812` **高于** `xhigh.4 = 5242`；n=2 时曾出现「base max 5792 < xhigh min 6515」的假分离，
+  **扩到 n=6 即崩塌** —— 与直连探针同一天踩到的同一个坑（n=2 的「似分离」不可信）。
+
+→ **答案：走 traecode 渠道也不能让思考档位生效。**
 
 **结论**：
 
 1. **TraeWork（solo_work_lite）上游明示不支持档位**（`support_thinking:false` ×42）→ wild-work 对 traework **不投影档位是正确的**，不存在「丢了档位能力」。
-2. **TraeCode（solo_agent）** 上游声明档位，但**经 `llm_utils_chat` 传档位无效** —— 该端点不认这些字段（非法值也不报错）。
-3. 客户端 UI 能表达档位，但走的是 **native 通道**（`ai_agent.dll` / `hub_bridge.rs`）。若日后要让 traecode 支持档位，需先逆向该通道的请求格式，或找到真正接受档位的端点。
+2. **TraeCode（solo_agent）上游虽声明档位（19/64），但传档位同样无效** ——
+   直连四重验证（非法值哨兵 / 类型哨兵 / 全字段齐射 / temperature=0 确定性复测）+ **经网关端到端 n=6** 均无效果。
+   原因：`llm_utils_chat` 的请求 schema 里**根本没有档位字段**。
+   → **走 traecode 渠道也无法让思考档位生效**，与 traework 表现一致。
+3. **客户端 UI 的档位同样是「配置有、未渲染」**：13/13 模型配置了 `reasoning_effort_selector`，
+   但 `renderedSections` 41 条记录 0 命中，档位值在全量客户端日志中 0 命中。
+   即客户端自己也没把档位真正用起来（至少在这份 09-17~09-24 的日志覆盖范围内）。
+4. 若日后要让 traecode 支持档位，需找到真正接受档位的端点（`use_fast_request` / `create_agent_task` 等
+   已试空 body → 400，说明存在但 schema 未知），或逆向 native 通道的请求格式。
+   **注意**：上游 `reasoning_effort_config` 声明（`support_thinking:true`）只影响**客户端 UI 是否渲染选择器**，
+   与请求侧是否被接受**无关** —— 这是本次最容易误判的一点。
 
-**复现**：`.gotmp/mc-e2e4/` 下的 `dump-models*.ps1`（拉上游原始模型配置，含 `reasoning_effort_config`）与 `t-direct*.ps1`（直连档位探针，参数化字段位置与值）。
+**复现**：`.gotmp/mc-e2e4/` 下的 `dump-models*.ps1`（拉上游原始模型配置，含 `reasoning_effort_config`）、
+`t-direct*.ps1`（直连档位探针）、`t-round9/10/11/13.ps1`（类型哨兵 / 响应体判定 / 确定性复测 / 全字段齐射）、
+`cli-logs/`（客户端 renderer.log 抽取，含 `TooltipDiagnostic` 解析脚本）；
+`.gotmp/mc-e2e5/` 下的 `t-e2e.ps1` / `t-e2e2.ps1`（经网关的两渠道端到端对比）。
 
 ## 说明
 
