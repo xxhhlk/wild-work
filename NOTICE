@@ -1,0 +1,57 @@
+wild-work
+Copyright (c) 2026 rockswang
+
+This product includes software developed by third parties. The original
+copyright notices and license terms of those components are reproduced below.
+
+===============================================================================
+Sliverkiss/workbuddy2api — https://github.com/Sliverkiss/workbuddy2api
+===============================================================================
+
+Files derived from this project (see the merge commits f05c04c, 7d39255 and
+7915f0d for the exact provenance):
+
+  internal/upstream/sanitize.go
+  internal/upstream/sanitize_test.go
+  internal/upstream/truncation.go
+  internal/upstream/truncation_test.go
+  internal/upstream/tool_pairing.go
+  internal/upstream/tool_pairing_test.go
+
+Files that pre-date the merge but incorporate ported code from this project:
+
+  internal/upstream/sse.go
+  internal/upstream/sse_test.go
+  internal/upstream/payload.go
+
+MIT License
+
+Copyright (c) 2026 Sliverkiss
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+===============================================================================
+codkeep/MonkeyCodeReverseEngineer
+https://github.com/codkeep/MonkeyCodeReverseEngineer
+===============================================================================
+
+Referenced for protocol comparison only; no source code was copied.
+
+Licensed under the Apache License, Version 2.0.
+See http://www.apache.org/licenses/LICENSE-2.0 for the full license text.

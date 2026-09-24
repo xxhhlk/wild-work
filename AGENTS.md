@@ -421,6 +421,8 @@ git tag vX.Y.Z && git push origin vX.Y.Z
 ## 9. 文档索引
 
 - [README.md](README.md) — 用户文档
+- [LICENSE](LICENSE) — MIT 许可
+- [NOTICE](NOTICE) — 第三方组件版权与许可声明
 - [DEVELOPMENT.md](DEVELOPMENT.md) — 开发者文档（面向 AI Agent）
 - [HANDOFF.md](HANDOFF.md) — 交接文档（历史记录）
 - [docs/三接口兼容改造备忘.md](docs/三接口兼容改造备忘.md) — 三接口（Chat/Responses/Anthropic）兼容层架构决策、实施记录、验证清单、已知限制
@@ -430,4 +432,5 @@ git tag vX.Y.Z && git push origin vX.Y.Z
 - [docs/用量积分流水记账备忘.md](docs/用量积分流水记账备忘.md) — 双流水统计（token/积分）架构、差分算法、实测验证、已知限制（R23）
 
 > **docs/ 采用白名单制**：`.gitignore` 中 `docs/*` 默认忽略全部文档，仅 `!docs/<文件名>` 显式反选的才入库。
-> 逆向分析类文档一律**只保留本地、不入库**。新增需要入库的文档时，追加一行 `!docs/<文件名>`。
+> 含敏感抓包产物、凭据原值、可复现的攻击面细节的文档一律**只保留本地、不入库**；接口结构与端点清单类文档可入库。
+> 新增需要入库的文档时，追加一行 `!docs/<文件名>`。

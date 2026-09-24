@@ -28,9 +28,9 @@
 
 ### 声明
 
-**本项目只是各上游渠道的集成与聚合，本身不涉及任何逆向分析和破解工作。**
+**本项目只是各上游渠道的集成与聚合，本身不做破解、不绕过计费、不规避风控。**
 
-即：本仓库不产出、不包含、不分发任何协议逆向研究成果。各渠道的接口参数、签名算法、风控指纹等底层知识，全部来自社区其他开源项目的公开成果；本项目所做的是**在既有公开成果之上做多渠道路由、账号池调度、协议适配与界面封装**，并提供跨平台、低门槛的使用形态。所有逆向相关的功劳与风险归于下述各上游项目作者。
+各渠道的接口参数、签名算法、风控指纹等底层知识，来自社区其他开源项目的公开成果与对上游公开接口的观察记录；本项目所做的是**在既有成果之上做多渠道路由、账号池调度、协议适配与界面封装**，并提供跨平台、低门槛的使用形态。`docs/` 下的接入备忘是集成过程中的接口整理与实测记录，服务于本项目的渠道适配与维护。所有逆向相关的功劳与风险归于下述各上游项目作者。
 
 ### 致谢
 
@@ -68,6 +68,7 @@
 | [DASungta/trae-proxy](https://github.com/DASungta/trae-proxy) | Trae 系反代；确认**无请求侧思考控制**，反向佐证本项目「TraeWork 不投影」 |
 | [arch3rPro/Trae-Proxy](https://github.com/arch3rPro/Trae-Proxy) | 同上，raw 透传（MIT） |
 | [OpenSenseNova/SenseNova6.7](https://github.com/OpenSenseNova/SenseNova6.7) | 纯文档仓；响应侧 `reasoning` 字段语义（无请求侧档位） |
+| [avaritiachaos/qoder-proxy](https://github.com/avaritiachaos/qoder-proxy) | Qoder 模型表；`qwen3.8-max-effort-{low,medium,high,max}` 证实档位别名只在 Max 系官方暴露（MIT） |
 | [alhza/GPT-Load](https://github.com/alhza/GPT-Load) | key 池轮询 / 阈值拉黑 / 递归换 key 重试设计（MIT） |
 
 以下项目用于**同类项目形态**调研（渠道覆盖、模型目录、账号池组织方式）。本项目借鉴其思路与结论，未复制代码：
@@ -540,4 +541,6 @@ TraeWork 的额度分两个池，由上游 `available_endpoint` 字段区分：
 
 ## License
 
-MIT — 仅供个人学习使用，请遵守各上游平台服务条款。
+[MIT](LICENSE) — 仅供个人学习使用，请遵守各上游平台服务条款。
+
+本项目包含来自第三方开源项目的代码，其版权与许可声明见 [NOTICE](NOTICE)。
