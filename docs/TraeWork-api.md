@@ -153,18 +153,111 @@ renderedSections:      [consumption_rate, discount/member_discount]   ← 无档
    直连四重验证（非法值哨兵 / 类型哨兵 / 全字段齐射 / temperature=0 确定性复测）+ **经网关端到端 n=6** 均无效果。
    原因：`llm_utils_chat` 的请求 schema 里**根本没有档位字段**。
    → **走 traecode 渠道也无法让思考档位生效**，与 traework 表现一致。
-3. **客户端 UI 的档位同样是「配置有、未渲染」**：13/13 模型配置了 `reasoning_effort_selector`，
-   但 `renderedSections` 41 条记录 0 命中，档位值在全量客户端日志中 0 命中。
-   即客户端自己也没把档位真正用起来（至少在这份 09-17~09-24 的日志覆盖范围内）。
-4. 若日后要让 traecode 支持档位，需找到真正接受档位的端点（`use_fast_request` / `create_agent_task` 等
-   已试空 body → 400，说明存在但 schema 未知），或逆向 native 通道的请求格式。
+3. **客户端能生效、网关不能 —— 根因是「通道不同」而非「字段名不同」**：
+   客户端档位选择器**真的渲染**（0.1.69 实测 19/25），请求里也确实带
+   `model_info.reasoning_effort_level`；但客户端**主聊天不走 `llm_utils_chat`**，
+   而是走 native harness 的本地 RPC（`lite.send_message` → 转发 `start_chat`，经 `127.0.0.1:51000` / vsock）。
+   `llm_utils_chat` 只用于标题生成等**辅助任务**。详见 §4.1。
+4. 若日后要让 traecode 支持档位，需找到真正接受档位的端点，或逆向 native 通道的请求格式。
    **注意**：上游 `reasoning_effort_config` 声明（`support_thinking:true`）只影响**客户端 UI 是否渲染选择器**，
    与请求侧是否被接受**无关** —— 这是本次最容易误判的一点。
 
+### 4.1 深挖补充（2026-09-24 深夜，客户端升级到 0.1.69 后）
+
+**① 推翻「客户端也没渲染档位」的旧结论** —— 那是旧客户端（0.1.52）的日志。当前客户端
+`TRAE SOLO CN 0.1.69 / build 2.3.87413`（装于 `E:\Program Files\TRAE SOLO CN`）的 `renderer.log`：
+
+| 观测项 | 旧结论（0.1.52） | **实测（0.1.69）** |
+|---|---|---|
+| `configuredRendererSections` 含 `reasoning_effort_selector` | 13/13 | **25/25** |
+| `renderedSections` 含 `reasoning_effort_selector` | 0/41 ❌ | **19/25 ✅ 真的渲染了** |
+
+→ **用户在客户端看到档位选择器是真的**。未渲染的 6 条集中在 `minimax-m3` / `kimi-k2.6` / `qwen-3.7-plus`（上游 `support_thinking:false`）。
+
+**② 客户端确实在请求里发档位**（`renderer.log` 行 967，真实请求体）：
+
+```
+"user_message_context": { ..., "model_info": {
+    "provider":"", "is_preset":true, "config_name":"deepseek-v4.1-flash", "config_source":1,
+    "model_name":"deepseek-v4.1-flash", "display_model_name":"DeepSeek-V4.1-Flash",
+    "use_remote_service":true, "multimodal":true, "prompt_max_tokens":936000,
+    ... "reasoning_effort_level":"extra_high" } }
+```
+
+→ **档位容器是 `model_info`**，字段名 `reasoning_effort_level`（不是我们先前测的 `custom_model`）。
+
+**③ 但客户端主聊天根本不走 `llm_utils_chat`**（这是先前最大的误判）：
+
+| 证据 | 内容 |
+|---|---|
+| `renderer.log` | `[API client][rust] invoke cost= 557ms lite.send_message` + `[SoloLiteApiObservability] route=chat.sendMessage → target_method=send_message` |
+| `harness.dll` 路由表 | `chat.start_chat /api/v1/chat/start_chat`、`chat.initialize /api/v1/chat/initialize`、`lite.send_message`、`chat.subscribe_events /api/v1/chat/subscribe_events` |
+| `harness.dll` 日志串 | **`lite: forwarding send_message model selection to start_chat`** |
+| `ai_agent.dll` | `llm_utils_chat failed for` **title / icon / commit message / system_diagnosis / input optimization / project name / branch name / image_to_text / video_to_text / custom_agent_generation** —— **全是辅助任务** |
+
+→ **`llm_utils_chat` 是辅助任务端点，不是主聊天端点**。桌面客户端主链路是
+**native harness 的本地 RPC**（`lite.send_message` → 转发 `start_chat`），走 `127.0.0.1:51000`（TCP OPEN，非 HTTP）与 vsock，
+**不经过公网 HTTP**。所以「客户端能生效、网关不能」的根因不是字段名，而是**传输通道不同**。
+
+**④ 补测 `model_info` 容器（round14，客户端真实容器）—— 仍不解析**：
+
+| 请求 | 结果 |
+|---|---|
+| `model_info`（无档位）基线 ×2 | rtok 6824 / 4692 |
+| `model_info.reasoning_effort_level=light` ×2 | 3377 / **14026** ← 组内跨度比组间大 |
+| `model_info.reasoning_effort_level=extra_high` ×2 | 4810 / 5085 |
+| **类型哨兵** `model_info.reasoning_effort_level=123` | **200 正常生成** → 未反序列化 |
+| **类型哨兵** `model_info.reasoning_effort=123` | **200 正常生成** → 未反序列化 |
+
+→ 至此**第五个容器位置**（`custom_model` / 顶层 / `application_config` / `extra_config` / `model_info`）确认不解析。
+
+**⑤ 新发现的端点全部打不通（round15/16/17）**：
+
+| 端点 | 结果 | 说明 |
+|---|---|---|
+| `/api/v1/chat/start_chat` | **404** | native 内部 RPC 路由，公网网关不暴露 |
+| `/api/v1/chat/initialize` | **404** | 同上 |
+| `/api/v1/lite/send_message` | **404** | 同上 |
+| `/api/ide/v1/llm_raw_chat` | **400** | 存在但 schema 未知 |
+| `/api/ide/v2/llm_raw_chat` | **400** | 同上 |
+| `/api/agent/v3/create_agent_task`（带真实 session_id + 全字段） | **400** | 同上 |
+
+**⑥ native 侧档位证据（`harness.dll` / `ai_agent.dll` 字节级提取）**：
+
+- `struct LiteSendMessageRequest with 22 elements` 字段序列以
+  **`provider, reasoning_effort, reasoning_effort_level, is_preset, config_name, config_source, ...`** 开头
+  → **档位是 lite 请求的顶层字段**；
+- `struct StartChatRequestData with 71 elements` 含 `provider, reasoning_effort, reasoning_effort_level, mode_type`；
+- `ai_agent.dll` 含模块 **`infrastructure/context/reasoning_effort.rs`**，其日志串为
+  **`[reasoning_effort] both legacy and modern fields supplied; forwarding both`** 与
+  `[reasoning_effort] invalid legacy value, fallback to medium`
+  → **native 层确实会解析并转发档位**（`forwarding both` 指同时转发 `reasoning_effort` 与 `reasoning_effort_level`）。
+
+### 4.2 想让 trae 渠道档位生效，可行路径
+
+| 路径 | 可行性 | 说明 |
+|---|---|---|
+| 继续在 `llm_utils_chat` 上试字段名 | ❌ **已穷尽** | 5 个容器位置 + 全字段齐射 + 类型哨兵，全部不解析 |
+| 复刻 native 的 `start_chat` RPC | ⚠️ 理论可行、成本极高 | 需逆向 `127.0.0.1:51000` 的自定义帧协议 + vsock 握手 + `StartChatRequestData` 71 字段必填集 |
+| 让 wild-work 客户端直连 Trae 官方客户端 | ✅ 但已非「渠道」 | 即用户直接用 TraeWork 客户端（档位原生生效） |
+| 换用真正支持档位的渠道 | ✅ **推荐** | `qodercn` / `workbuddyai` 已实测档位生效（见 `docs/qoderCN渠道接入备忘.md` §8） |
+
+**一句话**：traework/traecode **在公网 HTTP 面上无法让档位生效**（已穷尽证明），客户端能生效是因为它走 native 本地 RPC。
+wild-work 若要在 trae 渠道支持档位，等价于**重写一个 native harness 客户端** —— 不建议；档位需求请走 qodercn / workbuddyai。
+
+**仍未查（可选后续）**：
+1. `127.0.0.1:51000` 的帧协议（非 HTTP，需抓 native↔renderer 的 IPC）；
+2. `create_agent_task` / `llm_raw_chat` 的必填 schema（400 但字段集未知，可从 DLL 的 serde 结构逆推）；
+3. Trae VM 侧 vsock 通道（lite 会话在沙箱 VM 内执行）；
+4. 是否另有上游域（`agent.trae.cn` vs `trae-api-cn.mchost.guru`）接受档位。
+
 **复现**：`.gotmp/mc-e2e4/` 下的 `dump-models*.ps1`（拉上游原始模型配置，含 `reasoning_effort_config`）、
 `t-direct*.ps1`（直连档位探针）、`t-round9/10/11/13.ps1`（类型哨兵 / 响应体判定 / 确定性复测 / 全字段齐射）、
-`cli-logs/`（客户端 renderer.log 抽取，含 `TooltipDiagnostic` 解析脚本）；
+**`t-round14.ps1`（`model_info` 容器 + 类型哨兵）、`t-round15.ps1`（native 端点 404 发现）、
+`t-round16.ps1`（`llm_raw_chat` 家族）、`t-round17.ps1`（`create_agent_task` 全字段）**；
 `.gotmp/mc-e2e5/` 下的 `t-e2e.ps1` / `t-e2e2.ps1`（经网关的两渠道端到端对比）。
+客户端日志：`%APPDATA%\TRAE SOLO CN\logs\<ts>\window1\renderer.log`（含 `TooltipDiagnostic` 渲染记录与真实请求体）。
+native 提取：`E:\Program Files\TRAE SOLO CN\resources\app\modules\ai-agent\{harness,ai_agent}.dll`（`strings` + 字节级定位）。
 
 ## 说明
 
