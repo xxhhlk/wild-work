@@ -270,7 +270,7 @@ base = `https://loomyad.xunfei.cn`，鉴权 = `Authorization: Bearer <session>`�
    `usage.points_consumed` 可用于单次调用对账。
 
 > **阶段 C 补充（已实测）**：流式事件形状、错误形态矩阵（**鉴权错误 = HTTP 200 + `code:"100002"`**）
-> → 见 `docs/loomy-raccoon阶段C探针实测.md`。
+> → 见 `docs/loomy-raccoon接入记录.md` §5（阶段 C 探针实测）。
 >
 > 该文档的「三件套单调递减」结论**已作废**（单次采样 + 用思考字符数当指标）；
 > 2026-09-24 以 `usage.completion_tokens_details.reasoning_tokens` 为权威指标重测，见 §11。

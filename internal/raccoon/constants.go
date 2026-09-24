@@ -1,6 +1,6 @@
 // Package raccoon 封装商汤小浣熊（xiaohuanxiong.com）上游协议，实现 provider.Upstream。
 //
-// 协议要点（2026-09-22 实测，见 docs/raccoon渠道接入备忘.md、docs/loomy-raccoon阶段C探针实测.md）：
+// 协议要点（2026-09-22 实测，见 docs/raccoon渠道接入备忘.md、docs/loomy-raccoon接入记录.md）：
 //   - 推理走官方托管网关：POST https://xiaohuanxiong.com/api/web/llm/v2/chat/completions
 //     鉴权只认 `Authorization: Bearer <access_token>`（token 头 / Cookie / X-Access-Token 均 401）。
 //   - 模型目录：GET /api/web/llm/v2/model_catalog（含 billing_multiplier 倍率 → 费率面板数据源）。

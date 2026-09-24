@@ -19,10 +19,7 @@ ref/
 # 新增需要入库的文档时，在下方追加一行 `!docs/<文件名>`。
 docs/*
 !docs/TraeWork-api.md
-!docs/loomy-raccoon渠道接入计划.md
-!docs/loomy-raccoon阶段C探针实测.md
-!docs/loomy-raccoon阶段D实施记录.md
-!docs/loomy-raccoon阶段E验收报告.md
+!docs/loomy-raccoon接入记录.md
 !docs/loomy渠道接入备忘.md
 !docs/qoder2api端点覆盖度对比.md
 !docs/qoderCN-IDE抓包分析备忘.md

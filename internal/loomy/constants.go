@@ -1,6 +1,6 @@
 // Package loomy 封装讯飞 Loomy（loomyad.xunfei.cn）上游协议，实现 provider.Upstream。
 //
-// 协议要点（2026-09-22 实测，见 docs/loomy渠道接入备忘.md、docs/loomy-raccoon阶段C探针实测.md）：
+// 协议要点（2026-09-22 实测，见 docs/loomy渠道接入备忘.md、docs/loomy-raccoon接入记录.md）：
 //   - 推理：POST https://loomyad.xunfei.cn/api/v1/chat/completions（OpenAI 兼容，SSE）。
 //     请求头必须同时带 `Authorization: Bearer <session>`、`token: <session>`（客户端双写）、
 //     `traceparent`（**缺失会挂死到超时**，官方源码注释实测）、`loomy-version`。

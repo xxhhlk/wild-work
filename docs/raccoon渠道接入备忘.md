@@ -285,7 +285,7 @@ resp: { data: { access_token, refresh_token } }      ← refresh_token 会轮换
 > **阶段 C 补充（已实测）**：流式为**真增量**（`firstContentEvent=1`，13 事件）、
 > 错误形态为 **LiteLLM 信封**（401 `200001/200003`、400 `litellm.BadRequestError`）、
 > 且**未知模型名会静默回落到默认模型并返回 200** → wild-work 必须本地校验模型名
-> → 见 `docs/loomy-raccoon阶段C探针实测.md`。
+> → 见 `docs/loomy-raccoon接入记录.md` §5（阶段 C 探针实测）。
 
 ---
 

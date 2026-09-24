@@ -421,12 +421,9 @@ git tag vX.Y.Z && git push origin vX.Y.Z
 - [DEVELOPMENT.md](DEVELOPMENT.md) — 开发者文档（面向 AI Agent）
 - [HANDOFF.md](HANDOFF.md) — 交接文档（历史记录）
 - [docs/三接口兼容改造备忘.md](docs/三接口兼容改造备忘.md) — 三接口（Chat/Responses/Anthropic）兼容层架构决策、实施记录、验证清单、已知限制
-- [docs/loomy-raccoon渠道接入计划.md](docs/loomy-raccoon渠道接入计划.md) — 两渠道接入计划（A–F 阶段、决策记录、风险矩阵）
+- [docs/loomy-raccoon接入记录.md](docs/loomy-raccoon接入记录.md) — 两渠道接入全记录（A–F 六阶段：决策/取证/探针实测/实施/验收/风险与回退，含并发刷新竞态 A/B 对照）
 - [docs/loomy渠道接入备忘.md](docs/loomy渠道接入备忘.md) — Loomy 协议取证（端点/签名算法/登录 API/积分端点 + A3 实测）
 - [docs/raccoon渠道接入备忘.md](docs/raccoon渠道接入备忘.md) — 小浣熊协议取证（端点/凭据文件/refresh 链路 + A3 实测）
-- [docs/loomy-raccoon阶段C探针实测.md](docs/loomy-raccoon阶段C探针实测.md) — 流式/错误形态/关思考矩阵实测记录
-- [docs/loomy-raccoon阶段D实施记录.md](docs/loomy-raccoon阶段D实施记录.md) — 两渠道落地记录（代码触点、端到端实测、修掉的 3 个问题）
-- [docs/loomy-raccoon阶段E验收报告.md](docs/loomy-raccoon阶段E验收报告.md) — 六项验收结果 + 并发刷新竞态的 A/B 对照验证
 - [docs/用量积分流水记账备忘.md](docs/用量积分流水记账备忘.md) — 双流水统计（token/积分）架构、差分算法、实测验证、已知限制（R23）
 
 > **docs/ 采用白名单制**：`.gitignore` 中 `docs/*` 默认忽略全部文档，仅 `!docs/<文件名>` 显式反选的才入库。
