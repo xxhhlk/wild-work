@@ -314,6 +314,74 @@ return "reasoning_effort"===t.field ? r.reasoning_effort=t.value
 真实情况是：**公网 HTTP 路由已找到（`/api/remote/v1/...`），档位注入点已定位到源码，只差把 `createSession` 的必填项对齐拿到真 session_id**。
 这一步是**可做的、成本不高**，只是本轮未完成 —— 属于「下次接着查」而非「不值得查」。
 
+### 4.3 【2026-09-25 决定性突破】找到可用通道 —— `/api/ide/v1/chat`
+
+> 承接 §4.2，本轮把「下次接着查」做完了。**结论从「档位无解」翻转为「通道已打通、档位字段被接受但不改变思考量」**。
+
+**关键突破点：请求体顶层字段是 `user_input`**
+
+前几轮所有尝试都失败在**字段名**上。用「响应回显」做二分（服务端会把解析到的 prompt 回显在 SSE 里）：
+
+| 顶层字段 | SSE 回显 `event: prompt` | 结果 |
+|---|---|---|
+| `messages` / `query` / `prompt` / `prompt_text` / `content` / `input` / `message` / `raw_messages` | `{"string":null,"messages":null}` | ❌ `all models failed` |
+| **`user_input`** | 同上但**无 error 事件** | ✅ **真的开始推理** |
+
+`/api/ide/v1/chat` 的可用最小 body：
+
+```json
+{
+  "user_input": "<你的问题>",
+  "model_info": { /* CustomModel 31 字段，见 §4.2 新发现 C */ }
+}
+```
+
+**实测证据（VM 侧，宿主凭据已 401）**
+
+| 请求 | 耗时 | 响应长度 | completion_tokens | 错误 |
+|---|---|---|---|---|
+| `base.1` | 143s | 62942B | 7401 | — |
+| `base.2` | 132s | 66473B | 7619 | — |
+
+SSE 事件序列（真实可用）：
+`progress_notice(construct_prompt) → prompt → metadata → output(reasoning_content 逐字) → ... → done`
+
+响应含**完整 `reasoning_content` 思考链**（不是空壳），证明这是**真正的 LLM 通道**。
+
+**档位 A/B 实测（n≥3，度量用 `reasoning_content` 累计字符数）**
+
+| 组 | n | 各样本 reasoning_chars | min | max | mean | 组内跨度 |
+|---|---|---|---|---|---|---|
+| `base`（未表达档位） | 5 | 11773 / 12179 / 15254 / 8920 / 12005 | 8920 | 15254 | 12026 | **71%** |
+| `light` | 3 | 16692 / 13638 / 12071 | 12071 | 16692 | 14134 | 38% |
+| `xhigh` | 3 | 14337 / 14067 / 13402 | 13402 | 14337 | 13935 | 7% |
+
+→ **三组区间完全重叠**：`base` 单组跨度（8920~15254，71%）**远大于**三组均值差（12026 / 14134 / 13935，最大差 17%）。
+→ 尤其 `base` 的最小值 8920 **低于** light/xhigh 的全部样本 —— 若档位真的生效，`base` 不可能低于 `xhigh`。
+→ **档位字段被 schema 接受（不报错），但同样不改变思考量** —— 与 §4 正文结论一致，
+  但这次是在**真正可用的通道**上验证的，而非之前那个根本不解析档位的 `llm_utils_chat`。
+→ 附带：`base` mean(12026) < `light`/`xhigh` mean(14134/13935) 看似「未表达更省」，但 base 的 5 个样本里
+  有 15254 这样的高值，且 light 有 12071 这样的低值 —— **这就是 n=2 会伪造"干净分离"的经典场景**。
+
+**⚠️ 注意：`reasoning_tokens` 字段恒为 0**
+
+`/api/ide/v1/chat` 的 usage 里 `reasoning_tokens` 一直是 `0`，**不能**用它做档位度量；
+必须改用 **`reasoning_content` 的累计字符数**（SSE 里 `event: output` 的 `reasoning_content` 字段拼接）。
+
+**修正后的成本表（最终版）**
+
+| 路径 | 可行性 | 说明 |
+|---|---|---|
+| `llm_utils_chat` 上试字段名 | ❌ 已穷尽 | 5 容器 + 全字段齐射 + 类型哨兵全证伪 |
+| `/api/remote/v1/chat_sessions/:sid/messages` | ⚠️ 路由存在（400） | 需真 session_id；本轮被 `/api/ide/v1/chat` 的突破取代 |
+| **`/api/ide/v1/chat` + `user_input`** | ✅ **已打通** | 单次调用即得完整回答 + 思考链；**档位字段被接受但不生效** |
+| native gRPC（51000） | ⚠️ 标准 gRPC | chat 服务名仍未枚举到 |
+| 换支持档位的渠道 | ✅ **推荐** | `qodercn` / `workbuddyai` 已实测档位生效 |
+
+**一句话（最终）**：trae 系**能打通**（`/api/ide/v1/chat` + `user_input` + `model_info`），
+但**档位在服务端不改变思考量** —— 这是服务端行为，不是客户端字段问题。
+若 wild-work 要接 trae 渠道，可用该端点做**普通对话**；**档位需求仍须走 qodercn / workbuddyai**。
+
 **复现**：`.gotmp/mc-e2e4/` 下的 `dump-models*.ps1`、`t-direct*.ps1`、`t-round9/10/11/13.ps1`、
 `t-round14.ps1`（`model_info` 容器）、`t-round15.ps1`（native 端点 404）、`t-round16.ps1`（`llm_raw_chat`）、
 `t-round17.ps1`（`create_agent_task`）、**`t-round18.ps1`（`/api/remote/v1/models` 200 验证）、
