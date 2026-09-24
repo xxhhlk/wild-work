@@ -294,8 +294,11 @@
         · OpenAI Responses：<code>POST /v1/responses</code>（codex CLI）<br>
         · Anthropic Messages：<code>POST /v1/messages</code>（claude CLI，Base URL 不带 <code>/v1</code>）<br>
         Anthropic 客户端用 <code>x-api-key</code> 或 <code>Authorization: Bearer</code> 均可。</p>
-      <p>4. 模型 ID 建议带渠道前缀：<code>workbuddy/&lt;model&gt;</code>、<code>workbuddyai/&lt;model&gt;</code>、<code>traework/&lt;model&gt;</code>、<code>qoder/&lt;model&gt;</code>；
-        也支持裸名（走「设置 → 模型路由」的 <code>默认渠道</code> / <code>映射表</code> 配置）。</p>
+      <p>4. <b>客户端模型名必须带渠道前缀</b>，否则网关无法判断该走哪个渠道（报
+        <code>model &quot;xxx&quot; needs an explicit channel prefix</code>）。当前已接入渠道的前缀
+        （点击可复制，完整模型名为 <code>前缀 + 模型名</code>）：</p>
+      <p class="prefix-list" id="helpPrefixes"></p>
+      <p>也支持裸名（走「设置 → 模型路由」的 <code>默认渠道</code> / <code>映射表</code> 配置）。</p>
       <p>5. 账号显示名可点击卡片上的名字直接修改；顶栏齿轮进入统一设置（监听 / API-Key / 模型路由 / 渠道上游代理）。</p>
       <p>6. 渠道上游代理：给单个渠道的上游请求配置独立代理（http/https/socks5），留空即直连；
         OpenCodeZen 的区域限制模型需经代理访问时可在此配置。</p>

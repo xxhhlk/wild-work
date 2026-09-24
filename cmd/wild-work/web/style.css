@@ -381,6 +381,18 @@ body {
 /* monkeycode MonkeyCode 平台托管模型渠道色（琥珀棕，与紫/蓝/青系区分） */
 .btn.primary.alt.monkeycode { background: #b45309; border-color: #b45309; }
 .btn.primary.alt.monkeycode:hover { background: #92400e; }
+/* 渠道前缀标记：客户端模型名要填的渠道段（如 raccoon/）。
+   与 badge（展示名）并排，等宽字体 + 虚线底纹表示「可复制的配置片段」。 */
+.ch-prefix {
+  font-family: ui-monospace, Consolas, monospace; font-size: 11px;
+  padding: 1px 6px; margin-left: 6px; border-radius: 6px;
+  background: #f1f5f9; color: #475569; border: 1px dashed #cbd5e1;
+  cursor: pointer; white-space: nowrap;
+}
+.ch-prefix:hover { background: #e0edff; color: var(--primary); border-color: var(--primary); border-style: solid; }
+/* 帮助弹层内的前缀清单：分行罗列，避免长行折行后前缀被拆散 */
+.docs .prefix-list { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 8px; }
+.docs .prefix-list .ch-prefix { margin-left: 0; font-size: 12px; padding: 3px 8px; }
 .badge.monkeycode { background: #b45309; }
 .fees .ch-header.monkeycode td { color: #b45309; }
 

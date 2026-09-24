@@ -117,7 +117,8 @@ POST /api/quit                     # 退出程序
 2. `internal/auth` 增加对应 `Load<Channel>Dir()`（文件名前缀 `<channel>-*.json`；
    **glob 边界**：`qoder*.json` 会吞掉 `qodercn-`/`qodercom-` 前缀，LoadQoderDir 必须显式排除）
 3. 装配处注册 `server.Runtime{Kind, Pool, Upstream, StaticModels}` + `app.Runtime{..., Scheduler}`
-4. 前端渠道选择器加一项；`internal/login_<channel>` 实现登录编排（如需）
+4. 前端渠道选择器加一项（`web/app.js` 的 `CH_LABEL` + `CH_CLASS`，前缀/帮助清单自动跟随，见 §6 第 31 条）；
+   `internal/login_<channel>` 实现登录编排（如需）
    > **无账号渠道（oczen）跳过第 2、4 步**：不建 auth 文件与加载器，虚拟账号由 `main` 装配时注入 pool，
    > 且 `app.reloadAccounts` 不得纳入（否则 `SyncToDir` 会把它剔除）。
 
@@ -300,6 +301,20 @@ POST /api/quit                     # 退出程序
 30. **无账号渠道的错误分类只能依赖 429**：单账号且不可重登 ⇒ 任何 4xx 都不应惩罚账号（否则整渠道下线），
     故 `oczen.Classify` 对其它 4xx 返回 `ErrPassthrough`（server 侧与 `ErrContentBlocked` 同分支：原文透传、不计错不冷却）。
     **严禁**把 401/403 归为 `ErrSessionDead`（会 `pool.Disable` 永久禁用且无法人工恢复）。
+31. **面板上「客户端要填的渠道前缀」只有一处出口（`web/app.js` 的 `chPrefix()` / `chPrefixChip()`）**：
+    客户端模型名必须带渠道前缀（`provider.Kind` 即前缀，如小浣熊填 `raccoon/<模型名>`，无前缀且无映射时网关报
+    `model "xxx" needs an explicit channel prefix`），面板在**账号卡片**（badge 旁）、**费率表分组表头**、
+    **帮助弹层前缀清单**三处展示，全部走同一函数；费率表的模型 tooltip 首行给完整调用 ID（可直接照抄）。
+    帮助清单与路由报错文案（`server.prefixHint`）**同源**：都取 `cfg.Runtimes` 的 key（前端即 `state.compat.channels`），
+    故渠道路由清单增删会自动跟随。
+    - 渠道**显示名**同样只有 `CH_LABEL` 一处数据源，但取用有两档语义，别混：
+      `chLabel(k)`（固定入口：账号卡片 / 费率表 / 代理行，未收录时兜底 `"WorkBuddy"`，保证有名字可看）
+      与 `chNameOf(k)`（**数据驱动**入口：用量面板 / 流水 / 图表，未收录时回退原 id —— 这些值来自历史流水，
+      可能是新增或已删渠道，回退 id 才有诊断价值）。原有的 `CH_NAMES`（用量面板）与
+      `PROXY_HINT`（代理行）是另外两份副本，新增渠道只改一处必然漏 ——
+      `raccoon`/`loomy`/`monkeycode`/`traecode` 曾在用量面板显示成英文 id（2026-09-24 已删除两份副本）。
+    - **新增渠道只需在 `CH_LABEL` / `CH_CLASS` 各加一行**；前缀、帮助清单、tooltip 均自动生成，不要再手写清单
+      （帮助文案曾手写 4 个渠道且含已下线的 `qoder`）。
 
 ## 7. 平台能力差异表（internal/platform）
 

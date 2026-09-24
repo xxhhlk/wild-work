@@ -229,6 +229,23 @@ const CH_LABEL = { workbuddy: "WorkBuddyCN", workbuddyai: "WorkBuddyAI", traewor
 const CH_CLASS = { workbuddy: "wb", workbuddyai: "wbai", traework: "trae", traecode: "traecode", qoder: "qoder", qodercn: "qodercn", qodercom: "qodercom", qwenwork: "qwenwork", raccoon: "raccoon", loomy: "loomy", monkeycode: "monkeycode", oczen: "oczen" };
 const chLabel = (k) => CH_LABEL[k] || "WorkBuddy";
 const chClass = (k) => CH_CLASS[k] || "wb";
+// chNameOf 数据驱动的渠道名（用量面板 / 流水 / 图表）：命中显示名则用显示名，
+// 未收录的渠道**回退原 id** 而不是 chLabel 的 "WorkBuddy" —— 这些位置的值来自
+// 历史流水，可能是新增/已删渠道，显示原 id 才有诊断价值（chLabel 的兜底是给
+// 固定入口用的，那里必须有个能看的名字）。
+const chNameOf = (k) => CH_LABEL[k] || k || "";
+// chPrefix 渠道前缀：客户端模型名必须带的渠道段（provider.Kind 即前缀，
+// 例如小浣熊填 raccoon/<模型名>）。面板多处要展示「客户端该填什么」，
+// 统一由此出口，避免各写一份副本随渠道增加而漂移。
+const chPrefix = (k) => (k ? k + "/" : "");
+// chPrefixChip 可点击复制的前缀标记：客户端配置模型名时直接粘贴。
+// title 给出完整形态示例，说明这个前缀是干什么用的。
+function chPrefixChip(k) {
+  const p = chPrefix(k);
+  if (!p) return "";
+  return `<code class="ch-prefix" title="客户端模型名须以此前缀开头，如 ${esc(p)}&lt;模型名&gt;（点击复制前缀）"` +
+    ` onclick="copyText('${esc(p)}','渠道前缀 ${esc(p)}')">${esc(p)}</code>`;
+}
 // 不支持显式签到（手动按钮）的渠道：
 // 旧 Qoder 渠道无签到活动（qoder.DailyCheckin 直接返回错误，见 internal/qoder/client.go）；
 // WorkBuddy 国际版不提供手动签到，而是自动对话保活领日活奖励；千问办公无签到活动；
@@ -327,7 +344,7 @@ function renderAccounts() {
     <div class="acct-card${disabledClass}">
       <div class="acct-top">
         <div>
-          <span class="badge ${group}">${groupName}</span>
+          <span class="badge ${group}">${groupName}</span>${chPrefixChip(a.group)}
           ${nameHtml}
         </div>
         <div class="acct-ops">
@@ -415,9 +432,10 @@ function renderFees(fees) {
     return parts.join("；");
   };
 
-  // 模型 id 的 tooltip：能拿到上下文则展示，否则明确说未知
-  const modelTip = (m) => {
-    const parts = [`模型：${m.model}`];
+  // 模型 id 的 tooltip：首行给客户端要填的完整模型 ID（渠道前缀 + 模型名），
+  // 用户可直接照抄；能拿到上下文则展示，否则明确说未知。
+  const modelTip = (channel, m) => {
+    const parts = [`调用 ID：${chPrefix(channel)}${m.model}`];
     if (m.has_context && m.context_window) {
       parts.push(`上下文窗口：${fmtTokens(m.context_window)}`);
       if (m.max_tokens) parts.push(`最大输出：${fmtTokens(m.max_tokens)}`);
@@ -454,13 +472,13 @@ function renderFees(fees) {
     const chName = chLabel(ch.channel);
     const chCls = chClass(ch.channel);
     const models = ch.models || [];
-    html += `<tr class="ch-header ${chCls}"><td colspan="4">${esc(chName)}</td></tr>`;
+    html += `<tr class="ch-header ${chCls}"><td colspan="4">${esc(chName)}${chPrefixChip(ch.channel)}</td></tr>`;
     // 每行两个模型
     for (let i = 0; i < models.length; i += 2) {
       const m1 = models[i];
       const m2 = models[i + 1];
-      const id1 = m1 ? `<code title="${esc(modelTip(m1))}">${esc(m1.model)}</code>${ctxTag(m1)}${capIcons(m1)}${noteCell(m1)}${ctxPicker(ch.channel, m1)}` : "";
-      const id2 = m2 ? `<code title="${esc(modelTip(m2))}">${esc(m2.model)}</code>${ctxTag(m2)}${capIcons(m2)}${noteCell(m2)}${ctxPicker(ch.channel, m2)}` : "";
+      const id1 = m1 ? `<code title="${esc(modelTip(ch.channel, m1))}">${esc(m1.model)}</code>${ctxTag(m1)}${capIcons(m1)}${noteCell(m1)}${ctxPicker(ch.channel, m1)}` : "";
+      const id2 = m2 ? `<code title="${esc(modelTip(ch.channel, m2))}">${esc(m2.model)}</code>${ctxTag(m2)}${capIcons(m2)}${noteCell(m2)}${ctxPicker(ch.channel, m2)}` : "";
       html += `<tr><td>${id1}</td><td>${rateCell(m1)}</td><td>${id2}</td><td>${rateCell(m2)}</td></tr>`;
     }
   }
@@ -711,7 +729,7 @@ async function toggleAutostart() {
 // ---------- 设置弹层（统一配置：监听/API-Key/签到/自启/模型路由/渠道代理） ----------
 // PROXY_CHANNELS 渠道上游代理列表（顺序与面板渠道序一致；旧 qoder 已下线不提供代理配置）。
 const PROXY_CHANNELS = ["oczen", "workbuddy", "workbuddyai", "qodercn", "qodercom", "traework", "qwenwork"];
-const PROXY_HINT = { workbuddy: "WorkBuddyCN", workbuddyai: "WorkBuddyAI", traework: "TraeWork", qodercn: "QoderCN", qodercom: "QoderCOM", qwenwork: "千问办公", oczen: "OpenCodeZen" };
+// 代理行的渠道名同样复用 chLabel（原 PROXY_HINT 是第三份副本，已删除）。
 
 // renderProxyList 按当前 state.proxies 渲染每渠道一个输入行。
 function renderProxyList() {
@@ -719,7 +737,7 @@ function renderProxyList() {
   $("proxyList").innerHTML = PROXY_CHANNELS.map((ch) => {
     const val = proxies[ch] || "";
     return `<div class="row proxy-row">
-      <label class="lbl wide" title="${esc(PROXY_HINT[ch] || ch)}">${esc(PROXY_HINT[ch] || ch)}</label>
+      <label class="lbl wide" title="${esc(chLabel(ch))}">${esc(chLabel(ch))}</label>
       <input class="input grow proxy-input" data-ch="${ch}" value="${esc(val)}" spellcheck="false" placeholder="如 socks5://127.0.0.1:1080（留空直连）">
     </div>`;
   }).join("");
@@ -990,7 +1008,19 @@ async function copyText(text, label) {
     document.body.removeChild(ta);
   }
 }
-function openHelp() { $("helpOverlay").classList.remove("hidden"); }
+// renderHelpPrefixes 按后端已注册渠道清单动态生成前缀表。
+// 原帮助文案手写了 4 个渠道且含已下线的 qoder —— 手写清单必然随渠道增加而滞后，
+// 故改为与路由报错文案（server.prefixHint）同源：都取 cfg.Runtimes 的 key（state.compat.channels）。
+function renderHelpPrefixes() {
+  const box = $("helpPrefixes");
+  if (!box) return;
+  const channels = (state && state.compat && state.compat.channels) || [];
+  // 旧 Qoder（qoder/*）已从界面下线：路由仍可用，但不做引导，只补一句说明。
+  const live = channels.filter((c) => c !== "qoder");
+  box.innerHTML = live.map((c) => chPrefixChip(c)).join(" ") +
+    (channels.includes("qoder") ? ' <span class="hint">（旧 qoder/&lt;model&gt; 仍可用，已从界面下线）</span>' : "");
+}
+function openHelp() { renderHelpPrefixes(); $("helpOverlay").classList.remove("hidden"); }
 function closeHelp() { $("helpOverlay").classList.add("hidden"); }
 function openAbout() { $("aboutOverlay").classList.remove("hidden"); }
 function closeAbout() { $("aboutOverlay").classList.add("hidden"); }
@@ -1105,10 +1135,8 @@ function fmtTokensFull(n) {
   return Number(n).toLocaleString("zh-CN");
 }
 
-const CH_NAMES = {
-  workbuddy: "WorkBuddyCN", workbuddyai: "WorkBuddyAI", traework: "TraeWork",
-  qoder: "Qoder", qodercn: "QoderCN", qodercom: "QoderCOM", qwenwork: "千问办公", oczen: "OpenCodeZen",
-};
+// 渠道显示名统一走 chLabel（CH_LABEL）。此处原有第二份副本 CH_NAMES，
+// 新增渠道只改一处必然漏（raccoon / loomy / monkeycode / traecode 曾在使用面板显示成英文 id）。
 
 async function loadUsage() {
   try {
@@ -1147,7 +1175,7 @@ function renderModelTable(rows, days) {
   tb.innerHTML = top.map((r) => {
     const avg = days > 1 ? Math.round((r.pt + r.ct) / days) : (r.pt + r.ct);
     return `<tr>
-      <td>${esc(r.model)}</td><td>${esc(CH_NAMES[r.channel] || r.channel)}</td>
+      <td>${esc(r.model)}</td><td>${esc(chNameOf(r.channel))}</td>
       <td class="num">${fmtCredits(r.requests)}</td><td class="num">${fmtTokensFull(r.pt + r.ct)}</td>
       <td class="num">${fmtTokensFull(avg)}</td></tr>`;
   }).join("");
@@ -1177,7 +1205,7 @@ function renderRecentPage(names) {
         <span class="rtime">${new Date(r.ts * 1000).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}</span>
         <span class="rkind">${kinds[r.kind] || r.kind}</span>
         <span class="ramount">${fmtCredits(r.amount)}</span>
-        <span class="racct">${esc((names || {})[r.uid] || shortUid(r.uid))}<span class="muted"> · ${esc(CH_NAMES[r.channel] || r.channel)}</span></span>
+        <span class="racct">${esc((names || {})[r.uid] || shortUid(r.uid))}<span class="muted"> · ${esc(chNameOf(r.channel))}</span></span>
         <span class="rname">${esc(r.note || "")}</span>
         <span class="rbal">余额 ${fmtCredits(r.balance)}</span></div>`).join("")
     : `<div class="muted" style="padding:8px">暂无流水</div>`;
@@ -1204,7 +1232,7 @@ function renderUsageChart(st) {
   // 渠道系列：取所有出现过的渠道并集
   const chans = [...new Set(byDay.flatMap((d) => Object.keys(d.by_channel || {})))];
   const series = chans.map((ch) => ({
-    name: CH_NAMES[ch] || ch, type: "line", smooth: true,
+    name: chNameOf(ch), type: "line", smooth: true,
     data: byDay.map((d) => d.by_channel[ch] || 0),
   }));
   usageChart.setOption({

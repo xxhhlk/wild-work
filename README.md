@@ -215,6 +215,9 @@ API Key:  WildWorkAPI
 ```
 
 模型 ID 需带渠道前缀：`workbuddy/<model>`、`workbuddyai/<model>`、`traework/<model>`、`traecode/<model>`、`qodercn/<model>`、`qodercom/<model>`、`qwenwork/<model>`、`raccoon/<model>`、`loomy/<model>`、`monkeycode/<model>`、`oczen/<model>`（旧 `qoder/<model>` 仍可用，已从界面下线）。
+> 记不住前缀不用翻文档：面板上**账号卡片的渠道名旁**就写着该渠道的前缀（如 `raccoon/`），点击即复制；
+> 「模型列表和费率」的表头同样带前缀，鼠标悬停模型名可看到完整调用 ID（`前缀 + 模型名`）；
+> 帮助弹层第 4 条列出当前已接入渠道的完整前缀清单（按实际路由清单动态生成）。
 
 #### OpenCodeZen 匿名免费模型（`oczen/*`）
 
