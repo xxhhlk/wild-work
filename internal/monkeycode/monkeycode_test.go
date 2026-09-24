@@ -91,10 +91,10 @@ func TestBuildAnthropicBody(t *testing.T) {
 	if v, _ := got["max_tokens"].(float64); int64(v) != maxTokensDefault {
 		t.Fatalf("max_tokens 期望默认 %d，实际 %v", maxTokensDefault, got["max_tokens"])
 	}
-	// thinking 恒 disabled
+	// thinking：未表达 → 开（2026-09-24 拍板「两面未表达即开」）
 	th, _ := got["thinking"].(map[string]any)
-	if th["type"] != "disabled" {
-		t.Fatalf("thinking 期望 disabled，实际 %v", got["thinking"])
+	if th["type"] != "enabled" {
+		t.Fatalf("thinking 期望 enabled（未表达即开），实际 %v", got["thinking"])
 	}
 	// system[0] 必须是签名对象，客户端 system 内容排在后面
 	sys, _ := got["system"].([]any)
@@ -236,16 +236,20 @@ func TestToolChoiceNoneDropsTools(t *testing.T) {
 
 // TestThinkingProjection 两面各自把顶层 `reasoning_effort` 投影成上游方言。
 //
-// anthropic 面只有开/关两态（`thinking.effort` 在该面**没有线上表达**，
-// 抓包证实 low 与 high 产出的 body 完全相同）；responses 面的 `reasoning.effort`
-// 有效（`none` 实测 reasoning_tokens=0），原样转发。
+// 策略（2026-09-24 拍板）：**两面「未表达即开」**，行为一致。
+//   - anthropic 面只有开/关两态（`thinking.effort` 在该面**没有线上表达**，
+//     抓包证实 low 与 high 产出的 body 完全相同）：任何档位 / 未表达 → `{type:"enabled"}`，
+//     仅 `none` → `{type:"disabled"}`；且**恒显式下发**该字段，不靠上游默认值；
+//   - responses 面的 `reasoning.effort` 有效（`none` 实测 reasoning_tokens=0）：明确表达
+//     则原样转发；未表达则不下发（= 上游默认档，实测即开），本面「开」必须附档位值，
+//     凭空补档等于替客户端决定思考强度。
 func TestThinkingProjection(t *testing.T) {
 	cases := []struct {
 		effort     string // 空串 = 客户端未表达
 		wantThink  string // anthropic 面期望的 thinking.type
 		wantReason string // responses 面期望的 reasoning.effort（空 = 不下发）
 	}{
-		{"", "disabled", ""},
+		{"", "enabled", ""}, // 未表达 → 开（两面一致）
 		{"none", "disabled", "none"},
 		{"low", "enabled", "low"},
 		{"medium", "enabled", "medium"},
@@ -269,6 +273,10 @@ func TestThinkingProjection(t *testing.T) {
 		var got map[string]any
 		if err := json.Unmarshal(out, &got); err != nil {
 			t.Fatalf("anthropic/%q: 输出不是合法 JSON: %v", tc.effort, err)
+		}
+		// 恒显式下发（含未表达）：契约写死为「未表达即开」，不依赖上游默认值。
+		if _, ok := got["thinking"]; !ok {
+			t.Errorf("anthropic/%q: 必须显式下发 thinking 字段", tc.effort)
 		}
 		th, _ := got["thinking"].(map[string]any)
 		if th["type"] != tc.wantThink {

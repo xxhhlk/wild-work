@@ -35,7 +35,8 @@ import (
 //   - 系统提示不是独立字段，而是 input 的**第一条** `{role:"system", content:…}`，
 //     且这条就是签名对象；
 //   - 长度上限字段是 `max_output_tokens`（不是 `max_tokens`）；
-//   - 上游没有 thinking 开关字段，思考与否由上游默认行为决定。
+//   - 思考用 `reasoning.effort` 表达（**有效**，含 `none` 可关，见 §3.13）；
+//     未表达时不下发该字段 = 上游默认档（开）。
 func buildResponsesBody(raw []byte) ([]byte, error) {
 	var in map[string]any
 	if err := json.Unmarshal(raw, &in); err != nil {
@@ -69,7 +70,10 @@ func buildResponsesBody(raw []byte) ([]byte, error) {
 	// low/minimal ≈ 130~150；medium/high ≈ 180（易题）~800（难题）。
 	// 非法值上游**不报错**、静默回落默认（`bogus` → 293，与不传等价），
 	// 因此只转发客户端明确表达的值，既不本地猜测也不静默吞掉。
-	// 未表达时不下发该字段（与改动前一致，保持上游默认行为）。
+	// 未表达时**不下发**该字段 —— 上游默认即开，与 anthropic 面「未表达即开」策略一致
+	// （2026-09-24 拍板，两面统一）。这里不下发而非补一个默认档，是因为本面的「开」必须
+	// 附带档位值，凭空选档等于替客户端决定思考强度；而「不传 = 上游默认档（实测 ≈ medium/high
+	// 量级）」已有实测支撑，故沿用。
 	if l := reasoningLevel(in); l != "" {
 		out["reasoning"] = map[string]any{"effort": l}
 	}

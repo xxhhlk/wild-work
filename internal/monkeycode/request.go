@@ -116,13 +116,19 @@ func reasoningLevel(in map[string]any) string {
 //   - 官方客户端配置里的 `thinking.effort` **根本不上线**：抓包证实 low 与 high
 //     产出的 body **完全相同**，都是 `{type:"enabled"}`。
 //
-// 因此本面只能表达「开 / 关」两态，没有梯度：客户端明确表达任何档位 → 开；
-// 明确关闭（`none`）或未表达 → 关（遵循 R19「不在客户端未表达时强行开思考」）。
+// 因此本面只能表达「开 / 关」两态，没有梯度：
+//   - 客户端明确表达任何档位（`low`/`medium`/`high`…）→ 开；
+//   - `none` → 关；
+//   - **未表达 → 开**（2026-09-24 拍板「两面未表达即开」，与 responses 面统一，
+//     也与官方客户端默认形态一致；此处**显式**补 `enabled`，不依赖上游默认值不变）。
+//
+// 注：R19「不在客户端未表达时强行开思考」是**积分/DeepSeek 系**渠道的取舍（省额度），
+// 不适用于本渠道 —— 上游默认本就开着，不补字段同样是开，显式补只是把契约写死。
 func thinkingFor(in map[string]any) map[string]any {
-	if l := reasoningLevel(in); l != "" && l != "none" {
-		return map[string]any{"type": "enabled"}
+	if reasoningLevel(in) == "none" {
+		return map[string]any{"type": "disabled"}
 	}
-	return map[string]any{"type": "disabled"}
+	return map[string]any{"type": "enabled"}
 }
 
 // maxTokens 取 max_tokens / max_completion_tokens，缺失或非法时回默认值，
