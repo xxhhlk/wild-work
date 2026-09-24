@@ -314,6 +314,11 @@ return "reasoning_effort"===t.field ? r.reasoning_effort=t.value
 真实情况是：**公网 HTTP 路由已找到（`/api/remote/v1/...`），档位注入点已定位到源码，只差把 `createSession` 的必填项对齐拿到真 session_id**。
 这一步是**可做的、成本不高**，只是本轮未完成 —— 属于「下次接着查」而非「不值得查」。
 
+> ⚠️ **本节状态（2026-09-25 更新）**：上面的「仍未查清清单」与「下次接着查」**已被 §4.3 取代**。
+> §4.3 找到了更直接的可用通道 `/api/ide/v1/chat`，并得出决定性结论：
+> **通道已打通、档位字段被上游接受，但不改变思考量** —— 即本渠道「不投影档位」是上游行为，不是本项目的能力缺口。
+> 本节保留为调研过程记录，**其「未知项」不再是待办**。
+
 ### 4.3 【2026-09-25 决定性突破】找到可用通道 —— `/api/ide/v1/chat`
 
 > 承接 §4.2，本轮把「下次接着查」做完了。**结论从「档位无解」翻转为「通道已打通、档位字段被接受但不改变思考量」**。
@@ -382,6 +387,10 @@ SSE 事件序列（真实可用）：
 但**档位在服务端不改变思考量** —— 这是服务端行为，不是客户端字段问题。
 若 wild-work 要接 trae 渠道，可用该端点做**普通对话**；**档位需求仍须走 qodercn / workbuddyai**。
 
+> ⚠️ **适用范围限定（2026-09-25 补）**：本节结论**只覆盖公网辅助端点**（`/api/ide/v1/chat`、
+> `llm_utils_chat`）。**不能**据此推断桌面客户端的档位也无效 —— 客户端主聊天走 native
+> `chat.start_chat`，是另一条链路。详见 **§4.4**（客户端侧档位「渲染 / 持久化 / 发出」三段硬证据）。
+
 **复现**：`.gotmp/mc-e2e4/` 下的 `dump-models*.ps1`、`t-direct*.ps1`、`t-round9/10/11/13.ps1`、
 `t-round14.ps1`（`model_info` 容器）、`t-round15.ps1`（native 端点 404）、`t-round16.ps1`（`llm_raw_chat`）、
 `t-round17.ps1`（`create_agent_task`）、**`t-round18.ps1`（`/api/remote/v1/models` 200 验证）、
@@ -392,6 +401,84 @@ SSE 事件序列（真实可用）：
 客户端日志：`%APPDATA%\TRAE SOLO CN\logs\<ts>\window1\renderer.log`。
 客户端 JS 路由表：`E:\Program Files\TRAE SOLO CN\resources\app\node_modules\@byted-icube\solo-lite\dist\551.4283b556.mjs`。
 native 提取：`...\modules\ai-agent\{harness,ai_agent,toolhost}.dll`（`strings` + 字节级定位）。
+
+### 4.4 【2026-09-25】客户端侧档位链路三段验证 —— 档位「改得动、存得下、发得出」；之前测的是错通道
+
+> 触发问题：「traework 客户端改档位也不生效吗，怎么测」。
+> **结论先行**：§4 及 §4.3 的所有档位 A/B 都打在 **`llm_utils_chat`（辅助端点）**上，
+> 证明的只是「那个端点不解析档位」，**不能推断客户端链路**。本轮在客户端侧拿到三段硬证据，
+> 证明档位在客户端**是真实生效的**。
+
+**三段硬证据（客户端侧）**
+
+| # | 环节 | 证据 |
+|---|---|---|
+| 1 | **渲染** | `renderer.log` 的 `[ModelSelectPresentation][TooltipDiagnostic] first open` → `renderedSections` 含 `reasoning_effort_selector`（0.1.69 实测 **19/25** 模型） |
+| 2 | **持久化** | `state.vscdb` → `1923503557969866:AI.agent.model.reasoning_effort_level_by_agent_model_v2` = `{"solo_agent_lite_1_-_deepseek-v4.1-flash_null":"extra_high"}` |
+| 3 | **发出** | `renderer.log` 行 967 服务端回显 metadata → `user_message_context.model_info.reasoning_effort_level":"extra_high"` |
+
+**⚠️ 关键前提：必须用对 agent 族**（最易踩的坑）
+
+| agent | 客户端界面 | `deepseek-v4.1-flash` 的 `reasoning_effort_config` | 档位选择器 |
+|---|---|---|---|
+| **`solo_agent_lite`** | SOLO Code | `{"support_thinking":true,"options":["light","high","extra_high"],"default_level":"high"}` | **渲染** |
+| `solo_work_lite` | Work 模式 | `{"support_thinking":false}` | 不渲染 |
+
+（读自 `state.vscdb` 的 `AI.agent.model.model_list_map`，与上游 `get_detail_param` 一致。）
+→ 用户在 **SOLO Code** 模式下才能看到档位；Work 模式下**根本没有这个 UI**。
+
+**为什么之前测不到：客户端主聊天不走公网 HTTP**
+
+`lite.send_message` → native harness → `chat.start_chat`（`/api/v1/chat/start_chat`）本地 RPC。
+`llm_utils_chat` 只服务 title / icon / commit message 等**辅助任务**。
+
+**本轮新增的通道探测结果**
+
+| 目标 | 结果 |
+|---|---|
+| `127.0.0.1:51000` 上的 gRPC 服务 | `protocol.CodeKG`（`Ping` → grpc-status **0**）、`command.CommandService/{Execute,InitMcp,SubscribeExecutionEvents}`、`hook.HookService/FireHook` |
+| `protocol.CodeKG` 的方法 | 逐个探测 20 个候选（`SendMessage`/`start_chat`/`get_messages`/…）→ 全部 `unknown method`；**chat 不在这台 gRPC 上** |
+| gRPC 反射 | **关闭**（`grpc.reflection.v1alpha/v1` → `unknown service`） |
+| 51000 是否兼作 HTTP | **否**，全部路径 `415 invalid gRPC request content-type` |
+| `harness.dll` native 路由 | `chat.start_chat` → `/api/v1/chat/start_chat`（harness 内部路由，不经 51000 HTTP 暴露） |
+
+**新发现：`llm_raw_chat` 的 schema 里「有」档位字段**
+
+`ai_agent.dll` serde 字段序列（`llm_raw_chat_custom_model` 请求）末尾：
+`…prompt_set, context_window_sizes, max_turn, display_options, max_tokens, application_config, reasoning_effort, reasoning_effort_level`
+→ **与 `llm_utils_chat` 不同，档位在这里是合法字段。**
+
+实测：用客户端真实 `custom_model`（31 字段）打 `/api/ide/v1/llm_raw_chat` → **HTTP 200 + SSE**；
+而 round16 的 `messages` 风格 body → **HTTP 400**。
+→ schema 校验**通过**，卡在**鉴权**（`event: error` `code:1001`）。
+且该端点**鉴权先于 schema**，所以类型哨兵在这里**无效**（不能用来判定字段存在性）。
+
+**当前阻塞：没有可用凭据**
+
+| 凭据来源 | 状态 |
+|---|---|
+| `dist/auths/trae-*.json`（宿主） | accessToken 过期 → `mchost.guru` 全 **401**；refreshToken 刷新 → `ExchangeToken` 返回 **20101 refresh token is invalid** |
+| 客户端自己的 token | 在 `User/globalStorage/storage.json` 的 `iCubeAuthInfo://*`，但为**加密 blob**（`dGMFEAAA…` 头、熵 7.7~7.9、非 UTF-8），不可直接复用 |
+| 客户端 `ModularData/ai-agent/database.db` | **加密**（熵 7.96，无 SQLite magic） |
+| 客户端调试端口 | 未开 `--remote-debugging-port` |
+
+→ 需先**重新登录**（`internal/login_trae` 已有流程）拿新 token。
+
+**怎么测（三条路，按证据强度排序）**
+
+| 路 | 做法 | 度量 | 成本 |
+|---|---|---|---|
+| **A. 客户端实测 + 日志度量** | 客户端切到 **SOLO Code**，用 `solo_agent_lite` + `deepseek-v4.1-flash`，light/xhigh 各跑**同一难题 n≥3** | 客户端日志**自带计时戳**：`rs_16_llm_generate_plain_item` → `rs_18_llm_response_first_token` = **TTFT**；`calculate step durations total` 的 `llm:` 字段；+ 回答/思考块字数 | **0** |
+| **B. 抓客户端主链路的包** | Proxifier（已装 `C:\Program Files (x86)\Proxifier\`）→ mitmproxy/Charles 抓 `trae-api-cn.mchost.guru` 的 HTTPS | 上游请求体里档位字段的**确切位置** + 响应 reasoning 长度 | 中 |
+| **C. 程序化打 `llm_raw_chat`** | 重新登录拿 token → 客户端 `custom_model` 形状 + `reasoning_effort_level` 做 A/B | SSE 里 `reasoning_content` **累计字符数** | 低（前提是 token） |
+
+**A 的实测基线（本次从客户端日志算出）**：`extra_high` 一次 → TTFT **24.5s**、`llm:` **2811ms**、`network:` 20541ms。
+⚠️ TTFT 受网络影响大，**必须 n≥3 且同题**，否则重蹈 n=2 假分离的坑。
+
+**复现**：`.gotmp/mc-e2e4/` 下 `read_state.py`（读客户端档位持久化）、`decode_auth.py`（确认客户端 token 加密）、
+`h2routes.py`（51000 非 HTTP）、`enum2.py`（CodeKG 方法枚举）、`refl2.py`（反射关闭）、
+`t-round41.py`（带 lite 头重测读回）、`t-round42.py`（`llm_raw_chat` 接受 custom_model 形状）、
+`t-round43.py`（该端点鉴权先于 schema）、`t-refresh.py`（refreshToken 失效）。
 
 ## 说明
 
