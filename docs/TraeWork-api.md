@@ -373,6 +373,55 @@ SSE 事件序列（真实可用）：
 `/api/ide/v1/chat` 的 usage 里 `reasoning_tokens` 一直是 `0`，**不能**用它做档位度量；
 必须改用 **`reasoning_content` 的累计字符数**（SSE 里 `event: output` 的 `reasoning_content` 字段拼接）。
 
+> **补充（2026-09-25）：token 数「有」，只是不在日志里。** 三层取证：
+>
+> | 层 | 位置 | 有无 token 数 | 能否读 |
+> |---|---|---|---|
+> | ① 公网 SSE 流 | `event: token_usage` | ✅ **有**（含 `reasoning_tokens`） | ✅ 抓包可读 |
+> | ② 客户端协议 | `TokenUsage` 事件 / `icube_ai_chat_token_usage` 埋点 | ✅ 有 | 代码可读，**不写日志** |
+> | ③ 客户端日志 | renderer.log / main.log | ❌ **0 命中** | — |
+>
+> ①的实测样本（11 个，见 `.gotmp/mc-e2e4/r3*.sse`）：
+>
+> ```
+> event: token_usage
+> data: {"name":"ide_prompts","prompt_tokens":118,"completion_tokens":7401,
+>        "total_tokens":7519,"cache_creation_input_tokens":0,
+>        "cache_read_input_tokens":0,"reasoning_tokens":0,...}
+> ```
+>
+> **`reasoning_tokens` 恒 0**（即使显式请求思考）；`completion_tokens` 有值（5780~9783），
+> 但它是**全部输出**，无法区分「思考」与「回答」。
+>
+> 按档位分组 `completion_tokens`（**三档完全交织**，与 §4.3 一致）：
+>
+> | 档位 | n | 各值 | 中位 | CV | 区间 |
+> |---|---|---|---|---|---|
+> | base | 5 | 5780, 6935, 7401, 7619, 9783 | 7401 | 19% | 5780-9783 |
+> | light | 3 | 7206, 8472, 9409 | 8472 | 13% | 7206-9409 |
+> | xhigh | 3 | 7765, 8263, 9050 | 8263 | 8% | 7765-9050 |
+>
+> 两两 MW 精确检验：`base vs light` p=0.571、`base vs xhigh` p=0.250、
+> `light vs xhigh` p=1.000 —— **全部不显著，重叠 100%**。
+>
+> ②的证据：客户端 JS 有 `transformTokenUsage()`，完整读取
+> `reasoning_tokens` / `completion_tokens` / `last_turn_total_tokens` /
+> `cache_read_input_tokens` 等 12 个字段，并上报 `ChatTokenUsage` 埋点
+> —— 说明客户端**确实收到并处理** token 数，只是 renderer.log 不记。
+>
+> ③的反面证据：`main.log` 里 `usage` 有 564 次命中，但**全是端点名**
+> （`ide_user_ent_usage` 548、`query_user_usage_group_by_session` 16）。
+> 这两个是**积分/额度**端点，返回的 `usage_summary` / `user_usage_group_by_sessions`
+> 是计费口径，**不是 token 数**。未鉴权直打 → **401**，但响应体骨架暴露了结构：
+> ```json
+> {"code":1001,...,"user_usage_group_by_sessions":[]}
+> {"code":1001,...,"usage_summary":{},"user_entitlement_pack_list":[]}
+> ```
+>
+> ⇒ **想拿 token 数，只有两条路**：① 自己抓 SSE（公网端点可行，客户端主链路需 Proxifier）；
+> ② 重登后打 `llm_raw_chat`。**客户端日志永远拿不到。**
+
+
 **修正后的成本表（最终版）**
 
 | 路径 | 可行性 | 说明 |
@@ -549,7 +598,23 @@ native 提取：`...\modules\ai-agent\{harness,ai_agent,toolhost}.dll`（`string
 `analyze_ab.py`（整轮时长 + **并发检测** + `--strict`）、
 `gap_analysis.py`（生成空档）、`stats_test.py`（MW 精确检验 + 最小 n 估算）、
 `check_confounders.py`（顺序/时间趋势混淆检查）、
+`token_forensics.py`（**token 数三层取证**，见 §4.3 补充框）、
+`probe_usage_api.py`（用量端点探测）、
 `plan_items.py` / `timeline.py`、`RUNBOOK.md`（操作手册 + 两轮实测记录）。
+
+**⚠️ 本节用「时长/步数」而非「token 数」的原因**
+
+客户端 **renderer.log 完全不记 token**（`reasoning_tokens` / `completion_tokens` /
+`token_usage` 全 **0 命中**），所以本节只能改用时长与 plan item 数。
+
+但 **token 数并非不存在** —— 它在 **SSE 流的 `event: token_usage`** 里
+（公网端点实测 11 个样本已确认，含 `reasoning_tokens` 字段，只是该字段恒 0）。
+客户端协议层也有 `TokenUsage` 事件与 `transformTokenUsage()` 解析函数。
+详见 **§4.3 的补充框**。
+
+⇒ 若要在**客户端主链路**上拿到 token 数，需 **Proxifier 抓包**
+（已装并运行，PID 22112）拦 `trae-api-cn.mchost.guru`。
+
 
 
 ## 说明
