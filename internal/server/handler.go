@@ -35,6 +35,17 @@ type Runtime struct {
 	// 其余渠道保持 false，行为不变。
 	NoCooldownOnServerError bool
 
+	// SingleAccount 声明该渠道只有唯一一个、且**无法人工恢复**的账号（当前仅 oczen 匿名）。
+	// 语义：任何账号级惩罚（冷却/计数/禁用）都等价于「整条渠道下线」，故一律不适用——
+	// 出错就原文透传，把重试交给客户端。区别于 NoCooldownOnServerError（只豁免 5xx）。
+	// 生效范围：
+	//   - 传输层错误：不累计 errCount（否则 3 次网络抖动即冷却唯一账号）；
+	//   - ErrSoftRate（429）：不冷却。单账号无号可轮换，冷却只会把后续请求挡在
+	//     挑号阶段（返回 no_healthy_account），连「稍后重试」都做不到；透传 429
+	//     才能让客户端按 Retry-After 自行重试；
+	//   - 其余分类：统一不罚账号（ErrHardCredit 无余额概念、ErrSessionDead 不可重登）。
+	SingleAccount bool
+
 	mu       sync.RWMutex
 	models   []provider.ModelInfo
 	fetched  time.Time
@@ -559,6 +570,14 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		if terr != nil {
 			lastErr = terr
 			h.stickyClear(rt)
+			if rt.SingleAccount {
+				// 单账号渠道：不累计 errCount。网络抖动重试三次就冷却唯一账号，
+				// 会让整条渠道下线（且无号可轮换）。直接透传错误，重试交给客户端。
+				log.Printf("upstream transport error platform=%s uid=%s（单账号渠道不计错）err=%v",
+					rt.Kind, acct.UID, terr)
+				writeOpenAIError(w, http.StatusBadGateway, "upstream_error", terr.Error())
+				return
+			}
 			rt.Pool.NoteError(acct.UID, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
 			continue
 		}
@@ -567,6 +586,15 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			kind := rt.Upstream.Classify(status, string(respBody))
 			log.Printf("client request platform=%s model=%s status=%d ua=%q params=%s",
 				rt.Kind, clientModel, status, clientUA, clientParams)
+			// 单账号渠道：任何账号级惩罚都等于整条渠道下线，故一律原文透传、不罚账号。
+			// 尤其在 429（唯一需要的背压）上：冷却后后续请求会在挑号阶段被挡成
+			// no_healthy_account，反而不如透传 429 让客户端按 Retry-After 自行重试。
+			if rt.SingleAccount {
+				log.Printf("upstream error platform=%s uid=%s status=%d kind=%s（单账号渠道不罚账号，原文透传）",
+					rt.Kind, acct.UID, status, kind)
+				transparentError(w, status, respBody)
+				return
+			}
 			switch kind {
 			case provider.ErrHardCredit:
 				rt.Pool.Cooldown(acct.UID, pool.CoolHard, h.cfg.HardCooldown, "余额/权益不足")
@@ -986,6 +1014,7 @@ func normalizeToolTurnContent(obj map[string]any) {
 // ChannelModels 返回每个渠道当前生效的模型列表，与 /v1/models 同源
 // （含动态拉取与静态兜底），只包含已接入账号的渠道。
 // 供管理端（费率面板）复用，保证「模型列表」与「模型费率」基于同一份清单。
+// 注意：会触发上游网络请求（fetchRuntimeModels），费控面板场景用 CachedChannelModels 避免阻塞。
 func (h *Handler) ChannelModels() map[provider.Kind][]provider.ModelInfo {
 	out := make(map[provider.Kind][]provider.ModelInfo, len(h.cfg.Runtimes))
 	for _, k := range h.runtimeKinds() {
@@ -998,6 +1027,29 @@ func (h *Handler) ChannelModels() map[provider.Kind][]provider.ModelInfo {
 			infos = rt.StaticModels
 		}
 		out[k] = infos
+	}
+	return out
+}
+
+// CachedChannelModels 返回各渠道生效的模型列表，仅用内存缓存/静态兜底，不触发上游网络请求。
+// 供费控面板等需要即时返回的场景使用（后台刷新比用户点面板快）。
+func (h *Handler) CachedChannelModels() map[provider.Kind][]provider.ModelInfo {
+	out := make(map[provider.Kind][]provider.ModelInfo, len(h.cfg.Runtimes))
+	for _, k := range h.runtimeKinds() {
+		rt := h.cfg.Runtimes[k]
+		if rt == nil || rt.Pool == nil || len(rt.Pool.List()) == 0 {
+			continue
+		}
+		// 取缓存：TTL 内直接返回，否则静态兜底（不触发网络请求）
+		rt.mu.RLock()
+		if len(rt.models) > 0 && time.Since(rt.fetched) < dynamicModelsTTL {
+			infos := rt.models
+			rt.mu.RUnlock()
+			out[k] = infos
+			continue
+		}
+		rt.mu.RUnlock()
+		out[k] = rt.StaticModels
 	}
 	return out
 }

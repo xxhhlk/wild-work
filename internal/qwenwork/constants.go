@@ -41,17 +41,18 @@ const (
 // ChannelName 费率面板中的渠道标识。
 const ChannelName = "qwenwork"
 
-// BusinessProduct 请求体 business.product 的取值。
+// 上游模型目录标识（2026-09-24 起推理 body 必须携带，见 prepareChatBody 注释）。
+// 与 Cosy-Business-Product / Cosy-Business-Type 静态头同源（官方 1.0.4 取值）。
 //
-// 上游按它选择「模型目录」：**缺省时推理端点恒返回 HTTP 200 + envelope
-// `{"code":"503","message":"Model catalog unavailable"}`**，与请求头集合、
+// 上游按 business.product 选择「模型目录」：**缺省时推理端点恒返回 HTTP 200 +
+// envelope `{"code":"503","message":"Model catalog unavailable"}`**，与请求头集合、
 // 以及 body 的其余字段（model_config / system / tools / parameters /
 // chat_context / session_type …）全部无关。只补 business.product 即恢复 200。
 // 实测矩阵见 docs/千问办公QwenWork逆向对比备忘.md。
-const BusinessProduct = "qoder_work"
-
-// BusinessType business.type 取值，与桌面客户端一致（不参与目录选路）。
-const BusinessType = "agent"
+const (
+	BusinessProduct = "qoder_work"
+	BusinessType    = "agent"
+)
 
 // staticModelKeys 客户端模型名 → 上游 model key。
 // key 即 /api/v2/model/list 与 /api/chat-modes 的档位 key（两处 price_factor 一致）。

@@ -119,6 +119,16 @@ func main() {
 			fatal("加载配置失败：%v\n\n请检查 config.json 后重新启动", err)
 		}
 	}
+	// 管理面板鉴权：监听非环回地址（0.0.0.0 / 网卡 IP）时必须设置管理员密码，
+	// 否则局域网任何设备都能无凭据打开面板、退出程序。启动层与面板保存层双重把关。
+	if !cfg.Listen.IsLoopback() && strings.TrimSpace(cfg.AdminPass) == "" {
+		fatal("监听 %s 已对外暴露，但 config.json 中未设置 admin_password。\n\n"+
+			"请设置 admin_password（或在面板设置中修改监听地址）后重新启动；\n"+
+			"若只想本机使用，把 listen.host 改回 127.0.0.1。", cfg.Listen.Addr())
+	}
+	if cfg.AdminPass != "" && len(cfg.AdminPass) < 8 {
+		log.Printf("警告：管理员密码不足 8 位，建议使用更长口令（面板鉴权已生效）")
+	}
 	_ = os.MkdirAll(cfg.AuthDir, 0o755)
 	_ = os.MkdirAll(filepath.Dir(cfg.StateFile), 0o755)
 
@@ -223,8 +233,10 @@ func main() {
 	for _, a := range ocAuths {
 		ocPool.Add(a)
 	}
-	// 安全网：匿名账号不允许被禁用（任何历史 state 或异常路径写脏都可自愈）
+	// 安全网：匿名账号不允许被禁用或被冷却（任何历史 state 或异常路径写脏都可自愈）。
+	// 冷却也要清：该渠道只有这一个账号且无号可轮换，冷却即等于整条渠道下线。
 	ocPool.SetDisabled(oczen.AnonymousUID, false)
+	ocPool.ClearPenalty(oczen.AnonymousUID)
 
 	wbUp := upstream.New()
 	wbUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
@@ -284,6 +296,13 @@ func main() {
 		fatal("解析签到时间失败：%v", err)
 	}
 
+	// Qoder 双区签到窗口（对齐上游 qoder2api 的调度机制）：
+	// 每日 10:00（UTC+8）开放，活动可能在整点之后才创建，故 10:00–12:00 每分钟重试。
+	const (
+		qoderCheckinMinute     = 10 * 60 // 10:00
+		qoderCheckinRetryUntil = 12 * 60 // 12:00（上游同款兑底截止）
+	)
+
 	// 临期阈值（全渠道共用，scheduler/App 两侧同源，默认 24h，下限 24h）
 	expiringThreshold := cfg.ExpiringThresholdDur
 
@@ -314,11 +333,11 @@ func main() {
 	// 余额/费率靠 StartCreditAutoRefresh 循环拉取。
 	qwSch := scheduler.New(scheduler.Config{Pool: qwPool, Upstream: qwUp, Name: "qwenwork",
 		CheckinMinutes: []int{}, KeepaliveHours: []int{}, ExpiringThreshold: expiringThreshold, Ledger: lg})
-	// QoderCN：签到双路径已实现（campaigns 主路径 + daily-check-in 兑底），
-	// 固定 10:15 —— 该渠道活动时段，**不走全局 cfg.Schedule.CheckinTimes**；token keepalive 与 qoder 相同。
-	qcnSch := scheduler.New(scheduler.Config{Pool: qcnPool, Upstream: qcnUp, Name: "qodercn", CheckinMinutes: []int{615}, KeepaliveHours: cfg.Schedule.KeepaliveHours, ExpiringThreshold: expiringThreshold, Ledger: lg})
-	// QoderCOM：仅 campaigns 活动路径（无 daily-check-in），签到同为 10:15；其余同 QoderCN。
-	qcmSch := scheduler.New(scheduler.Config{Pool: qcmPool, Upstream: qcmUp, Name: "qodercom", CheckinMinutes: []int{615}, KeepaliveHours: cfg.Schedule.KeepaliveHours, ExpiringThreshold: expiringThreshold, Ledger: lg})
+	// QoderCN / QoderCOM：仅 campaigns 活动路径（legacy daily-check-in 已 DISABLED，
+	// 其 claim 恒返回 409 会造成「假成功」，故不再使用）。签到窗口对齐上游 qoder2api：
+	// 10:00 开放，活动可能在整点后才创建，故 10:00–12:00 之间每分钟重试，直到真正领到或超时。
+	qcnSch := scheduler.New(scheduler.Config{Pool: qcnPool, Upstream: qcnUp, Name: "qodercn", CheckinMinutes: []int{qoderCheckinMinute}, CheckinRetryUntil: qoderCheckinRetryUntil, KeepaliveHours: cfg.Schedule.KeepaliveHours, ExpiringThreshold: expiringThreshold, Ledger: lg})
+	qcmSch := scheduler.New(scheduler.Config{Pool: qcmPool, Upstream: qcmUp, Name: "qodercom", CheckinMinutes: []int{qoderCheckinMinute}, CheckinRetryUntil: qoderCheckinRetryUntil, KeepaliveHours: cfg.Schedule.KeepaliveHours, ExpiringThreshold: expiringThreshold, Ledger: lg})
 	// 小浣熊：无签到（CheckinMinutes 用显式空切片，nil 会被补成 9:00/21:00）；
 	// access_token 实测仅 ≈2h，而 refresh_token ≈30 天，
 	// 故保活比其它渠道更密（每 4 小时一次）以减少「请求先 401 再刷新」的额外往返；
@@ -354,15 +373,17 @@ func main() {
 		provider.Raccoon:    {Kind: provider.Raccoon, Pool: rcPool, Upstream: rcUp, StaticModels: raccoon.StaticModels()},
 		provider.Loomy:      {Kind: provider.Loomy, Pool: lmPool, Upstream: lmUp, StaticModels: loomy.StaticModels()},
 		provider.MonkeyCode: {Kind: provider.MonkeyCode, Pool: mcPool, Upstream: mcUp, StaticModels: monkeycode.StaticModels()},
-		// oczen：免费档 5xx/4xx 属通道级问题，账号只是虚拟占位，不因上游 5xx 累计错误
+		// oczen：整池只有一个匿名虚拟账号且不可重登——任何账号级惩罚（冷却/计数/禁用）
+		// 都等于整条渠道下线。SingleAccount 声明该约束，handler 对所有错误一律原文透传；
+		// NoCooldownOnServerError 保留（语义已被 SingleAccount 涵盖，留着不依赖顺序）。
 		provider.Oczen: {Kind: provider.Oczen, Pool: ocPool, Upstream: ocUp, StaticModels: oczen.StaticModels(),
-			NoCooldownOnServerError: true},
+			SingleAccount: true, NoCooldownOnServerError: true},
 	}
 	appRuntimes := map[provider.Kind]*app.Runtime{
 		provider.WorkBuddy:   {Kind: provider.WorkBuddy, Pool: wbPool, Upstream: wbUp, Scheduler: wbSch},
 		provider.WorkBuddyAI: {Kind: provider.WorkBuddyAI, Pool: wbaPool, Upstream: wbaUp, Scheduler: wbaSch},
 		provider.TraeWork:    {Kind: provider.TraeWork, Pool: trPool, Upstream: trUp, Scheduler: trSch},
-		provider.TraeCode:    {Kind: provider.TraeCode, Pool: trPool, Upstream: trCodeUp}, // 无独立 Scheduler：签到/保活由 TraeWork 负责
+		provider.TraeCode:    {Kind: provider.TraeCode, Pool: trPool, Upstream: trCodeUp, Alias: true}, // 别名渠道：无独立 Scheduler，账号聚合/签到/刷新均由 TraeWork 负责
 		provider.Qoder:       {Kind: provider.Qoder, Pool: qdPool, Upstream: qdUp, Scheduler: qdSch},
 		provider.QoderCN:     {Kind: provider.QoderCN, Pool: qcnPool, Upstream: qcnUp, Scheduler: qcnSch},
 		provider.QoderCOM:    {Kind: provider.QoderCOM, Pool: qcmPool, Upstream: qcmUp, Scheduler: qcmSch},
@@ -522,6 +543,9 @@ func main() {
 		fmt.Printf("  API-Key:       %s\n", cfg.APIKey)
 		fmt.Printf("  Web UI (本机): http://%s:%d/\n", openHost(cfg), cfg.Listen.Port)
 		fmt.Printf("  Listen:        %s\n", addr)
+		if appInst.PanelAuthEnabled() {
+			fmt.Printf("  Panel auth:    admin_password enabled (cookie session, 7d)\n")
+		}
 		fmt.Printf("  Accounts:      workbuddy=%d traework=%d qoder=%d oczen=%d(匿名)\n", len(wbAuths), len(trAuths), len(qdAuths), len(ocAuths))
 		fmt.Printf("\nPress Ctrl+C to exit\n")
 		sig := make(chan os.Signal, 1)

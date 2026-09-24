@@ -29,7 +29,7 @@ Wild-Work 是 WorkBuddy（国内版+国际版）/TraeWork/Qoder 多渠道账号�
 | R1 | **托盘菜单固定，不做动态内容、不做定时/事件刷新** | 用户在自己客户端操作无法捕捉，动态展示无意义 |
 | R2 | ~~托盘提供「刷新积分」菜单~~ **已移除**。刷新积分改为 Web UI 面板操作 | 托盘菜单精简为：打开主界面 / 查看日志 / 退出 |
 | R3 | 托盘固定菜单项：**打开主界面 / 查看日志 / 退出** | 双击托盘 = 打开主界面；不再弹"已启动"提示框 |
-| R4 | **不设管理 API 鉴权** | 单机个人工具；监听 0.0.0.0 的风险由用户承担，UI/文档给一句风险提示 |
+| R4 | **管理 API 采用 cookie 会话鉴权**（2026-09-24 修订原「不设鉴权」） | 新增 `config.admin_password`（默认缺失 = 不鉴权，向前兼容）；**监听非环回地址时强制要求设置**（启动层 fatal + `SetListen` 拒绝），否则局域网任何设备可无凭据访问面板/退出程序。会话实现见 `internal/app/session.go`：token 随机 + 内存态（只存 SHA-256），HttpOnly + SameSite=Lax cookie，7 天滑动续期，改密码即失效，登录失败 5 次/IP 锁定 5 分钟。`/api/auth/*` 不鉴权，其余 `/api/*` 走守卫；OpenAI 侧 `api_key` 不受影响 |
 | R5 | **Web UI 用纯静态 HTML/CSS/JS**（无前端编译链） | `go:embed` 打进单文件；实用 + 大众审美即可 |
 | R6 | 托盘库：**保留 energye/systray**（已跨平台 Win/mac/Linux） | 各菜单项使用不同颜色纯 Go 生成图标，无需外部图标文件 |
 | R7 | **移除 wails / WebView2 全部依赖** | 省内存与运行时；平台能力封装进 `internal/platform`（build tag 拆分） |
@@ -48,7 +48,7 @@ Wild-Work 是 WorkBuddy（国内版+国际版）/TraeWork/Qoder 多渠道账号�
 | R20 | **Qoder 思考投影按官方客户端 `bve()` 的三处同源写法**：`model_config.is_reasoning` + `parameters.reasoning_effort` + `parameters.enable_thinking`，三者必须同源（绝不出现 `is_reasoning=true` 配 `enable_thinking=false`）；档位能力来自上游模型目录的 `thinking_config`（`provider.ModelInfo` → `reasoning.Caps` 的 `RealmQoder` 面，**与 WorkBuddy 分表**，无静态兜底）；客户端要关闭但该模型无 `disabled` 节点（如 `glm-5.3`）时**降到最低档**而不是发上游不认的 `none`；`parameters` 恒下发（见 R21） | 逆向 Qoder CN 桌面版内置 SDK（`@qoder-ai/qoder-cn-agent-sdk` 的 `qoder-worker-runtime.obf.mjs`，CLI v1.1.53）拿到；实测 `parameters.reasoning_effort` 确实改变生成量（`none` 2402 < 基线 2952 < `medium` 3455 tokens）。**R21 已推翻「legacy 端点不下发思考链」这条结论**（当时是因为请求体/请求头没对齐桌面版） |
 | R21 | **Qoder 请求体与请求头按桌面版「实测抓包」逐字段对齐**（不再只参考 SDK 源码）。body：补顶层 `system` 数组（从 system 消息抽文本块，与 `messages[0]` 同构）、`task_id:"common"`、`source:1`、`version:"3"`、`is_retry:false`、`session_type:"app"`、`aliyun_user_type:""`、完整 `model_config`（`key/display_name/model/format/is_vl/is_reasoning/api_key/url/source/max_input_tokens`）、`business` 富对象（`product/version/type/id(=request_set_id)/name/begin_at/stage`）、`tools` 恒为数组、`chat_context.text` 与 `extra.originalContent` 为**字符串**；`parameters` **恒下发**且含 `max_tokens`（目录 `max_output_tokens`，实测目录无此字段 → 常量 32000）与 `context_length`（`context_config` 中标 `is_default` 的档，未知则不下发）。headers：`cosy-clienttype: 10`、`cosy-data-policy: disagree`、`cosy-version: 1.1.57`（签名 payload `cosyVersion` 必须同改）、补 `cosy-business-product/-type/-scene`、`cosy-machineos: x86_64_win32`、`cosy-machinehostname`、`accept-language`，去掉桌面端没有的 `cosy-clientip` | 依据 `_spy/http-bodies/*.json`（7 个真实请求体）+ `_spy/qoder-real-request.json`（27 个真实请求头）。**对齐后 legacy `agent_chat_generation` 立刻开始下发可见思考链**：探针 `reasoning_content` 1876（medium）/26145（xhigh）字，生产链路端到端 36845 字，`usage.completion_tokens_details.reasoning_tokens` 1435–11913 —— 这是「思考强度终于可见」的关键修复。回归护栏：`TestLiveProbeProductionPath`（走 `ChatStream` 全链路）。**唯一刻意保留的差异**：`accept-encoding` 固定 `identity`（桌面端是 `br,gzip,deflate`；Go 手动设置该头后不会自动解压，brotli 需额外依赖）。**版本同步要求**：`clientVersion` 同时出现在请求头与 `business.version`，改动必须成对 |
 | R22 | **无账号渠道（oczen）不建 auth 文件、不进 `reloadAccounts`、不参与禁用/冷却惩罚** | 匿名凭证是常量 `public`；`SyncToDir` 会剔除磁盘上不存在的虚拟账号，故只在装配时注入一次。单账号 + 不可重登 ⇒ 任何账号级冷却都等于整渠道下线，故 4xx 一律走新增的 `ErrPassthrough`（原文透传、不计错不冷却），只有 429 才短冷却。渠道特性见 `internal/oczen/constants.go` 包注释与 §6 不变量 29/30 |
-| R23 | **用量/积分双流水分口径统计，不强关联、不折算** | `internal/ledger` 双 JSONL（usage 按渠道×模型 / credit 按账号 earn·spend·expire）；写入仅 append 缓冲句柄（30s AutoFlush），读取仅在 UI 请求 `/api/usage` 时按月分段扫描聚合，常驻内存 ≈0。`Upstream.Stream` 返回末帧 usage（R14 同款显式传参哲学）。首见账号只记一条「存量额度」baseline，不逐条展开。详见 `docs/用量积分流水记账备忘.md` |
+| R23 | **用量/积分双流水分口径统计，不强关联、不折算** | `internal/ledger` 双 JSONL（usage 按渠道×模型 / credit 按账号 earn·spend·expire）；写入仅 append 缓冲句柄（30s AutoFlush），读取仅在 UI 请求 `/api/usage` 时按月分段扫描聚合，常驻内存 ≈0。`Upstream.Stream` 返回末帧 usage（R14 同款显式传参哲学）。首见账号只记一条「存量额度」baseline，不逐条展开。**同 key 重复条目（WorkBuddy 伪键一对多）先聚合求和再差分**，每 key 每次刷新最多一条事件；升级首启将旧错误流水一次性归档为 `old-credit-*.jsonl` 并删快照重建 baseline（issue #38）。详见 `docs/用量积分流水记账备忘.md` |
 | R24 | **临期阈值可配（默认 24h，下限 24h）** | `config.schedule.expiring_threshold_hours`，normalize 钳下限（日期粒度到期判定低于一天无意义）；scheduler 与 app.creditTotals 同源取 `cfg.ExpiringThresholdDur` |
 | R25 | **TraeWork 专用池判据是 `product_id==209`** | 2026-09-23 起上游不再下发 `available_endpoint=1`（专用池也标 0），ep 判据整体失效；实测三账号 `product_id=209`（200 档每日签到）used 恒为 0，判定改为 `ep==1 \|\| pid==209`（ep 保留为历史兑底）。pid=208（150 签到）/221（每月登录）均可消耗 |
 
@@ -117,7 +117,8 @@ POST /api/account/remove           # {uid}
 POST /api/account/disable          # {uid,disabled} 停用/启用
 POST /api/account/resource_detail  # {uid} → 积分明细
 POST /api/config/checkin_times     # {times:["09:00","21:30"]}
-POST /api/config/listen            # {host,port}
+POST /api/config/listen            # {host,port,admin_password?}（非环回时必须带密码）
+POST /api/config/admin_password    # {password}（空 = 关闭面板鉴权，仅环回监听允许）
 POST /api/config/api_key           # {key}
 POST /api/config/autostart         # {on:bool}
 GET  /api/fees                     # 渠道费率（本地缓存 + 按需刷新）
@@ -140,9 +141,9 @@ POST /api/quit                     # 退出程序
 > provider.Kind 即模型名前缀；server 按 `channel/<model>` 前缀路由，无需改接口。
 > **QoderCN（`qodercn/*`）**：qoder2api 参数形态（cosyVersion 1.0.10、18 头含 cosy-scene 族、
 > session_type=qoder、identity userType 实测回填）；签到双路径（campaigns 主 + daily-check-in 兑底，
-> 实测 legacy 已 DISABLED）；每日 10:15 定时签到；动态模型表（无静态兑底，上次成功缓存）。详见 `docs/qoderCN渠道接入备忘.md`。
+> 实测 legacy 已 DISABLED）；每日 10:00 开放 + 10:00–12:00 窗口内重试（见不变量 23）；动态模型表（无静态兑底，上次成功缓存）。详见 `docs/qoderCN渠道接入备忘.md`。
 > **QoderCOM（`qodercom/*`）**：国际版（qoder.com/openapi.qoder.sh/api1+api2.qoder.sh 三域分离）；
-> 凭据与 CN 区完全隔离（双向 401）；签到仅 campaigns（无 daily-check-in，实测 404）；每日 10:15。详见 `docs/qoderCOM渠道抓包分析与接入计划.md`。
+> 凭据与 CN 区完全隔离（双向 401）；签到仅 campaigns（无 daily-check-in，实测 404）；每日 10:00 开放 + 10:00–12:00 窗口内重试（同 CN，见不变量 23）。详见 `docs/qoderCOM渠道抓包分析与接入计划.md`。
 > **旧 Qoder（`qoder/*`，QoderWork）已从界面下线**：代码与路由保留，存量账号仍可用；不新增功能，后续可移除。
 > 旧 Qoder 无签到活动：`DailyCheckin` 返回错误，调度器只做 token keepalive；故 `noExplicitCheckin`
 > 排除 `qoder`（面板不显示手动签到按钮），web/app.js 的 `NO_EXPLICIT_CHECKIN` 与之同源。
@@ -254,6 +255,14 @@ POST /api/quit                     # 退出程序
       正文 4358 字。三处投影现均恒写 `enable_thinking`。
       复现/验证：`WILDWORK_PROBE_CASES=1,12 go test -tags live ./internal/qoder/ -run TestLiveProbeEffort -v`
       （用例 1 = 缺陷形态，用例 12 = 官方关闭形态；修复后用例 1 应正常收尾、reasoning 块 0）。
+    - **Qoder 双区签到只能走 campaigns，且状态必须结构化上报**：
+      legacy `daily-check-in` 已 DISABLED（其 claim 恒返回 409 会造成「假成功」，故不再使用）；
+      每日 10:00 开放 + **10:00–12:00 窗口内每分钟重试**（活动可能在整点后才创建，只触发一次会漏领一天）。
+      `CheckinMinutes=[10:00]` + `CheckinRetryUntil=12:00`；完成标记按「**日期+时段**」而非仅日期
+      （避免早间成功吞掉晚间时段）。新增 `provider.CheckinReporter` 结构化状态
+      （claimed/already/no_campaign/no_token/error）取代 error 文本判断 —— 旧实现无法区分
+      「活动未上线」与「真出错」，且「无可用活动」不再当成功（漏领根因）。
+      守门测试：签到窗口/完成状态用例（已验证暂时关闭修复时失败）。
 
 24. **千问办公推理 body 必须带 `business.product`**（`internal/qwenwork/constants.go::BusinessProduct`）：
     上游按它选「模型目录」，缺省时推理端点恒回 HTTP 200 + envelope
@@ -264,6 +273,17 @@ POST /api/quit                     # 退出程序
     **本渠道刻意不投影任何思考字段**：千问办公官方客户端本身没有思考控制设置（无档位/开关 UI），
     抓包确认其请求体也不带 `reasoning_effort` / `enable_thinking` —— 这是符合官方行为、**不是缺口**，
     不要为它补档位投影（用户 2026-09-22 确认）。
+    - **`expires_in` 单位是【秒】，且 `expiresAt` 可被 access token 的 JWT `exp` 校正**：
+      回归：早期按毫秒处理（`*time.Millisecond`），把 7 天压成 604.8 秒 → 落盘 `expiresAt` 比真实寿命少 ~7 天
+      → `NeedsRefresh(10min)` 几乎恒为真 → **每次请求都刷 token**，与千问办公 App 高频互踩，
+      直至 refresh token 被作废、账号被禁用（面板报 `qwenwork: token refresh failed`）。
+      证据链：上游 `expires_in=604800` 按秒算 = access token JWT 的 `iat→exp`（整 7 天，吻合）；
+      按毫秒算 = 文件里的值（吻合）。且同仓 workbuddy/trae/workbuddyai 的 auth 文件 `expiresAt` 与 JWT `exp`
+      逐秒一致，**仅 qwenwork 偏离 6.99 天**。修复两处：①refresh 按秒解释，优先取绝对字段 `expires_at`，
+      两字段都缺失时回退 84h（JWT 实测 7 天的一半）；②`LoadQwenWorkDir` 调 `Auth.AdoptJWTExpiry()`，
+      用上游签名的 JWT `exp` 原地校正历史脏值（仅内存、只增不减、非 JWT 不动）——**没有这一步，存量账号即使修了代码仍是坏的**。
+      **注意：同族 dt-/drt- 渠道（qoder/qodercn/qodercom）token 为不透明串、无 JWT 可交叉验证，
+      其 `// ms` 标注未被本次改动触及**（无证据不做改动）。
 
 25. **导入型渠道（`raccoon` / `loomy`）不做登录编排**：凭据由面板「从本机客户端导入」产生
     （`internal/app/import_local.go`，写 `auths/<渠道>-<uid>.json`，路径**自适应探测**多候选目录）。
@@ -320,9 +340,15 @@ POST /api/quit                     # 退出程序
 29. **匿名渠道的虚拟账号不得进入任何「能把它弄没」的路径**：`reloadAccounts` 不纳入（`SyncToDir` 会剔除），
     启动时 `SetDisabled(uid,false)` 兜底自愈；`RemoveAccount`/`DisableAccount` 对 `provider.Oczen` 硬拒（后端拒 + 前端无入口）。
     其 `Auth.ExpiresAt` 必须为远期值（不得为 0），否则 `NeedsRefresh` 恒真 → 反复 `RefreshToken` + 冷却。
-30. **无账号渠道的错误分类只能依赖 429**：单账号且不可重登 ⇒ 任何 4xx 都不应惩罚账号（否则整渠道下线），
-    故 `oczen.Classify` 对其它 4xx 返回 `ErrPassthrough`（server 侧与 `ErrContentBlocked` 同分支：原文透传、不计错不冷却）。
-    **严禁**把 401/403 归为 `ErrSessionDead`（会 `pool.Disable` 永久禁用且无法人工恢复）。
+30. **单账号渠道（`Runtime.SingleAccount`）不得施加任何账号级惩罚**：唯一账号且不可重登 ⇒ 任何惩罚
+    （冷却/计数/禁用）都等于整条渠道下线。故 `Runtime.SingleAccount=true` 的渠道（当前 oczen）在 handler 里
+    对传输层错误与 `>=400` 一律**原文透传、不冷却不计数不禁用**；启动时另调 `Pool.ClearPenalty(uid)`
+    清除旧版遗留的冷却。`Classify` 仍做语义分类（供日志），但不再用于决定惩罚。
+    - **2026-09-24 修订（原「错误分类只能依赖 429」已作废）**：原「429 短冷却是唯一需要的背压」经实测证伪 ——
+      单账号无号可轮换，冷却后后续请求在挑号阶段被挡成 `503 no_healthy_account`，反而不如透传 429
+      让客户端按 `Retry-After` 自行退避；同理**传输层错误也不再累计 `errCount`**（默认 3 次网络抖动即冷却唯一账号）。
+      两者由 `server.Runtime.SingleAccount` 统一豁免（结构属性，不硬编码渠道名）。
+    - **严禁**把 401/403 归为 `ErrSessionDead`（会 `pool.Disable` 永久禁用且无法人工恢复）。
 31. **面板上「客户端要填的渠道前缀」只有一处出口（`web/app.js` 的 `chPrefix()` / `chPrefixChip()`）**：
     客户端模型名必须带渠道前缀（`provider.Kind` 即前缀，如小浣熊填 `raccoon/<模型名>`，无前缀且无映射时网关报
     `model "xxx" needs an explicit channel prefix`），面板在**账号卡片**（badge 旁）、**费率表分组表头**、
