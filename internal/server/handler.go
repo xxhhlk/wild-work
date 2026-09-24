@@ -528,7 +528,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		if acct.NeedsRefresh(h.cfg.RefreshSkew) {
 			log.Printf("refresh start platform=%s uid=%s reason=request", rt.Kind, acct.UID)
 			// 单飞 + 内层重检：同一账号的并发请求只放一次刷新出去。这一步最关键 ——
-			// refresh_token 是单会话的，并发刷新必然一方拿到 refresh_conflict，而失败方
+			// 同一 refresh_token 被并发消费必然一方拿到 refresh_conflict，而失败方
 			// 会被下面这个分支推进冷却（默认 10 分钟），表现为「一并发就 503」。
 			if err := provider.RefreshOnce(acct, func() error {
 				if !acct.NeedsRefresh(h.cfg.RefreshSkew) {

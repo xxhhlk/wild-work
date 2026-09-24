@@ -90,7 +90,8 @@
 3. 右下角出现 W 图标，**双击托盘图标** → 浏览器打开 Web 管理面板
 4. 在面板中点击「＋ WorkBuddyCN」/「＋ WorkBuddyAI」/「＋ TraeWork」/「＋ QoderCN」/「＋ QoderCOM」/「＋ 千问办公」添加账号
    （「＋ 商汤小浣熊」/「＋ Loomy」/「＋ MonkeyCode」是**导入**按钮：读取本机已登录客户端的凭据，不需要浏览器登录；
-   小浣熊的 refresh_token 是单会话的，导入后请**退出小浣熊客户端**，否则两边会互相抢刷新并报 `refresh_conflict`；
+   小浣熊的「导入」复制的是与客户端同一份凭据，导入后请**退出小浣熊客户端**，否则两边会互相抢刷新并报 `refresh_conflict`；
+   改用「协议登录」则新建独立会话，可放心与客户端并存；
    OpenCodeZen 无需添加账号，启动即已就绪）
 5. 根据下方配置说明接入你的 AI 客户端
 
@@ -455,7 +456,7 @@ curl -X POST "http://127.0.0.1:7863/v1/systemone" \
 | QoderCN | `qodercn/*` | ✓ | ✓ | ✓ | 10:15 | refresh（≈30 天） |
 | QoderCOM | `qodercom/*` | ✓ | ✓ | ✓ | 10:15 | refresh（≈30 天） |
 | 千问办公 | `qwenwork/*` | — | ✓ | ✓ | 关闭（避免与官方 App 互抢） | refresh |
-| 商汤小浣熊 | `raccoon/*` | — | ✓（四池） | ✓ | — | refresh（access ≈2h，**单会话**） |
+| 商汤小浣熊 | `raccoon/*` | — | ✓（四池） | ✓ | — | refresh（access ≈2h，**token 单次消费、会话可多个**） |
 | Loomy（讯飞） | `loomy/*` | ✓（全档位） | ✓ | ✓ | — | **无 refresh**（≈14 天需重新导入） |
 | MonkeyCode | `monkeycode/*` | — | —（上游无接口） | — | — | **无 refresh**（重新导入） |
 | 旧 Qoder | `qoder/*` | ✓ | ✓ | ✓ | — | refresh（≈30 天） |
@@ -470,7 +471,10 @@ curl -X POST "http://127.0.0.1:7863/v1/systemone" \
 >   截获网页授权码后自行兑换 token，结束立即恢复注册表。**登录期间请勿启动小浣熊客户端**
 >   （它会重新注册协议，把劫持覆盖掉）；弹窗里的「从客户端导入」则复用本机已登录客户端的凭据。
 >   Loomy / MonkeyCode 为**导入型**渠道，只有导入一条路。
-> - **导入或协议登录后请退出对应客户端** —— 小浣熊的 refresh_token 是单会话的，两边同时刷新会互相作废。
+> - **小浣熊的两种添加方式会话语义不同**：**协议登录**走完整授权流程、新建独立会话（新 `sid`），
+>   与官方客户端**天然独立、可并存**；**导入**复制的是客户端同一份凭据（同一 `sid`），
+>   两边会抢着消费同一个 refresh_token（后刷者报 `refresh_conflict`）。
+>   若走导入，请退出客户端；或让 wild-work 先刷新一次，之后的刷新即独立演进。
 >   （协议细节与取证见 `docs/raccoon渠道接入备忘.md` §11。）
 
 ## 常见问题

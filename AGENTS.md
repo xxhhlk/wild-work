@@ -153,7 +153,7 @@ POST /api/quit                     # 退出程序
 > token 有效期 365 天，故 KeepaliveHours 设为**显式空切片** `[]int{}`（传 nil 会被 `scheduler.New` 补成默认 22:00）。协议要点见 `internal/workbuddyai/constants.go` 包注释。
 > **商汤小浣熊（`raccoon/*`）**：官方托管网关 `https://xiaohuanxiong.com/api/web/llm/v2`（OpenAI 兼容，
 > 鉴权只认 `Authorization: Bearer <access_token>`）；凭据来自本机客户端
-> `%USERPROFILE%\.box-agent\config\auth.json`（明文 JSON，access ≈2h / refresh ≈30d，**refresh 会轮换且单会话**）；
+> `%USERPROFILE%\.box-agent\config\auth.json`（明文 JSON，access ≈2h / refresh ≈30d，**refresh 会轮换：token 单次消费、会话可多份并存**）；
 > 积分：`GET /api/web/points/v1/balance`（**与推理网关不同前缀** —— 不在 `/api/web/llm/v2` 下，容易找漏）
 > → `available_points` + 四个池子（每日/奖励/充值/月度），`topup_frozen` 标记充值池冻结，
 > 由 `UserResourceDetail` 按池拆分并用 `ResourceItem.Usable` 表达冻结；费率取上游 `billing_multiplier`。
@@ -273,8 +273,11 @@ POST /api/quit                     # 退出程序
       `TestChatStreamRejectsUnknownModel`。
     - **聚合必须同时支持 JSON 与 SSE**：上游对非流式请求可能直接返回 JSON（Loomy 实测），
       只按 SSE 解析会得到「content 空 + created 用 time.Now() 兜底」的假响应。
-    - **小浣熊的 refresh_token 是单会话的**：与官方客户端同时使用会互相抢刷新并报
-      `refresh_conflict`（实测 400）；文档要求导入后退出客户端。
+    - **小浣熊的 refresh_token 单次消费、会话可多份并存**（2026-09-25 实测更正）：
+      协议劫持登录新建独立会话（新 `sid`），可与官方客户端并存；
+      导入器复制客户端同一份 token（同一 `sid`），两边会抢着消费同一个 refresh_token，
+      后刷者报 `refresh_conflict`（实测 400）。判据是 `sid`，详见
+      `docs/loomy-raccoon接入记录.md` §6.3。
 26. **`loomy` 的档位面独占 `RealmLoomy`**（`RealmForKind` / `SupportsEffortKind` 已同时登记）：
     档位来自上游 `/models` 的 `reasoning_efforts`（无静态兜底）；投影时补 `enable_thinking` 与
     `chat_template_kwargs.enable_thinking` 三件套。实测该系列模型**无法完全关闭思考**
@@ -302,8 +305,8 @@ POST /api/quit                     # 退出程序
       `TestClassifyPromptTooLong11115`）。qwenwork / traework 不认 11115 码（其上游无该信封，
       只认文案形态），维持现状。
 28. **token 刷新必须按账号单飞**（`internal/provider/refresh.go`）：渠道的 `RefreshToken` 只在写字段时持
-    `auth.mu`，HTTP 调用在锁外 —— 该锁只防数据竞争，**拦不住「两次刷新都真的打上游」**。单会话
-    refresh_token 被并发使用必然一方报 `refresh_conflict`（raccoon `200822` / qwenwork `invalid_grant`），
+    `auth.mu`，HTTP 调用在锁外 —— 该锁只防数据竞争，**拦不住「两次刷新都真的打上游」**。同一个
+    refresh_token 被并发消费必然一方报 `refresh_conflict`（raccoon `200822` / qwenwork `invalid_grant`），
     失败方还会被 `Pool.Cooldown` 推进冷却，对外表现为「一并发就 503」。所有刷新调用点
     （app.go 3 处 / scheduler.go 2 处 / handler.go 1 处）一律走 `provider.RefreshOnce(a, fn)`，
     **禁止直接调 `Upstream.RefreshToken`**（`internal/login_trae` 的登录内联刷新除外）。

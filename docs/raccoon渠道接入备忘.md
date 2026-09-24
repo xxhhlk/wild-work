@@ -336,11 +336,16 @@ resp: { data: { access_token, refresh_token } }      ← refresh_token 会轮换
 
 | 方案 | 做法 | 代价 / 风险 | 状态 |
 |---|---|---|---|
-| **导入** | 读客户端 `auth.json` | 需先装并登录官方客户端；导入后建议退出客户端（refresh_token 单会话） | ✅ 已实施 |
+| **导入** | 读客户端 `auth.json` | 需先装并登录官方客户端；**复制的是客户端同一份 token（同一 `sid`）**，两边会抢着消费同一个 refresh_token | ✅ 已实施 |
 | **协议劫持登录** | 登录期间把 `HKCU\Software\Classes\office-raccoon` 临时指向 wild-work → 收深链拿 code → 自己调 `login_with_authorization_code` → 成功后**恢复注册表** | 需改用户级注册表并保证崩溃后可恢复；登录期间官方客户端收不到回调（互斥）；厂商在收紧（源码注释「仅向登录墙暴露专用 IPC」），可能被视为滥用 | ✅ **已实施**（2026-09-23）：`internal/login_raccoon` + `internal/raccoon/protocol_windows.go`；面板主按钮走此路径，次按钮保留导入 |
 
 > 「劫持」之所以技术上可行，是因为兑换端点**不校验调用方身份**（无 device identity、无签名头）——
 > 谁拿到 code 谁就能换到 token。这是该流程唯一的缺口。
+
+> **两条路的会话语义不同（2026-09-25 实测）**：
+> 协议劫持走完整授权码流程，服务端**新建会话**（新 `sid`）→ 与官方客户端**天然独立，可并存**；
+> 导入器只是**复制**客户端 token（同一 `sid`）→ 共用一份凭据，谁先刷谁作废对方。
+> 判据是 `sid`：不同即独立会话。详见 `docs/loomy-raccoon接入记录.md` §6.3。
 
 ---
 
@@ -367,7 +372,9 @@ resp: { data: { access_token, refresh_token } }      ← refresh_token 会轮换
 导致「凭据写对了但账号不进池」，面板账号列表与 `/v1/models` 都看不到（要等下次重启才出现）。
 已补两个分支，并给 `importRaccoon` / `importLoomy` 补上 `reloadAccounts()`。
 
-**两条路的关系**：拿到的是**同一个上游账号**（refresh_token 单会话，会互相踢）；
+**两条路的关系**：拿到的是**同一个上游账号，但会话语义不同** ——
+协议登录新建独立会话（新 `sid`），可与客户端并存；
+导入器复制客户端同一份 token（同一 `sid`），会互相消费对方的 refresh_token。
 协议登录不依赖客户端登录态，但登录期间客户端收不到回调，且客户端一启动就会重写协议注册（劫持失效）。
 
 ## 13. 思考控制：「深度思考」的正确做法是**不发档位**（2026-09-24 实测）

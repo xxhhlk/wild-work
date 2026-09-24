@@ -1157,7 +1157,7 @@ func (a *App) refreshIfSessionDead(rt *Runtime, au *auth.Auth, err error) bool {
 		return false
 	}
 	log.Printf("session dead, refreshing platform=%s uid=%s", rt.Kind, au.UID)
-	// 单飞：同一账号的并发 401 只放一次刷新出去（refresh_token 单会话，并发刷新必然一方冲突）。
+	// 单飞：同一账号的并发 401 只放一次刷新出去（同一 refresh_token 被并发消费必然一方冲突）。
 	// 此处刻意不做 NeedsRefresh 重检 —— session 已被上游作废，而本地 expiresAt 可能还没到期。
 	rerr := provider.RefreshOnce(au, func() error {
 		if err := rt.Upstream.RefreshToken(au); err != nil {
