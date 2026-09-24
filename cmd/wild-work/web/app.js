@@ -1217,10 +1217,12 @@ function renderRecentPage(names) {
   $("pgNext").disabled = recentPage >= pages - 1;
 }
 
-// makeChart 懒建 echarts 实例；CDN 不可达时在容器里显示提示并返回 null。
+// makeChart 懒建 echarts 实例；图表库未就绪时在容器里显示提示并返回 null。
+// 两种原因都会走这里：CDN 不可达，或 integrity 校验不通
+// （内容被篡改时浏览器会拒绝执行脚本，变成 typeof echarts === "undefined"）。
 function makeChart(box, existing) {
   if (typeof echarts === "undefined") {
-    box.textContent = "图表库加载失败（CDN 不可达），表格不受影响";
+    box.textContent = "图表库未加载（CDN 不可达或校验不通），表格不受影响";
     return null;
   }
   return existing || echarts.init(box);

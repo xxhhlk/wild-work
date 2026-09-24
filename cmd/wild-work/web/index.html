@@ -343,7 +343,10 @@
 
 <div id="toast" class="toast hidden"></div>
 
-<script src="https://cdn.staticfile.org/echarts/4.3.0/echarts.min.js"></script>
+<!-- echarts 走 ZStatic（s4.zstatic.net）。不用 BootCDN/Staticfile：那两家已被黑产收购并曾发生供应链投毒（2024-07）。integrity 防止内容被篡改，值取自 npm 官方 tarball 逐字节校验。 -->
+<script src="https://s4.zstatic.net/ajax/libs/echarts/4.3.0/echarts.min.js"
+        integrity="sha384-j+b5pgi2jUgky3XusbpHRohTl7cZJaxpxz5zdIK0ZFhWU0GG+hS4NKiXSMdJr7Cr"
+        crossorigin="anonymous"></script>
 <script src="./app.js"></script>
 </body>
 </html>

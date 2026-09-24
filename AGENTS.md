@@ -88,6 +88,21 @@ wild-work
 | 自动签到 | 签到时间（HH:MM 多组）+ 开机自启开关（左右布局） |
 | 渠道费率 | 七渠道模型定价表（按渠道分组，合并单元格），刷新按钮 |
 
+**外部静态资源只有一处：echarts（用量折线图），走 ZStatic `s4.zstatic.net` + SRI。**
+不得改用 BootCDN / Bootcss / Staticfile / Polyfill.io —— 这几家已被黑产收购并实控，
+2024-07 起发生供应链投毒（uBlock Origin 等已直接屏蔽），实测 `cdn.staticfile.org`
+现已完全不可达；`cdn.staticfile.net` 属同一家，一并避开。
+- `index.html` 的 `<script>` 必须同时带 `integrity`（SRI）与 `crossorigin="anonymous"`：
+  CDN 或链路被劫持时浏览器会拒绝执行篡改后的脚本，退化成 `app.js` 的降级提示
+  （`typeof echarts === "undefined"`），不会执行恶意代码。
+- **SRI 值必须取自 npm 官方 tarball 逐字节校验**（`registry.npmjs.org/<pkg>/-/<pkg>-<ver>.tgz`），
+  不得照抄第三方页面或凭 CDN 当前返回内容直接采信 —— 否则等于把「是否被篡改」的判据
+  也交给同一个可能被投毒的源。
+- 跨域 SRI 要求响应带 `access-control-allow-origin`（zstatic 实测 `*`）；
+  换 CDN 前先确认该头，否则脚本会被 CORS 拒绝、整块图表静默失效。
+- **升级 echarts 版本时必须重新计算 SRI**，否则脚本被浏览器拒绝执行。
+  算法：`openssl dgst -sha384 -binary f.js | openssl base64 -A`（前缀 `sha384-`）。
+
 管理 API（REST，均挂 `/api/*`）：
 
 ```
