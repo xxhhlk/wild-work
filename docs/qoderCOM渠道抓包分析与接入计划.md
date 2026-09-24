@@ -123,10 +123,15 @@ R2 追问代号 → 「Bravo-9」（多轮上下文 OK）
 
 ### 已知风险 / 后续决议
 
-1. **client_id**：用 Orchids 验证过的 `e883ade2`（与 login_qodercn 同源，双区可用）；IDE 同款 `732aef47` 需 GitHub SSO 网页交互，后续可切换。
-2. **dr t- 缺失**：测试凭据无 refresh token，30 天后过期需重登；正式用户走面板登录会拿到完整 dt-/drt-。
-3. **`/api/v3/user/status`**（Orchids 用于配额）：未接，quota/usage 已够用；后续需要 whitelistStatus 时再补。
-4. **`/api/v1/me/jobToken`**：COM 区空 body 400，与 CN 行为不同；本项目用不到，无影响。
+> **性质说明（2026-09-25）**：下列 1–4 条是**可选的前瞻项或已接受的现状**，**不是未完成的欠账**
+> —— 本渠道的接入计划（§5）已全部落地并线上验证。保留于此仅为记录决策依据。
+
+1. **client_id**：用 Orchids 验证过的 `e883ade2`（与 login_qodercn 同源，双区可用）；IDE 同款 `732aef47` 需 GitHub SSO 网页交互，后续可切换。（**可选增强**，当前方案已实测可用，无必要切换）
+2. **dr t- 缺失**：测试凭据无 refresh token，30 天后过期需重登；正式用户走面板登录会拿到完整 dt-/drt-。（**测试凭据的局限，非代码问题**）
+3. **`/api/v3/user/status`**（Orchids 用于配额）：未接，quota/usage 已够用；后续需要 whitelistStatus 时再补。（**可选增强，当前配额信息已足够**）
+4. **`/api/v1/me/jobToken`**：COM 区空 body 400，与 CN 行为不同；本项目用不到，无影响。（**已确认无影响**）
+5. **思考档位**：与 QoderCN 同源实现（能力面 `reasoning.RealmQoderCOM`，独立于 `RealmQoder` / `RealmQoderCN`），
+   收口细节与实测矩阵见 `docs/qoderCN渠道接入备忘.md` §8。
 5. **思考档位**：与 QoderCN 同源实现（能力面 `reasoning.RealmQoderCOM`，独立于 `RealmQoder` / `RealmQoderCN`），
    收口细节与实测矩阵见 `docs/qoderCN渠道接入备忘.md` §8。
    **CN 侧已线上实测通过**（2026-09-22，真实账号）：上游接受 `parameters.reasoning_effort` 与

@@ -1,21 +1,36 @@
 # Qoder 渠道签到补齐改造方案
 
-> 状态：**方案阶段（未改代码）**；§8 已用真实凭据实测验证签到链路可用
-> 上游参考：`ref/qoder2api`（CN 分支，签到实现最完整）、`ref/qoderwork2api`（本项目 qoder 渠道的来源仓库）
-> 结论先行：本项目 qoder 渠道与 qoderwork2api **同源同协议同 endpoint**；签到功能属**预留但未落地**。
+> 状态：**方案已落地，但落在新建的 QoderCN / QoderCOM 渠道上，而非本文档设想的旧 `qoder` 渠道**（见下方「落地去向」）
+> 上游参考：`ref/qoder2api`（CN 分支，签到实现最完整）、`ref/qoderwork2api`（本项目旧 qoder 渠道的来源仓库）
+> 结论先行：本项目旧 qoder 渠道与 qoderwork2api **同源同协议同 endpoint**；签到功能属**预留但未落地**。
 > **实测结论（2026-09-21）**：`dist/auths/` 中的 legacy CN 凭据可直接用于签到，已成功领取 100 Credits。
+
+> ### ⚠️ 落地去向（2026-09-25 核对）
+> 本文档的方案**已实现**，但实现位置不是本文设想的 `internal/qoder/`（旧 QoderWork 渠道），
+> 而是**新建的独立渠道**：
+> - `internal/qodercn/checkin.go` —— **campaigns 优先 + daily-check-in 兜底**的双路径
+>   （与本文 §D3「实现 campaigns 兜底」一致；顺序按 2026-09-21 实测翻转，因 legacy daily-check-in 已全局 DISABLED）
+> - `internal/qodercom/checkin.go` —— 仅 campaigns（其上游无 daily-check-in）
+>
+> **旧 `qoder` 渠道仍无签到**，且这是**有意的**：该渠道已从界面下线（AGENTS R10），
+> `internal/qoder/client.go:418` 的 `DailyCheckin` 至今返回「暂无签到活动」，
+> `noExplicitCheckin()` 也仍排除它。**§1 的「现状盘点」对旧 qoder 依旧成立**，
+> 但下面 §3/§5「实施步骤」中针对 `internal/qoder/` 的改动**不应再执行** ——
+> 新渠道已按同一套协议（§2 的端点与头规则）实现完毕。本文档保留为**协议参考**。
 
 ---
 
 ## 1. 现状盘点
 
+> **对旧 `qoder` 渠道而言，下表依旧成立**（该渠道有意不加签到）。行号已按 2026-09-25 代码更新。
+
 | 项 | 现状 | 位置 |
 |----|------|------|
 | 签到端点常量 | ✅ 已定义但**无引用** | `internal/qoder/constants.go:18-19` |
-| `Client.DailyCheckin` | ❌ 直接返回错误 `"qoder 暂无签到活动"` | `internal/qoder/client.go:331` |
-| 调度器签到时段 | ❌ `CheckinMinutes: nil`，只做 token keepalive | `cmd/wild-work/main.go:147` |
-| 手动签到入口 | ❌ `noExplicitCheckin()` 把 Qoder 屏蔽 | `internal/app/app.go:172` |
-| 登录后首次签到 | ❌ 无 | `internal/app/app.go:568` |
+| `Client.DailyCheckin` | ❌ 直接返回错误 `"qoder 暂无签到活动"` | `internal/qoder/client.go:418` |
+| 调度器签到时段 | ❌ `CheckinMinutes: []int{}`（显式空），只做 token keepalive | `cmd/wild-work/main.go:302` |
+| 手动签到入口 | ❌ `noExplicitCheckin()` 把 Qoder 屏蔽 | `internal/app/app.go:304` |
+| 登录后首次签到 | ❌ 无 | `internal/app/app.go:597` |
 
 已定义但未用的常量：
 

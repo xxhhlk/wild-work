@@ -739,6 +739,8 @@ Poll()
 - 无 cookie 访问授权 URL → Hydra 302 `/biz/signin?login_challenge=...` ✅
 - 回调探针（`?error=access_denied`）→ Poll 正确退出并透出上游错误文案 ✅
 - 完整 code 兑换需真人浏览器登录，留待用户自测
+  → ✅ **已闭环**（2026-09-20，见 §9.6–§9.8）：真人扫码登录已跑通，
+  链路修掉两处接线 bug（`StartLoginFor` 分支遗漏、`Poll` 内 panic）后**已成功产生 qwenwork 账号**。
 
 **接入点**：`app.StartLoginFor/pollLogin/completeQwenWorkLogin/CancelLogin` 四处 + Web UI 提示文案更新。
 

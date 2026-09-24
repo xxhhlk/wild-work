@@ -574,15 +574,25 @@ remain = userQuota.remaining + addOnQuota.remaining
 
 ## 5. 待调研问题
 
-1. **Qoder 推理开关**: 需确认上游是否支持 `reasoning_effort` / `thinking` 参数
-   - 当前实现：透传 `reasoning_effort` → `thinking`
-   - 需验证上游兼容性
+> **状态（2026-09-25）**：本节两项**均已调研完成**，结论如下；保留原始提法作为过程记录。
 
-2. **TraeWork 设备指纹**: `x-device-id` 必须与账号注册设备一致，否则 401
-   - 首次登录自动绑定设备
-   - 换设备需重新登录
+1. ~~**Qoder 推理开关**: 需确认上游是否支持 `reasoning_effort` / `thinking` 参数~~
+   - ~~当前实现：透传 `reasoning_effort` → `thinking`~~
+   - ✅ **已确认支持，且实现已远超「透传」**：上游按官方桌面版 `bve()` 的三处同源写法接受
+     `model_config.is_reasoning` + `parameters.reasoning_effort` + `parameters.enable_thinking`。
+     档位能力来自上游模型目录的 `thinking_config`（每模型一条 ladder），投影时按 ladder 就近降级
+     （见 AGENTS R20/R21、`internal/qoder/client.go`）。
+     **注意**：`enable_thinking` 是关闭思考的**必要字段**，只发 `is_reasoning=false` 关不掉思考。
+     实测矩阵见 `docs/qoderCN渠道接入备忘.md` §8。
+
+2. ~~**TraeWork 设备指纹**: `x-device-id` 必须与账号注册设备一致，否则 401~~
+   - ~~首次登录自动绑定设备 / 换设备需重新登录~~
+   - ✅ **已确认并实现**：`internal/traework/headers.go` 注入账号的 `x-device-id`
+     （值取自 auth 的 `DeviceID`）。首次登录绑定设备、换设备需重新登录 —— 该约束成立且已由实现承接。
+   - 补充（2026-09-25 调研）：TraeWork 的**思考档位**另有独立结论 —— 通道已打通、
+     档位字段被上游接受但**不改变思考量**，故本渠道不投影档位（见 `docs/TraeWork-api.md` §4.3）。
 
 ---
 
 *文档版本：v1.0*  
-*最后更新：2026-08-26*
+*最后更新：2026-08-26（§5 状态标注于 2026-09-25）*

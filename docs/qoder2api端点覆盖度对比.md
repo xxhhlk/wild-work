@@ -3,6 +3,10 @@
 > 目的：确认 qoder2api 是否包含本项目渠道所需的**全部**端点（模型列表/模型能力/用户余额/登录授权等）。
 > 结论：**端点层面几乎完全覆盖，且 qoder2api 更全**（多出 PAT 交换、jobToken、国际区、CSRF 探测）；
 > 但有几个本项目**已实现而 qoder2api 未实现**的能力（详见 §3）。
+>
+> ⚠️ **「本项目」列已过时（2026-09-25 核对）**：本文写作时（2026-09-21）本项目的若干缺口
+> ——**签到、`context_config`/`is_default` 解析、模型分类三级回退**——**现均已落地**；
+> 逐条差异见 §1/§3/§5 的「状态更新」标注。三个参考仓库的横向对比仍然有效。
 
 ---
 
@@ -17,9 +21,15 @@
 | `GET /api/v2/quota/usage` | 同上 | 余额 | ✅ UserResource / UserResourceDetail |
 | `GET /algo/api/v2/model/list?Encode=1` | `gateway.qoder.com.cn` | 模型列表+能力 | ✅ FetchModels |
 | `POST /algo/api/v2/service/pro/sse/agent_chat_generation?...` | 同上 | 推理 SSE | ✅ ChatStream |
-| `GET /sash/api/v1/me/daily-check-in/status` | `openapi.qoder.com.cn` | 签到状态 | ❌ 定义了常量但未用 |
-| `POST /sash/api/v1/me/daily-check-in/claim` | 同上 | 签到领取 | ❌ 同上 |
-| —— | —— | 活动 `GET /sash/api/v1/me/campaigns` | ❌ **未定义**（实测当前主路径） |
+| `GET /sash/api/v1/me/daily-check-in/status` | `openapi.qoder.com.cn` | 签到状态 | ✅ qodercn（兜底路径） |
+| `POST /sash/api/v1/me/daily-check-in/claim` | 同上 | 签到领取 | ✅ qodercn（兜底路径） |
+| `GET /sash/api/v1/me/campaigns` | 同上 | 活动列表（**当前主路径**） | ✅ qodercn / qodercom（主路径） |
+| `POST /sash/api/v1/me/campaigns/{id}/claim` | 同上 | 活动领取（**当前主路径**） | ✅ qodercn / qodercom |
+
+> **状态更新（2026-09-25）**：末四行原标「❌ 定义了常量但未用」「❌ 未定义」——
+> 现四者**均已实现**：`internal/qodercn/checkin.go` 为 **campaigns 优先 + daily-check-in 兜底**的双路径
+> （实测 daily-check-in 的 legacy 系统已全局 DISABLED，故顺序与 qoder2api 相反）；
+> `internal/qodercom/checkin.go` 仅 campaigns（其上游无 daily-check-in）。
 
 ---
 
@@ -58,23 +68,25 @@
 | 模型 key | `key` | ✅ | ✅ |
 | 显示名 | `display_name` | ✅ | ✅ |
 | 是否启用 | `enable` | ✅ | ✅ |
-| 是否默认 | `is_default` | ✅ | ❌ 未解析 |
+| 是否默认 | `is_default` | ✅ | ✅ 已解析 |
 | **思考模式** | `is_reasoning` | ✅ | ✅ `SupportsReasoning` |
 | **视觉能力** | `is_vl` | ⚠️ 未解析 | ✅ `SupportsImages` |
 | 最大输入 | `max_input_tokens` | ✅ | ✅ `ContextFromAPI` |
-| **上下文窗口** | `context_config.*.token_count` | ✅ 优先读 | ⚠️ **仅回退用 max_input_tokens** |
-| **最大输出** | 推导（reasoning 32768 / 否则 16384） | ✅ | ❌ 未设置 |
+| **上下文窗口** | `context_config.*.token_count` | ✅ 优先读 | ✅ 已优先读（默认档 + 全档位） |
+| **最大输出** | 推导（reasoning 32768 / 否则 16384） | ✅ | ✅ 已推导 |
 | 价格倍率 | `price_factor` | ✅ | ✅（另走 FetchModelPricing） |
-| 场景分类 | `assistant`/`developer`/`chat` 多级回退 | ✅ 三级回退 | ⚠️ **仅 `chat`** |
+| 场景分类 | `assistant`/`developer`/`chat` 多级回退 | ✅ 三级回退 | ✅ 三级回退 |
 
-### 3.1 本项目模型能力的两处可改进点
+> **状态更新（2026-09-25）**：`is_default` / `context_config` / `max_output_tokens` / 三级回退
+> **四项均已实现**（2026-09-22 由 issue #27 同批改动补齐，覆盖 `internal/qoder`、
+> `internal/qodercn`、`internal/qodercom` 三个渠道）。§3.1 的「两处可改进点」已不再是改进点。
 
-1. **`context_config.token_count` 未解析**：本项目 `internal/qoder/models.go:100` 直接用 `max_input_tokens` 作 ContextWindow。qoder2api 优先读嵌套的 `context_config`（默认档 `is_default`）的 `token_count`，仅在缺失时回退 `max_input_tokens`。
-   → 若上游两者不等，本项目会显示偏小的上下文窗口。
-2. **模型分类仅取 `chat`**：本项目 `internal/qoder/models.go:62` 只读 `apiResp["chat"]`，而 qoder2api 按 `assistant` → `developer` → `chat` 三级回退。
-   → 上游若把模型挪到 `assistant` 场景，本项目会报 `no chat scene`。
+### 3.1 本项目模型能力（原「两处可改进点」已落地）
 
-> **注**：本项目采用 `chat` 场景是刻意的（对应 `AgentId=agent_common` 推理通道），但缺少回退会导致上游调整时硬失败（违反 AGENTS.md §「Fail Early」例外——此处更宜容忍回退）。
+1. ~~**`context_config.token_count` 未解析**~~ → ✅ **已解析**：取标了 `is_default` 的档作上下文窗口，
+   并保留全部档位（`AvailableWindows`）供选档校验；缺失才回退 `max_input_tokens`。
+2. ~~**模型分类仅取 `chat`**~~ → ✅ **已三级回退**：`assistant` → `developer` → `chat`，
+   上游把模型挪场景时不再硬失败（与 qoder2api 同批 issue #27）。
 
 ---
 
@@ -89,12 +101,12 @@
 | 余额（quota/usage） | ✅ | ✅ | 等价 |
 | 余额分桶（userQuota + addOnQuota） | ✅ | ✅ | 等价（本项目 `赠送额度` 条目） |
 | 套餐名（plan） | ✅ 展示 | ⚠️ 定义未用 | 本项目可选补 |
-| 账号信息（userinfo） | ✅ 展示 | ⚠️ 定义未用 | 本项目可选补 |
-| 签到 | ✅ 双路径 | ❌ | **qoder2api 更全**（本次要补） |
+| 账号信息（userinfo） | ✅ 展示 | ✅ **已使用**（qodercn/qodercom 取昵称） | 等价 |
+| 签到 | ✅ 双路径 | ✅ 双路径（CN）/ 单路径（COM） | 等价 |
 | 模型列表动态拉取 | ✅ | ✅ | 等价 |
 | 多协议（OpenAI/Anthropic/Codex） | ✅ bridge 层 | 本项目另有 gateway 层 | 各自实现 |
-| 双区（CN/Global） | ✅ | ❌ | qoder2api 更全 |
-| 定时签到 + 自动刷新 + 解冻 | ✅ | ⚠️ 部分（有调度器无签到） | 本次补 |
+| 双区（CN/Global） | ✅ | ✅（QoderCN + QoderCOM 两渠道） | 等价 |
+| 定时签到 + 自动刷新 + 解冻 | ✅ | ✅ 签到（10:15） + token keepalive | 等价 |
 | Web 控制台 | ✅ | 本项目另有 Web UI | 各自实现 |
 
 ---
@@ -107,30 +119,25 @@
 
 | 类别 | 是否覆盖 | 说明 |
 |------|----------|------|
-| **模型列表** | ✅ 完全覆盖 | 同一 `/algo/api/v2/model/list`，qoder2api 解析更深（多场景回退） |
-| **模型能力** | ✅ 覆盖且更强 | qoder2api 额外解析 `context_config.token_count`、`max_output_tokens`、`is_default`；本项目独有 `is_vl` 视觉标记 |
+| **模型列表** | ✅ 完全覆盖 | 同一 `/algo/api/v2/model/list`，两边均已多场景回退 |
+| **模型能力** | ✅ 覆盖且更强 | qoder2api 额外解析 `context_config.token_count`、`max_output_tokens`、`is_default`（**本项目已补齐**）；本项目独有 `is_vl` 视觉标记 |
 | **用户余额** | ✅ 完全覆盖 | 同一 `/api/v2/quota/usage`，分桶口径一致 |
 | **用户登录授权** | ✅ 覆盖且更强 | 同一 Device Flow；qoder2api **额外支持 PAT + jobToken 交换** |
 | **推理** | ✅ 完全覆盖 | 同一 chat SSE 端点 + COSY 签名 + QoderEncoding |
-| **签到** | ✅ 覆盖（本项目缺失） | qoder2api 有完整双路径；本项目常量已留但未实现 |
-| **国际区** | ✅ qoder2api 独有 | 本项目仅 CN |
+| **签到** | ✅ 完全覆盖 | 双方均为双路径（本项目 campaigns 优先，与实测一致） |
+| **国际区** | ✅ 覆盖 | 本项目以 **QoderCOM 独立渠道**承接（非 region 分支） |
 
 ### 结论
 
 1. **qoder2api 可以作为本项目 qoder 渠道的完整端点参考**，无需担心遗漏必要端点。
-2. **qoder2api 在 3 处比本项目更全**，值得借鉴：
-   - **签到双路径**（`daily-check-in` + `campaigns`）—— 本次改造核心
+2. **qoder2api 在 1 处比本项目更全，值得借鉴**：
    - **PAT + jobToken 交换** —— 本项目仅有 OAuth，若想支持用户粘贴 PAT 可补
-   - **模型分类三级回退 + `context_config` 解析** —— 提升健壮性与上下文窗口准确度
 3. **本项目在 1 处比 qoder2api 更全**：`is_vl`（视觉能力）解析与 `SupportsImages` 暴露。
-4. **国际区**（`.sh`）本项目不需要，若将来要做，应作为**独立渠道**（类比 workbuddy/workbuddyai），而非在 qoder 渠道内做 region 分支。
+4. **国际区**（`.sh`）已以 **QoderCOM 独立渠道**接入（类比 workbuddy/workbuddyai），未在 qoder 渠道内做 region 分支。
 
-### 建议的补充改造项（除签到外）
+### 建议的补充改造项（签到等已在 2026-09-22 落地）
 
 | 优先级 | 改造 | 理由 |
 |--------|------|------|
-| 中 | `campaigns` 兜底 | 签到必备（见签到方案 §3.1） |
-| 中 | 模型分类 `assistant`/`developer`/`chat` 三级回退 | 防上游调整导致硬失败 |
-| 低 | `context_config.token_count` 优先解析 | 提升上下文窗口准确度 |
-| 低 | 启用 `EpPlan` / `EpUserInfo` | 面板可展示套餐名与账号名 |
+| 低 | 启用 `EpPlan` | 面板可展示套餐名（`EpUserInfo` 已用于取昵称） |
 | 低 | PAT 登录 + jobToken | 提供 Device Flow 之外的备选登录方式 |
