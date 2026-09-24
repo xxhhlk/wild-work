@@ -468,7 +468,8 @@ git tag vX.Y.Z && git push origin vX.Y.Z
 > `MonkeyCode渠道接入评估.md`。
 >
 > **脱敏守门（提交前必跑）**：历史上有过三次「改完又回归」的脱敏遗漏，故新增/修改文档后跑一次
+> （只查**入库**文档，本地未入库的文档命中属正常）：
 > ```bash
-> grep -rnE "uid=[0-9]|C:\\\\Users\\\\[^\\\\]+|machine_id=[0-9a-f]{8}-|dt-[A-Za-z0-9]{20,}|drt-[A-Za-z0-9]{20,}" docs/
+> git ls-files docs/ -z | xargs -0 grep -nE "uid=[0-9]|C:\\\\Users\\\\[^\\\\]+|machine_id=[0-9a-f]{8}-|dt-[A-Za-z0-9]{20,}|drt-[A-Za-z0-9]{20,}"
 > ```
 > 命中即视为泄露，先脱敏再入库（真实 uid / 本机用户名 / 机器指纹 / 凭据前缀均不得出现）。
