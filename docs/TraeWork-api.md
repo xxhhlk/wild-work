@@ -235,29 +235,95 @@ renderedSections:      [consumption_rate, discount/member_discount]   ← 无档
 
 ### 4.2 想让 trae 渠道档位生效，可行路径
 
-| 路径 | 可行性 | 说明 |
+> ⚠️ **本节在 2026-09-25 凌晨被大幅修正** —— 先前「代价极大」的结论建立在**两个错误前提**上：
+> ① 以为 `127.0.0.1:51000` 是**自定义帧协议**；② 以为客户端主链路只有 native 一条路。
+> 实测推翻：51000 是**标准 gRPC over h2c**；且客户端另有一整套**公网 HTTP API（179 条路由）**。
+
+**新发现 A：51000 是标准 gRPC，不是私有协议**
+
+| 探测 | 结果 |
+|---|---|
+| 裸连接收到 | `\x00\x00\x06\x04\x00\x00\x00\x00\x00\x00\x05\x00\x00@\x00` = **HTTP/2 SETTINGS 帧** |
+| `Content-Type: application/json` | `415` + `invalid gRPC request content-type` |
+| 用 gRPC 帧发 `/protocol.CodeKG/Ping` | **HTTP 200 + `grpc-status: 0`（成功！）** |
+| 未知服务 | `grpc-status: 12` + `unknown service xxx`（可用来枚举服务名） |
+
+→ 协议是**公开标准**（tonic gRPC），任何 gRPC 客户端（grpcurl / Python `h2`+帧）都能直接调。
+**无需逆向私有帧格式** —— 这是先前成本高估的主因。
+
+**新发现 B：客户端另有一整套公网 HTTP API（179 条路由，`transport:"api"`）**
+
+从 `@byted-icube/solo-lite` 的路由表提取（`{method, path, transport}` 三元组），关键几条：
+
+| 路由 | 方法 | 路径 |
 |---|---|---|
-| 继续在 `llm_utils_chat` 上试字段名 | ❌ **已穷尽** | 5 个容器位置 + 全字段齐射 + 类型哨兵，全部不解析 |
-| 复刻 native 的 `start_chat` RPC | ⚠️ 理论可行、成本极高 | 需逆向 `127.0.0.1:51000` 的自定义帧协议 + vsock 握手 + `StartChatRequestData` 71 字段必填集 |
-| 让 wild-work 客户端直连 Trae 官方客户端 | ✅ 但已非「渠道」 | 即用户直接用 TraeWork 客户端（档位原生生效） |
-| 换用真正支持档位的渠道 | ✅ **推荐** | `qodercn` / `workbuddyai` 已实测档位生效（见 `docs/qoderCN渠道接入备忘.md` §8） |
+| `chat.createSession` | POST | `/api/remote/v1/chat_sessions` |
+| **`chat.sendMessage`** | POST | **`/api/remote/v1/chat_sessions/:chat_session_id/messages`** |
+| `chat.createSubSession` | POST | `/api/remote/v1/sub_sessions` |
+| `chat.listSessions` | GET | `/api/remote/v1/chat_sessions` |
+| `model.listModels` | GET | `/api/remote/v1/models` |
+| `project.createProject` | POST | `/api/remote/v1/projects` |
 
-**一句话**：traework/traecode **在公网 HTTP 面上无法让档位生效**（已穷尽证明），客户端能生效是因为它走 native 本地 RPC。
-wild-work 若要在 trae 渠道支持档位，等价于**重写一个 native harness 客户端** —— 不建议；档位需求请走 qodercn / workbuddyai。
+**实测连通性**：`GET /api/remote/v1/models` → **200 + 完整模型配置（7158B）**；
+`GET .../chat_sessions` → **200 `{"items":[],"total":0}`**；
+`POST .../chat_sessions/:sid/messages`（假 sid）→ **400**（路由存在）；`GET .../:sid` → **404**。
+→ **路由真实存在且可调**，只是 create 系需要正确的 body（当前返回 400/500，schema 未完全对齐）。
 
-**仍未查（可选后续）**：
-1. `127.0.0.1:51000` 的帧协议（非 HTTP，需抓 native↔renderer 的 IPC）；
-2. `create_agent_task` / `llm_raw_chat` 的必填 schema（400 但字段集未知，可从 DLL 的 serde 结构逆推）；
-3. Trae VM 侧 vsock 通道（lite 会话在沙箱 VM 内执行）；
-4. 是否另有上游域（`agent.trae.cn` vs `trae-api-cn.mchost.guru`）接受档位。
+**新发现 C：档位注入点已定位到源码级**
 
-**复现**：`.gotmp/mc-e2e4/` 下的 `dump-models*.ps1`（拉上游原始模型配置，含 `reasoning_effort_config`）、
-`t-direct*.ps1`（直连档位探针）、`t-round9/10/11/13.ps1`（类型哨兵 / 响应体判定 / 确定性复测 / 全字段齐射）、
-**`t-round14.ps1`（`model_info` 容器 + 类型哨兵）、`t-round15.ps1`（native 端点 404 发现）、
-`t-round16.ps1`（`llm_raw_chat` 家族）、`t-round17.ps1`（`create_agent_task` 全字段）**；
-`.gotmp/mc-e2e5/` 下的 `t-e2e.ps1` / `t-e2e2.ps1`（经网关的两渠道端到端对比）。
-客户端日志：`%APPDATA%\TRAE SOLO CN\logs\<ts>\window1\renderer.log`（含 `TooltipDiagnostic` 渲染记录与真实请求体）。
-native 提取：`E:\Program Files\TRAE SOLO CN\resources\app\modules\ai-agent\{harness,ai_agent}.dll`（`strings` + 字节级定位）。
+```js
+// getModelRequestSelection（551.4283b556.mjs）
+let g = (u ? r?.resolveReasoningEffortRequestField?.({sessionId, agentType, model, mode, coreSelectedLevel}) : void 0)
+        ?? (void 0 === h ? {field:"none"} : {field:"reasoning_effort_level", value:h});
+// 随后写入 custom_model：
+return "reasoning_effort"===t.field ? r.reasoning_effort=t.value
+     : "reasoning_effort_level"===t.field ? r.reasoning_effort_level=t.value : r;
+```
+
+`custom_model` 的**精确字段集**（客户端真实构造，非猜测）：
+`provider, is_preset, config_name, config_source, model_name, display_model_name, ak, base_url,`
+`custom_model_id, use_remote_service, multimodal, prompt_max_tokens` **+ `reasoning_effort[_level]`**
+
+`buildSendMessageRequest` 的 body 形状：
+`chat_session_id, content[], query, model_name, agent_type, agent_id, model_selection_strategy,`
+`custom_model, common_params, force_new_turn, session_type, use_fast_request, origin, permission_profile_id`
+
+**修正后的成本表**
+
+| 路径 | 可行性 | 成本 | 说明 |
+|---|---|---|---|
+| 继续在 `llm_utils_chat` 上试字段名 | ❌ | 已花完 | 5 个容器 + 全字段齐射 + 类型哨兵，**全部证伪** |
+| **走 `/api/remote/v1/chat_sessions/:sid/messages`** | ⚠️ **待验证，但这是最有希望的路** | **低-中** | 公网 HTTP、字段集已从源码提取；只差对齐 createSession 的必填项拿到真 session_id |
+| 直连 native gRPC（51000） | ⚠️ 技术上可行 | **中**（非「极高」） | 标准 gRPC，但服务名未枚举完（已知 `protocol.CodeKG` / `command.CommandService` / `hook.HookService`，**chat 服务名未找到**）；且 51000 只在本机 |
+| 让 wild-work 直连官方客户端 | ✅ | 0 | 即用户直接用 TraeWork（档位原生生效），但已非「渠道」 |
+| 换真正支持档位的渠道 | ✅ **推荐** | 0 | `qodercn` / `workbuddyai` 已实测生效 |
+
+**仍未查清的（精确清单）**
+
+| # | 未知项 | 卡在哪 | 为什么之前判「代价大」 | 实际难度 |
+|---|---|---|---|---|
+| 1 | `createSession` 的**必填字段集** | 传了 3 种 body 都是 400/500，空 body 500 | — | **低**：字段名已从 `X({...})` 提取，缺的是 `mode`/`env`/`local_project_id` 的枚举取值与嵌套 `initial_message` 的必填项 |
+| 2 | 51000 上**承载 chat 的 gRPC 服务名** | 只确认了 `protocol.CodeKG`；`command.*`/`hook.*` 报 unknown | 曾以为是私有帧协议 | **低-中**：可写脚本暴力枚举服务名（unknown service 是明确信号） |
+| 3 | 51000 的**调用方身份校验** | 未测 | 同上 | **低**：gRPC 元数据里带什么 header 未试 |
+| 4 | `create_agent_task` / `llm_raw_chat` 必填 schema | 空 body + 全字段都 400 | — | **中**：可从 DLL serde 结构逆推，或从 `StartChatRequestData` 71 字段中筛必填 |
+| 5 | Trae VM 侧 vsock 通道 | 完全未碰 | — | **中**：lite 会话在沙箱 VM 内跑，需 VM 侧抓包 |
+| 6 | `common_params` 的内容 | 未提取 | — | **低**：`buildCommonParamsString` 已定位，读 `getCommonParams()` |
+| 7 | 上游域差异（`agent.trae.cn` vs `trae-api-cn.mchost.guru`） | 未对比 | — | **低**：两个域都试一遍即可 |
+
+**修正后的一句话**：先前「等价于重写 native 客户端」的判断**过重了**。
+真实情况是：**公网 HTTP 路由已找到（`/api/remote/v1/...`），档位注入点已定位到源码，只差把 `createSession` 的必填项对齐拿到真 session_id**。
+这一步是**可做的、成本不高**，只是本轮未完成 —— 属于「下次接着查」而非「不值得查」。
+
+**复现**：`.gotmp/mc-e2e4/` 下的 `dump-models*.ps1`、`t-direct*.ps1`、`t-round9/10/11/13.ps1`、
+`t-round14.ps1`（`model_info` 容器）、`t-round15.ps1`（native 端点 404）、`t-round16.ps1`（`llm_raw_chat`）、
+`t-round17.ps1`（`create_agent_task`）、**`t-round18.ps1`（`/api/remote/v1/models` 200 验证）、
+`t-round19/20.ps1`（createSession schema）、`t-round21.ps1`（sendMessage 路由存在性）、
+`t-round22.ps1`（真实路由类型哨兵）、`t-round23.ps1`（listSessions）、`t-round24.ps1`（createProject）**；
+`.gotmp/h2probe.py` / `h2grpc.py` / `h2grpc2.py`（**h2c/gRPC 探测，证实 51000 是标准 gRPC**）；
+`.gotmp/mc-e2e5/` 下的 `t-e2e*.ps1`。
+客户端日志：`%APPDATA%\TRAE SOLO CN\logs\<ts>\window1\renderer.log`。
+客户端 JS 路由表：`E:\Program Files\TRAE SOLO CN\resources\app\node_modules\@byted-icube\solo-lite\dist\551.4283b556.mjs`。
+native 提取：`...\modules\ai-agent\{harness,ai_agent,toolhost}.dll`（`strings` + 字节级定位）。
 
 ## 说明
 
