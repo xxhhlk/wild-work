@@ -27,12 +27,21 @@
 
 ## 4. 思考档位（reasoning effort）调研（2026-09-24）
 
-**上游声明**：`get_detail_param` 的每个 config 都带 `reasoning_effort_config`，但**两个 function 完全不同**：
+**上游声明**：`get_detail_param` 的每个 config 都带 `reasoning_effort_config`，而**哪些 function 声明档位，按名字分成整齐的两族**（2026-09-24 逐 function 全量 dump）：
 
-| function | 档位声明 |
-|---|---|
-| `solo_work_lite`（TraeWork） | 42/42 全部 `{"support_thinking": false}` |
-| `solo_agent`（TraeCode） | 19 个模型 `{"support_thinking": true, "default_level": ..., "options": [...]}` |
+| function | configs | `support_thinking: true` |
+|---|---|---|
+| `solo_agent`（TraeCode） | 64 | **19** |
+| `chat_v3` | 55 | **17** |
+| `solo_agent_lite` | 41 | **14** |
+| `solo_agent_remote` | 41 | **13** |
+| `solo_work_lite`（**wild-work 的 traework**） | 42 | **0** |
+| `solo_work_remote` | 41 | **0** |
+| `solo_design_lite` / `solo_design_remote` | 23 / 22 | **0** |
+| `solo_coder` / `solo_builder` | 41 / 3 | **0** |
+
+**规律：`agent` 族（含 `chat_v3`）全部有档位；`work` / `design` / `coder` / `builder` 族一个都没有。**
+同一模型在不同族里的档位声明可以不同（`deepseek-v4.1-flash` 在 `agent` 族 = `["light","high","extra_high"]`，在 `work` 族 = 无）。
 
 `solo_agent` 下的档位形态（共 5 种）：
 
@@ -46,10 +55,19 @@
 
 **客户端**（TRAE SOLO CN，`%LOCALAPPDATA%\Programs\TRAE SOLO CN`）：
 
+- `product.json` 的 `nameAlias` / `win32NameVersion` = **`TraeWork CN`**、`win32ShellNameShort` = `Trae Work`、`brandName` = `TRAE SOLO` —— 即**这就是 TraeWork 桌面客户端**；
 - i18n 内部值 → 显示值：`light→low`、`high→high`、`extra_high→xhigh`，标题「思考强度」；
-- `@byted-icube/solo-lite` 读 `reasoning_effort_config.support_thinking` 决定是否渲染档位选择器；
+- `@byted-icube/solo-lite` 读 `reasoning_effort_config.support_thinking` 决定是否渲染档位选择器 —— **UI 是数据驱动的**；
 - native 模块 `ai_agent.dll` / `harness.dll` 里 `struct CustomModel with 31 elements` **含 `reasoning_effort` 与 `reasoning_effort_level` 两个字段**；
 - 客户端支持多个 function：`solo_agent` / `solo_agent_lite` / `solo_work_lite` / `solo_agent_remote` / `solo_work_remote` / `solo_design_lite` …
+
+> **推论（回答「客户端为什么有档位」）**：档位选择器只在 `support_thinking:true` 时渲染，而 `solo_work_lite`（wild-work 的 traework）整族为 false ——
+> 所以**客户端里能看到档位，说明客户端那条入口走的不是 `solo_work_lite`，而是 `agent` 族某个 function**
+> （最可能是 `solo_agent_lite`：客户端数据目录名就是 `solo-lite`、前端包也是 `@byted-icube/solo-lite`）。
+> 两者不是同一条上游路径，故「客户端有档位」与「wild-work traework 无档位」并不矛盾。
+>
+> 可用**模型列表**反查客户端实际走哪条：`agent` 族独有 `Doubao-Seed-Code` / `Doubao_1_6` / `glm-5.1` / `qwen-3.5` / `search_agent_qwen_fast*`，
+> `work` 族独有 `Doubao-Seed-2.0-Code` / `glm-5-turbo` / `sagitta` / `aquila` / `seed-code-pro-0430` / `file_search_agent` / `explore_sub_agent_v2`。
 
 **实测（经本渠道所用端点 `/api/agent/v3/llm_utils_chat`，模型 `deepseek-v4.1-flash`）**：
 
