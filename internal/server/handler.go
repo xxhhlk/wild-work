@@ -635,6 +635,21 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			writeOpenAIError(w, http.StatusBadGateway, "upstream_parse", err.Error())
 			return
 		}
+		// 空回答兜底：思考型模型的 max_tokens 含思考预算，客户端给小预算时正文可能被
+		// 思考吃光（finish_reason=length + content 空）。放大预算重跑一次，成功则替换结果。
+		// 会多花一次额度，故只在四条判据同时命中时触发（见 emptyAnswerRetry）。
+		if asked := requestedMaxTokens(body); asked > 0 {
+			if bumped, need := emptyAnswerRetry(resp, asked); need {
+				if retried, ok := h.retryEmptyAnswer(rt, acct, body, bumped, clientModel); ok {
+					log.Printf("空回答放大重试成功 platform=%s uid=%s model=%s max_tokens=%d→%d",
+						rt.Kind, acct.UID, clientModel, asked, bumped)
+					resp = retried
+				} else {
+					log.Printf("空回答放大重试未改善 platform=%s uid=%s model=%s max_tokens=%d→%d（保留原结果）",
+						rt.Kind, acct.UID, clientModel, asked, bumped)
+				}
+			}
+		}
 		if h.ledger != nil {
 			u, _ := resp["usage"].(map[string]any)
 			pt, ct, src := usageTokens(u)
@@ -734,6 +749,129 @@ func (h *Handler) prefixHint() string {
 		kinds[i] = k + "/<model>"
 	}
 	return strings.Join(kinds, " / ")
+}
+
+// emptyAnswerRetry 判断「非流式聚合结果是否属于『预算被思考吃光』的空回答」。
+//
+// 思考型模型的 max_tokens 是**输出总预算**（含思考 token）。客户端给小预算时，
+// 预算可能全部耗在思考上：正文为空、finish_reason=length。此时把预算放大重跑一次
+// 通常就能拿到正文（参考 workbuddy-openai-proxy/src/openai.mjs:193 的同款兜底）。
+//
+// 判据（四条同时满足才算，避免误伤正常的空回答）：
+//   - 正文为空且无 tool_calls（有工具调用就不是「被思考吃光」）
+//   - finish_reason == "length" 或流里有帧（排除上游本身没吐任何东西的情况）
+//   - 客户端确实给了 max_tokens，且值偏小（< 下限）
+func emptyAnswerRetry(resp map[string]any, askedMax int64) (bumped int64, ok bool) {
+	if askedMax <= 0 || askedMax >= emptyAnswerMinBudget {
+		return 0, false
+	}
+	choices, _ := resp["choices"].([]any)
+	if len(choices) == 0 {
+		return 0, false
+	}
+	first, _ := choices[0].(map[string]any)
+	if first == nil {
+		return 0, false
+	}
+	errObj, _ := first["error"].(map[string]any)
+	if errObj != nil {
+		return 0, false // 上游在非流式响应里带了 error：那是错误而非空回答
+	}
+	msg, _ := first["message"].(map[string]any)
+	if msg == nil {
+		return 0, false
+	}
+	if s, _ := msg["content"].(string); s != "" {
+		return 0, false // 有正文
+	}
+	if tcs, _ := msg["tool_calls"].([]any); len(tcs) > 0 {
+		return 0, false // 有工具调用，不属于「预算被思考吃光」
+	}
+	// finish_reason 缺失也放行：部分渠道聚合时该字段可能为空，
+	// 而「预算被吃光」的典型形态恰好是 length 被上游省略。
+	if fr, _ := first["finish_reason"].(string); fr != "" && fr != "length" {
+		return 0, false
+	}
+	return emptyAnswerBumped(askedMax), true
+}
+
+// emptyAnswerMinBudget 触发放大的预算下限：max_tokens 达到该值即认为客户端已给足预算。
+// 1024 与参考实现一致（workbuddy-openai-proxy 的 Math.max(1024, asked*4)）。
+const emptyAnswerMinBudget = 1024
+
+// emptyAnswerBumped 计算放大后的预算：四倍与下限取大者，保证确实变大。
+func emptyAnswerBumped(askedMax int64) int64 {
+	if b := askedMax * 4; b > emptyAnswerMinBudget {
+		return b
+	}
+	return emptyAnswerMinBudget
+}
+
+// requestedMaxTokens 取请求体里的输出预算（OpenAI 的 max_tokens 或新名 max_completion_tokens）。
+// 无值/非法/非正数返回 0，表示「客户端未表达预算」——此时不做空回答重试
+// （没有可比对的放大基准，且放大可能违背客户端本意）。
+func requestedMaxTokens(body []byte) int64 {
+	var obj map[string]any
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return 0
+	}
+	for _, k := range []string{"max_tokens", "max_completion_tokens"} {
+		if v, ok := obj[k].(float64); ok && v > 0 {
+			return int64(v)
+		}
+	}
+	return 0
+}
+
+// retryEmptyAnswer 把 max_tokens 放大到 bumped 后重跑一次非流式请求。
+// 仅在结果确实改善（拿到正文或工具调用）时返回 ok=true，否则调用方保留原结果。
+// 复用同一账号：空回答与账号健康无关（换号也是同样结果）。
+func (h *Handler) retryEmptyAnswer(rt *Runtime, acct *auth.Auth, body []byte, bumped int64, clientModel string) (map[string]any, bool) {
+	bumpedBody, err := withMaxTokens(body, bumped)
+	if err != nil {
+		return nil, false
+	}
+	rc, status, _, terr := rt.Upstream.ChatStream(acct, bumpedBody)
+	if terr != nil || status >= 400 {
+		return nil, false
+	}
+	defer rc.Close()
+	retried, err := rt.Upstream.Aggregate(rc, clientModel)
+	if err != nil {
+		return nil, false
+	}
+	// 只有真的拿到内容才算改善：再跑一次仍为空则保留原结果（避免用更差的响应替换）
+	choices, _ := retried["choices"].([]any)
+	if len(choices) == 0 {
+		return nil, false
+	}
+	first, _ := choices[0].(map[string]any)
+	if first == nil {
+		return nil, false
+	}
+	msg, _ := first["message"].(map[string]any)
+	if msg == nil {
+		return nil, false
+	}
+	if s, _ := msg["content"].(string); s != "" {
+		return retried, true
+	}
+	if tcs, _ := msg["tool_calls"].([]any); len(tcs) > 0 {
+		return retried, true
+	}
+	return nil, false
+}
+
+// withMaxTokens 返回把输出预算改写为 bumped 的新 body。
+// max_completion_tokens 一并删除，避免与 max_tokens 并存时上游取到旧值。
+func withMaxTokens(body []byte, bumped int64) ([]byte, error) {
+	var obj map[string]any
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return nil, err
+	}
+	obj["max_tokens"] = float64(bumped)
+	delete(obj, "max_completion_tokens")
+	return json.Marshal(obj)
 }
 
 // usageTokens 从 OpenAI usage 对象提 prompt/completion tokens；
