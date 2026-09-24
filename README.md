@@ -49,6 +49,20 @@
 | [zhangdailin/Orchids-2api](https://github.com/zhangdailin/Orchids-2api) | Qoder 渠道端点与逻辑比对参考 |
 | [jasonxu114514/opencode2api](https://github.com/jasonxu114514/opencode2api) | OpenCodeZen（oczen）匿名渠道 endpoint 特殊要求分析 |
 | [FishBottle7/opencode2dsh](https://github.com/FishBottle7/opencode2dsh) | 同上，OpenCode 相关补充参考 |
+| [codkeep/MonkeyCodeReverseEngineer](https://github.com/codkeep/MonkeyCodeReverseEngineer) | MonkeyCode 渠道协议对照参考（Apache-2.0） |
+
+以下项目用于**思考强度（reasoning effort）**相关实现的前期调研与比对。本项目只借鉴其公开结论与算法语义，未复制代码：
+
+| 项目 | 贡献 |
+|------|------|
+| [Lutiancheng1/lingma-proxy](https://github.com/Lutiancheng1/lingma-proxy) | `thinking.budget_tokens` → 档位分桶的换算思路（已采纳） |
+| [Sliverkiss/cpa-plugin](https://github.com/Sliverkiss/cpa-plugin) | Qoder 官方请求体模板（`baseprompt.json`），用于确证 body 骨架 |
+| [metaphorics/oh-my-pi-plugin-qoder](https://github.com/metaphorics/oh-my-pi-plugin-qoder) | Qoder api3 档位双字段下发的完整实现（MIT） |
+| [ly-ccx/Peer-Agent](https://github.com/ly-ccx/Peer-Agent) | Qoder `is_reasoning` 与档位联动、默认档策略（MIT） |
+| [kaitranntt/CLIProxyAPIPlus](https://github.com/kaitranntt/CLIProxyAPIPlus) | Go 版 Qoder 模型目录解析与 `parameters` 对象范式（MIT） |
+| [bzym2/QoderGateway](https://github.com/bzym2/QoderGateway) | 新版 api2-v2 协议文档（MIT） |
+| [apmantza/pi-free](https://github.com/apmantza/pi-free) | 输出侧 thinking 标签的兜底解析思路（MIT） |
+| [simonsmh/pi-provider-qoder](https://github.com/simonsmh/pi-provider-qoder) | `thinking_config.enabled.efforts` 类型定义与 per-model 静态档位表 |
 
 > 若上述项目作者认为本项目的引用方式不当，请提 issue 联系，我们会立即调整或移除相关内容。
 
