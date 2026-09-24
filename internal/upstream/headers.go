@@ -1,5 +1,5 @@
 // Package headers 构造三类上游请求头（common / chat / billing / refresh）。
-// 规则来自 docs/api-reference.md §0/§4/§6。
+// 规则来自 docs/upstream-reverse-engineering.md §1/§4。
 package upstream
 
 import (

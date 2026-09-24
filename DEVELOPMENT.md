@@ -200,7 +200,7 @@ model 字段回填：`Aggregate` 直接改字段；`Stream` 用 `modelRewriter` 
 > 虚拟账号由 `oczen.AnonymousAuth()` 在 `main` 装配时注入 pool（`FilePath` 为空），
 > 且 **不得** 纳入 `app.reloadAccounts`——`pool.SyncToDir` 会把「目录里扫不到」的账号剔除。
 > 其 `Classify` 只能对 429 返回冷却类错误，其余 4xx 一律 `ErrPassthrough`（单账号不可轮换）。
-> 详见 `docs/opencodezen渠道接入备忘.md`。
+> 渠道特性见 `internal/oczen/constants.go` 包注释与 AGENTS.md §6 不变量 29/30。
 
 `provider.Upstream` 接口：
 ```go

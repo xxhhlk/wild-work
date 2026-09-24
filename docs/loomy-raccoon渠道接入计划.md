@@ -178,7 +178,7 @@ default-pets / hyperframes-assets / rg / 7za / elevate.exe
 - 「字段被采纳（行为有变化）」与「能力可见」是两件事，分别记录
 - 查不到就写 `unknown`，不猜值
 
-产出：`docs/loomy-协议取证备忘.md`、`docs/raccoon-协议取证备忘.md`
+产出：`docs/loomy渠道接入备忘.md`、`docs/raccoon渠道接入备忘.md`（阶段 A 静态取证备忘）
 
 ### 阶段 B：可行性门禁（Go / No-Go，硬）
 **前置三条（见 §2.2）**：凭据可自持刷新 / 无设备心跳强绑定 / 有效期支撑无人值守。

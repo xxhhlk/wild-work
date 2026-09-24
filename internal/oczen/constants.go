@@ -1,6 +1,6 @@
 // constants.go OpenCodeZen 匿名免费通道的常量与静态模型目录。
 //
-// 渠道特性（2026-09 实测，见 docs/opencodezen渠道接入备忘.md）：
+// 渠道特性（2026-09 实测）：
 //   - 匿名凭证是字面量 "public"（Authorization: Bearer public），无需登录、无 token 轮换；
 //   - 上游免费档有三道校验，缺一即 403 FreeTierError：
 //     ① 会话头须匹配官方客户端格式 ses_<12位小写hex><14位Base62>；

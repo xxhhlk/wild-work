@@ -17,7 +17,7 @@
 | 许可 | MIT | MIT |
 | 渠道 | qwenwork（默认）+ wukong（钉钉悟空 DEAP） | workbuddy / qclaw / qwenwork / traework |
 | 定位 | **纯协议桥接层**：不做密钥池/重试/路由（交给 xrl-router） | **完整网关**：账号库、API Key、额度、Codex `/v1/responses` |
-| 逆向文档 | `docs/reverse/QWENWORKCN_REVERSE.md`（极详尽，含失败路径与绕过链） | `docs/design/multi-channel-v2.md` Appendix B（实现要点 + 冻结门闩） |
+| 逆向文档 | `ref/xrl-router-plugin-qwenwork/docs/reverse/QWENWORKCN_REVERSE.md`（极详尽，含失败路径与绕过链） | `ref/Buddy2api/docs/design/multi-channel-v2.md` Appendix B（实现要点 + 冻结门闩） |
 
 两者**互相独立**（无代码引用关系），却得出高度一致的结论，互证价值很高。
 
