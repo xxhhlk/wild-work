@@ -186,12 +186,18 @@ base = `https://loomyad.xunfei.cn`，鉴权 = `Authorization: Bearer <session>`�
 
 ## 8. 未验证项（留待 A3 运行时取证）
 
-1. `chat/completions` 的**真实响应形态**（SSE 字段、是否下发 `reasoning_content`、usage 结构）
+> **状态更新（2026-09-24）**：本节是阶段 A 静态取证时列的「待办」，其中大部分已由 §10 的
+> A3 运行时实测**核销**（见各条后的标注）。**仍未解决**的只有第 3、6 条与第 2 条的滑动性部分。
+
+1. ~~`chat/completions` 的**真实响应形态**（SSE 字段、是否下发 `reasoning_content`、usage 结构）~~
+   → ✅ **已核销**（§10）：200，返回 `reasoning_content` + `usage.completion_tokens_details.reasoning_tokens`；流式形状见阶段 C 探针文档。
 2. session **实际有效期与失效行为**（14 天是绝对还是滑动？`020002` 何时触发）
-3. `pet-work` 是否真为可每日领取的签到（服务端返回字段）
-4. `imodel` 下**全部可用模型清单**与各自能力（图片/工具/上下文窗口）
-5. `/models` 是否需要额外头（`loomy-version` 是否参与）
-6. 上游条款对第三方客户端调用的态度（`model-bridge` 规则 1）
+   → ⚠️ **部分核销**（§10）：已确认全仓无 session refresh/renew、**14 天后需重新登录**；
+   但「绝对还是滑动」未定，需一次真实的「到期重登」观察才能确认。
+3. `pet-work` 是否真为可每日领取的签到（服务端返回字段）—— ❌ **仍未解决**（二期评估）。
+4. ~~`imodel` 下**全部可用模型清单**与各自能力（图片/工具/上下文窗口）~~ → ✅ **已核销**（§10）：8 个模型全表已落地。
+5. ~~`/models` 是否需要额外头（`loomy-version` 是否参与）~~ → ✅ **已核销**（§10）：`loomy-version` 参与且服务端接受。
+6. 上游条款对第三方客户端调用的态度（`model-bridge` 规则 1）—— ❌ **仍未核实**。
 
 ---
 

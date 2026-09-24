@@ -4,6 +4,10 @@
 > 工具：`_probe/c1-probe.mjs`（流式 / 错误形态 / 关思考矩阵）、`_probe/import-auth.mjs`（凭据导入器）
 > 全部在**客户端所在机器**（DESKTOP-K8UJEIA / testuser）执行；**token 全程未打印、未落日志**。
 > 消耗：两渠道合计约 20 次小请求（`points_consumed` 每次 1，或 <100 tokens）。
+>
+> ⚠️ **阅读前必看**：本文档的**档位（关思考/三件套）相关结论已作废**，
+> 2026-09-24 以 `usage.completion_tokens_details.reasoning_tokens` 为权威指标重测后推翻；
+> 端点 / 错误形态 / 流式形状部分仍然有效。更正对照表见文末「⚠️ 后续更正（2026-09-24，`baaff96`）」。
 
 ---
 

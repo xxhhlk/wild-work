@@ -172,15 +172,24 @@ profileId = "hosted:<sha256(apiBase)[:16]>"
 
 ## 8. 未验证项（留待 A3 运行时取证）
 
-1. `fetchWithAuth` 的**真实鉴权头**（`Authorization: Bearer` / Cookie `electron_*` / 双写）
-2. `chat/completions` 的**请求体与响应 SSE 形态**（字段名、usage、是否带 reasoning）
-3. **`refresh_token` 的刷新端点与有效期**（决定 B 门禁第 1、3 条）
+> **状态更新（2026-09-24）**：本节是阶段 A 静态取证时列的「待办」，其中大部分已由 §10 的
+> A3 运行时实测**核销**。**仍未解决**的只有第 4 条的滑动性部分与第 8 条。
+
+1. ~~`fetchWithAuth` 的**真实鉴权头**（`Authorization: Bearer` / Cookie `electron_*` / 双写）~~
+   → ✅ **已核销**（§10 鉴权头矩阵实测）：**只认** `Authorization: Bearer`；`token:` / `X-Access-Token:` / `Cookie: electron_token=` 均 401 `200001`。
+2. ~~`chat/completions` 的**请求体与响应 SSE 形态**（字段名、usage、是否带 reasoning）~~
+   → ✅ **已核销**（§10 + 阶段 C 探针）：标准 OpenAI 形状；流式为真增量（`firstContentEvent=1`，13 事件）。
+3. ~~**`refresh_token` 的刷新端点与有效期**（决定 B 门禁第 1、3 条）~~
+   → ✅ **已核销**（§10）：端点 `POST /api/electron/auth/v1/refresh`（兜底前缀 `/api/web/auth/v1`），有效性 ≈ **30 天**，**轮换后必须原子落盘**。
 4. access token 有效期与滑动策略
+   → ⚠️ **部分核销**（§10）：有效期实测 ≈ **2 小时**（JWT `exp`）；**滑动策略未验证** —— 刷新后旧 access 是否立即失效需一次对照实验。
 5. ~~积分/额度端点~~ **已解决**（2026-09-22 深夜，用户指出客户端本来就能看积分）：端点 `/api/web/points/v1/balance`，路径来自 renderer chunk `75741-*.js` 的
    `class extends ... static get baseUrl(){return `${origin}/api/web/points/v1`}`；**它不在 `/api/web/llm/v2` 前缀下**，我最初只在 llm/org/agentapi 前缀里找，故漏掉。
-6. `model_catalog` 返回的完整模型清单与能力（图片/工具/上下文）
+6. ~~`model_catalog` 返回的完整模型清单与能力（图片/工具/上下文）~~ → ✅ **已核销**（§10）：8 个模型全表（含 `ability` / `billing_multiplier` / ctx / max_out）已落地。
 7. 是否需要设备指纹（`desktop-device-identity.json` 与请求是否关联）
-8. 上游条款态度（`model-bridge` 规则 1）
+   → ⚠️ **部分核销**：§10 矩阵实测在只带 `Authorization` 的情况下即 200，且 §11.3 确认兑换端点不校验 device identity；
+   但未做「显式移除指纹头」的对照实验，故不宣称「完全不需要」。
+8. 上游条款态度（`model-bridge` 规则 1）—— ❌ **仍未核实**。
 
 ---
 

@@ -333,8 +333,10 @@ default-pets / hyperframes-assets / rg / 7za / elevate.exe
 **注释与实际行为不符：22:00 仍会跑 token 保活**。
 
 > 2026-09-23 已修复：`scheduler.New` 改为区分「nil = 未配置」与「`[]int{}` = 本渠道无此类任务」，受影响的渠道已改为显式空切片：workbuddyai / qwenwork / raccoon / loomy，以及**旧 Qoder**（其 `CheckinMinutes` 同为 `nil`，因 `KeepaliveHours` 非空而不落入「全空」分支，故被补成默认签到时段 —— 2026-09-23 第二轮补齐）。
-影响面：qwenwork（推测其他传 nil 的渠道同理）。是否属缺陷需单独核实（也可能是刻意保留的兜底）。
-> 对新渠道的直接影响：**若 Loomy / 小浣熊 确实需要"完全不保活"，不能只传 nil**，须先确认这处行为。
+> **结论（已定）**：确认为**缺陷**（注释声明的行为与实际不符），非「刻意保留的兜底」——
+> 受影响四渠道的定时任务已按注释本意全部关闭，并有守门测试
+> `internal/scheduler/scheduler_defaults_test.go`（零值默认 / 显式空关闭 / 混合 / 无任务时 Run 阻塞）。
+> 对新渠道的结论：**要"完全不保活"须传显式空切片 `[]int{}`，只传 nil 会被落回默认**。
 
 ### 7.2 「抠客户端鉴权模块」已有先例
 `.gotmp/agent-auth.js` 是千问办公客户端的 `agent-auth` 模块副本（含 `resolveUnpacked` + 原生 `.node` 加载）。
@@ -358,12 +360,12 @@ default-pets / hyperframes-assets / rg / 7za / elevate.exe
 | 思考档位 | **不接档位**：LLM 网关照收但默认档最深，下发反而削弱 → 主动剥离 `reasoning_effort` | 全档位（上游 `/models` 的 `reasoning_efforts` 权威，独占 `RealmLoomy`，投影时 Clamp） |
 | 工具调用 | 实测 8 模型中 6 个 | 实测 8 模型中 7 个 |
 | 积分 | `/api/web/points/v1/balance`（每日/奖励/充值/月度四池） | `/api/v1/points/records`、`/team-points/balance` |
-| 签到 | 无 | 无（`/pet-work` 未实现） |
+| 签到 | 无活动（`DailyCheckin` 返回「无签到活动」） | 无（`pet-work` 每日任务待二期评估，`DailyCheckin` 返回未实现） |
 | 使用约束 | **导入后退出小浣熊客户端**，否则两边抢刷新 → `refresh_conflict` | 到期后在客户端重登，再点一次「导入」 |
 
 ### 8.2 未验证项
 
-见 `docs/loomy-raccoon阶段E验收报告.md` §5。
+见 `docs/loomy-raccoon阶段E验收报告.md` §5（已核销项在该节标了删除线，仍待验证的是第 2–5 条）。
 
 ### 8.3 移除这两个渠道
 
