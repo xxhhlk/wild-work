@@ -2,11 +2,13 @@ package raccoon
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -21,24 +23,76 @@ import (
 // 本包只负责上游调用与桌面协议底层能力。
 type Client struct {
 	HTTP *http.Client
+	// StreamHTTP 专供对话流式请求：**无总超时**。
+	//
+	// 为什么必须分开：http.Client.Timeout 是整请求上限（计时器在 Do() 返回后继续跑，
+	// 直到 body 读完），而 SSE 整个生成期都在读 body —— 长思考请求会被从流中间掐断。
+	// 本渠道是「剥离档位、走上游默认最深思考」，生成期天然更长，风险同 loomy。
+	// 空闲兜底改由 IdleReader 承担。
+	StreamHTTP *http.Client
+	// IdleTimeout 流式空闲超时：连续该时长读不到任何字节即判上游卡死。
+	// 0 = 用 DefaultIdleTimeout。由 main 装配时注入 config.upstream.stream_idle_seconds。
+	IdleTimeout time.Duration
 }
 
-// New 默认 180s 超时的客户端。
+// DefaultIdleTimeout 流式空闲超时默认值（与 loomy 对齐，见其注释）。
+const DefaultIdleTimeout = 90 * time.Second
+
+// New 默认 180s 超时的客户端（仅作用于非流式调用；流式见 StreamHTTP）。
 func New() *Client { return NewWithTimeout(180 * time.Second) }
 
-// NewWithTimeout 指定超时。
+// NewWithTimeout 指定非流式超时。
 func NewWithTimeout(timeout time.Duration) *Client {
 	if timeout <= 0 {
 		timeout = 180 * time.Second
 	}
-	return &Client{HTTP: &http.Client{Timeout: timeout}}
+	return &Client{
+		HTTP:       &http.Client{Timeout: timeout, Transport: newTransport()},
+		StreamHTTP: &http.Client{Transport: newTransport()},
+	}
 }
 
+// newTransport 出厂 Transport：禁 h2 + Dial/keepalive + TLS 握手 + ResponseHeaderTimeout。
+//
+// ⚠️ 此前本包 `&http.Client{Timeout: ...}` 未设 Transport，实际在共用 http.DefaultTransport
+// （h2 开启、无 ResponseHeaderTimeout）。StreamHTTP 无总超时后**必须**有
+// ResponseHeaderTimeout 兜底，否则连响应头都等不到就会无限挂住。
+func newTransport() *http.Transport {
+	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 15 * time.Second}
+	return &http.Transport{
+		DialContext:           dialer.DialContext,
+		TLSNextProto:          make(map[string]func(string, *tls.Conn) http.RoundTripper), // 强制 HTTP/1.1
+		TLSHandshakeTimeout:   10 * time.Second,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   20,
+		IdleConnTimeout:       30 * time.Second,
+		ResponseHeaderTimeout: 60 * time.Second,
+	}
+}
+
+// httpClient 返回非流式调用用的客户端（目录/积分/refresh 的 do()）。
+// 仍有总超时：这些是短请求，总超时是恰当的兜底。
 func (c *Client) httpClient() *http.Client {
 	if c.HTTP == nil {
-		c.HTTP = &http.Client{Timeout: 180 * time.Second}
+		c.HTTP = &http.Client{Timeout: 180 * time.Second, Transport: newTransport()}
 	}
 	return c.HTTP
+}
+
+// streamClient 返回流式调用用的客户端（无总超时）。
+func (c *Client) streamClient() *http.Client {
+	if c.StreamHTTP == nil {
+		c.StreamHTTP = &http.Client{Transport: newTransport()}
+	}
+	return c.StreamHTTP
+}
+
+// idleTimeout 生效的空闲超时（未注入时用默认值）。
+func (c *Client) idleTimeout() time.Duration {
+	if c.IdleTimeout <= 0 {
+		return DefaultIdleTimeout
+	}
+	return c.IdleTimeout
 }
 
 func accessToken(a *auth.Auth) string { return strings.TrimSpace(a.AccessTokenValue()) }
@@ -170,7 +224,8 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", "Bearer "+accessToken(a))
-	resp, err := c.httpClient().Do(req)
+	// 用无总超时的 client：长思考请求不受整请求上限约束（见 Client.StreamHTTP）。
+	resp, err := c.streamClient().Do(req)
 	if err != nil {
 		return nil, 0, nil, err
 	}
@@ -179,7 +234,8 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 		_ = resp.Body.Close()
 		return nil, resp.StatusCode, raw, nil
 	}
-	return resp.Body, resp.StatusCode, nil, nil
+	// 空闲看门狗兜底：连续 idleTimeout 读不到字节即判上游卡死并关掉 body。
+	return provider.NewIdleReader(resp.Body, c.idleTimeout()), resp.StatusCode, nil, nil
 }
 
 // logReasoningStrip 记一行剥离日志（对齐 qoder 三渠道的排障约定）。

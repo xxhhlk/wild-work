@@ -313,3 +313,65 @@ function hP(e){const n=String(e||"").trim().toLowerCase();return Zd.some(r=>r.va
 会把客户端发的 `max`/`ultra` 原样下发（上游虽不报错但可能静默忽略）。
 2026-09-24 已补：先 `reasoning.Caps.Clamp(RealmLoomy, model, effort)` 再投影三件套；
 单测 `TestProjectEffortClamp` 覆盖 ladder 内/超限/窄 ladder/关闭语义/能力未知五种情形。
+
+---
+
+## 12. 流式「突然无响应」的根因与修复（2026-09-24）
+
+### 12.1 现象
+
+用户报告 loomy 渠道**突然无响应**。`data/app.log` 里两次中断，时长都**恰好 120.00s**：
+
+```
+21:57:16.204844 loomy reasoning: model="GLM-5.3-Flash" in="max" out="xhigh"
+21:59:16.211716 stream relay end platform=loomy uid=260915192021296374
+                err=context deadline exceeded (Client.Timeout or context cancellation while reading body)
+   → 间隔 120.0069s
+22:07:12.732207 loomy reasoning: ...
+22:09:12.735065 stream relay end platform=loomy ... err=context deadline exceeded
+   → 间隔 120.0029s
+```
+
+`err` 原文 `Client.Timeout or context cancellation while reading body` 是
+`http.Client.Timeout` 的**专属措辞**；120s 来自 `config.json` 的 `upstream.timeout_seconds`。
+
+旁证：`data/ledger/usage-202609.jsonl` 里两条 loomy 记录 `"src":"none"`（`pt=0, ct=0`），
+时间戳正是两次超时时刻 —— `usage` 末帧从未到达，token 流水整条丢失。
+
+### 12.2 根因
+
+**Go 的 `http.Client.Timeout` 是「整请求」超时** —— 计时器在 `Do()` 返回后**继续跑**，
+直到 body 读完。而 SSE 整个生成期都在读 body，所以「慢但一直在出字」的请求
+会被**从流中间掐断**。此时响应头早已按 200 发出，无法改状态码。
+
+用户可见症状是两个缺陷叠加：
+
+1. `internal/loomy/sse.go` 在 `sc.Err() != nil` 时**直接 return，不补 `[DONE]`**
+   → 客户端收到一条无收尾的截断流 =「突然无响应」。
+2. 120s 总超时把「慢但正常」的请求也判死 —— 同一模型前几次 8~13s 完成，这一条挂到 120s。
+
+对照：**traework 是唯一做对的渠道** —— 另有 `StreamHTTP *http.Client{Transport: tr}`
+（无总超时，靠 Transport 的 `ResponseHeaderTimeout` 兜底），`ChatStream` 优先用它。
+
+### 12.3 修复
+
+- **流式改用无总超时的 `StreamHTTP`**（照 traework 范式），非流式 `HTTP` 保留总超时。
+- 补 `newTransport()`（禁 h2 + Dial/keepalive + TLS 握手 + `ResponseHeaderTimeout: 60s`）。
+  此前本包未设 Transport，实际共用 `http.DefaultTransport`（h2 开启、无 `ResponseHeaderTimeout`）；
+  `StreamHTTP` 无总超时后**必须**有 `ResponseHeaderTimeout`，否则连响应头都等不到会无限挂住。
+- **空闲看门狗** `provider.IdleReader`（默认 90s，可配 `upstream.stream_idle_seconds`，下限 10s）：
+  连续该时长读不到任何字节即判上游卡死，关掉 body 并返回 `provider.ErrIdleTimeout`。
+  实测正常请求 8~13s 完成，90s 足够宽松 —— 只拦「真的一个字节都不出」。
+- **截断时补 error 帧 + `[DONE]`**（`provider.WriteTruncationFrames`），
+  错误码 `upstream_timeout`（空闲超时）/ `upstream_stream_error`（其它读错）。
+  只 `return err` = 客户端只能一直等；只补 `[DONE]` = 把故障伪装成正常结束。
+- 顺带补齐面板/热更新的代理渠道清单（此前漏 raccoon/loomy/monkeycode/traecode，
+  面板保存会静默清空这些渠道手配的代理）。
+
+### 12.4 守门测试
+
+- `TestStreamClientHasNoTotalTimeout`：`StreamHTTP.Timeout == 0` 且 `HTTP.Timeout > 0`，
+  且 `StreamHTTP` 有 `ResponseHeaderTimeout` 与禁 h2（防总超时/无兜底回归）。
+- `TestStreamTruncationEmitsFrames`：流中断必须写出 error 帧 + `[DONE]`，且已透传内容不丢。
+- `TestIdleTimeoutDefaults`：装配漏注入时回落 `DefaultIdleTimeout`。
+- `internal/provider/stream_test.go`：看门狗超时/透传/计时重置/幂等 Close/帧写出。

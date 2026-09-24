@@ -3,9 +3,11 @@ package loomy
 import (
 	"encoding/json"
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"wild-work/internal/auth"
 	"wild-work/internal/provider"
@@ -238,6 +240,92 @@ func TestChatStreamRejectsUnknownModel(t *testing.T) {
 	if status != 400 || !strings.Contains(string(body), "model_not_found") {
 		t.Fatalf("status=%d body=%s", status, body)
 	}
+}
+
+// TestStreamClientHasNoTotalTimeout 守门：流式必须走**无总超时**的 client。
+//
+// 背景（2026-09-24 实测）：http.Client.Timeout 是整请求上限，计时器在 Do() 返回后继续跑
+// 直到 body 读完；SSE 整个生成期都在读 body，故长思考请求会被从流中间掐断 ——
+// 日志两次中断都恰好 120.00s（= config.upstream.timeout_seconds），
+// 客户端表现为「突然无响应」。非流式 client 必须保留总超时（短请求的合理兜底）。
+func TestStreamClientHasNoTotalTimeout(t *testing.T) {
+	c := New()
+	if c.StreamHTTP == nil {
+		t.Fatal("StreamHTTP 必须存在")
+	}
+	if c.StreamHTTP.Timeout != 0 {
+		t.Fatalf("StreamHTTP.Timeout = %v，必须为 0（流式不能有整请求上限）", c.StreamHTTP.Timeout)
+	}
+	if c.HTTP == nil || c.HTTP.Timeout <= 0 {
+		t.Fatalf("非流式 HTTP.Timeout = %v，必须 > 0", c.HTTP.Timeout)
+	}
+	// 无总超时后必须靠 ResponseHeaderTimeout 兜底，否则连响应头都等不到会无限挂住。
+	tr, ok := c.StreamHTTP.Transport.(*http.Transport)
+	if !ok || tr == nil {
+		t.Fatalf("StreamHTTP.Transport = %T，应为 *http.Transport", c.StreamHTTP.Transport)
+	}
+	if tr.ResponseHeaderTimeout <= 0 {
+		t.Fatal("StreamHTTP 必须有 ResponseHeaderTimeout 兜底")
+	}
+	if tr.TLSNextProto == nil {
+		t.Fatal("应强制 HTTP/1.1（禁 h2）")
+	}
+}
+
+// TestIdleTimeoutDefaults 未注入配置时回落默认值（装配漏注入不应退化成「无兜底」）。
+func TestIdleTimeoutDefaults(t *testing.T) {
+	c := New()
+	if got := c.idleTimeout(); got != DefaultIdleTimeout {
+		t.Fatalf("idleTimeout() = %v, want %v", got, DefaultIdleTimeout)
+	}
+	c.IdleTimeout = 33 * time.Second
+	if got := c.idleTimeout(); got != 33*time.Second {
+		t.Fatalf("idleTimeout() = %v, want 33s", got)
+	}
+}
+
+// TestStreamTruncationEmitsFrames 守门：流中断必须补 error 帧 + [DONE]。
+//
+// 这是「突然无响应」的直接成因 —— 此前 sc.Err() != nil 时直接 return，
+// 客户端收到一条没有 [DONE] 的截断流，只能一直等（或判定会话损坏）。
+func TestStreamTruncationEmitsFrames(t *testing.T) {
+	// 前半段正常，随后读错误（模拟空闲超时/连接被切断）。
+	in := "data: " + `{"id":"1","choices":[{"index":0,"delta":{"content":"hi"}}]}` + "\n\n" +
+		"data: " + `{"choices":[{"index":0,"delta":{"content":"there"}}]}` + "\n\n"
+	rc := &errAfterReader{data: in, err: provider.ErrIdleTimeout}
+
+	rec := httptest.NewRecorder()
+	_, err := Stream(rec, rc, "loomy/spark-x")
+	if err == nil {
+		t.Fatal("读错误必须上抛给 handler（用于日志）")
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"code":"upstream_timeout"`) {
+		t.Fatalf("缺少 upstream_timeout 错误帧: %s", body)
+	}
+	if !strings.Contains(body, "data: [DONE]") {
+		t.Fatalf("缺少 [DONE] 收尾，客户端会一直等: %s", body)
+	}
+	// 已成功透传的部分不能丢。
+	if !strings.Contains(body, "hi") || !strings.Contains(body, "there") {
+		t.Fatalf("已透传内容丢失: %s", body)
+	}
+}
+
+// errAfterReader 先吐完 data，再返回指定错误（模拟「读到一半流断了」）。
+type errAfterReader struct {
+	data string
+	err  error
+	off  int
+}
+
+func (r *errAfterReader) Read(p []byte) (int, error) {
+	if r.off >= len(r.data) {
+		return 0, r.err
+	}
+	n := copy(p, r.data[r.off:])
+	r.off += n
+	return n, nil
 }
 
 func TestTraceparentShape(t *testing.T) {

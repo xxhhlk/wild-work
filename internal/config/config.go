@@ -138,6 +138,13 @@ type Config struct {
 
 	Upstream struct {
 		TimeoutSeconds int `json:"timeout_seconds"` // 默认 120
+		// StreamIdleSeconds 流式空闲超时（秒）：连续该时长读不到任何字节即判上游卡死。
+		//
+		// 与 TimeoutSeconds 的分工：后者是 **http.Client.Timeout 整请求上限**，只作用于
+		// 非流式调用（目录/积分/刷新）——流式响应整个生成期都在读 body，整请求上限会把
+		// 「慢但一直在出字」的请求从流中间掐断（实测 loomy 两次中断都恰好 120.00s）。
+		// 流式因此用无总超时的 client，改由本项做空闲兜底。默认 90，下限 10。
+		StreamIdleSeconds int `json:"stream_idle_seconds,omitempty"`
 	} `json:"upstream"`
 
 	// Compat 三接口兼容层（OpenAI Responses / Anthropic Messages）配置。
@@ -182,9 +189,11 @@ type Config struct {
 		ContextWindows map[string]int64 `json:"context_windows"`
 	} `json:"compat"`
 
-	// Proxies 单渠道上游代理：key 为渠道 kind（workbuddy/traework/qoder/qodercn/
-	// qodercom/workbuddyai/qwenwork/oczen），value 为代理 URL（http/https/socks5）。
-	// 空串或未列出的渠道直连。主要用途：给 oczen 等有区域限制的渠道走代理。
+	// Proxies 单渠道上游代理：key 为渠道 kind（workbuddy/workbuddyai/traework/traecode/
+	// qodercn/qodercom/qwenwork/raccoon/loomy/monkeycode/oczen），
+	// value 为代理 URL（http/https/socks5）。空串或未列出的渠道直连。
+	// 主要用途：给 oczen 等有区域限制的渠道走代理。
+	// 完整清单另见 main.go 的 proxyTargets() 与 web/app.js 的 PROXY_CHANNELS（三处需同步）。
 	Proxies map[string]string `json:"proxies,omitempty"`
 
 	// OczenAPIKey OpenCodeZen 渠道自定义 API key（sk-...）；空 = 匿名凭证（public）。
@@ -197,6 +206,9 @@ type Config struct {
 	ErrCooldownDur time.Duration `json:"-"`
 	// ExpiringThresholdDur 临期阈值解析结果（normalize 里钳到 >= 24h）。
 	ExpiringThresholdDur time.Duration `json:"-"`
+	// StreamIdleDur 流式空闲超时解析结果（normalize 里钳到 >= 10s，默认 90s）。
+	// 装配时注入到 loomy/raccoon 的 Client.IdleTimeout。
+	StreamIdleDur time.Duration `json:"-"`
 }
 
 // DeepseekThinkingEnabled DeepSeek 思考改写是否启用（字段未设置视为启用）。
@@ -227,6 +239,7 @@ func Default() *Config {
 	c.Schedule.KeepaliveHours = []int{22}
 	c.Schedule.ExpiringThresholdHours = 24
 	c.Upstream.TimeoutSeconds = 120
+	c.Upstream.StreamIdleSeconds = 90
 	c.Compat.DefaultChannel = "workbuddy"
 	c.Compat.MaxTokensCap = 32000
 	c.Proxies = map[string]string{}
@@ -357,6 +370,11 @@ func applyEnv(c *Config) {
 			c.Upstream.TimeoutSeconds = n
 		}
 	}
+	if v := os.Getenv("WILDWORK_STREAM_IDLE_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			c.Upstream.StreamIdleSeconds = n
+		}
+	}
 	if v := os.Getenv("WILDWORK_DEFAULT_CHANNEL"); v != "" {
 		c.Compat.DefaultChannel = v
 	}
@@ -437,6 +455,16 @@ func (c *Config) normalize() error {
 	if c.Upstream.TimeoutSeconds <= 0 {
 		c.Upstream.TimeoutSeconds = 120
 	}
+	// 流式空闲超时：默认 90s，下限 10s。
+	// 下限的理由：低于 10s 会把「思考期正常静默」（模型先想后吐字）误判成卡死 ——
+	// 实测该系列模型思考阶段可静默数十秒，阈值过小等于把健康请求掐断。
+	if c.Upstream.StreamIdleSeconds <= 0 {
+		c.Upstream.StreamIdleSeconds = 90
+	}
+	if c.Upstream.StreamIdleSeconds < 10 {
+		c.Upstream.StreamIdleSeconds = 10
+	}
+	c.StreamIdleDur = time.Duration(c.Upstream.StreamIdleSeconds) * time.Second
 	// 临期阈值：默认 24h，下限 24h（日期粒度的到期判定低于一天没有意义）。
 	if c.Schedule.ExpiringThresholdHours <= 0 {
 		c.Schedule.ExpiringThresholdHours = 24

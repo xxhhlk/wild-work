@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestDefault(t *testing.T) {
@@ -248,4 +249,67 @@ func TestContextWindows(t *testing.T) {
 	if len(c.Compat.ContextWindows) != 2 {
 		t.Fatalf("非法片段应跳过，得到 %v", c.Compat.ContextWindows)
 	}
+}
+
+// TestStreamIdleSeconds 守门：流式空闲超时（loomy/raccoon 去掉整请求总超时后的唯一兜底）。
+//
+// 背景：http.Client.Timeout 是整请求上限，会把长思考的 SSE 流从中间掐断
+// （实测 loomy 两次中断都恰好 120.00s）。流式改用无总超时 client 后，
+// 必须由本项承担「上游卡死」的检测。
+func TestStreamIdleSeconds(t *testing.T) {
+	t.Run("默认 90s", func(t *testing.T) {
+		c := Default()
+		if err := c.normalize(); err != nil {
+			t.Fatal(err)
+		}
+		if c.Upstream.StreamIdleSeconds != 90 {
+			t.Fatalf("默认 = %d, want 90", c.Upstream.StreamIdleSeconds)
+		}
+		if c.StreamIdleDur != 90*time.Second {
+			t.Fatalf("解析值 = %v, want 90s", c.StreamIdleDur)
+		}
+	})
+	t.Run("未配置时补默认", func(t *testing.T) {
+		c := Default()
+		c.Upstream.StreamIdleSeconds = 0
+		if err := c.normalize(); err != nil {
+			t.Fatal(err)
+		}
+		if c.Upstream.StreamIdleSeconds != 90 {
+			t.Fatalf("零值应补 90，得到 %d", c.Upstream.StreamIdleSeconds)
+		}
+	})
+	t.Run("钳下限 10s（过小会误杀思考期静默）", func(t *testing.T) {
+		c := Default()
+		c.Upstream.StreamIdleSeconds = 3
+		if err := c.normalize(); err != nil {
+			t.Fatal(err)
+		}
+		if c.Upstream.StreamIdleSeconds != 10 {
+			t.Fatalf("应钳到 10，得到 %d", c.Upstream.StreamIdleSeconds)
+		}
+		if c.StreamIdleDur != 10*time.Second {
+			t.Fatalf("解析值 = %v, want 10s", c.StreamIdleDur)
+		}
+	})
+	t.Run("合法值原样保留", func(t *testing.T) {
+		c := Default()
+		c.Upstream.StreamIdleSeconds = 300
+		if err := c.normalize(); err != nil {
+			t.Fatal(err)
+		}
+		if c.StreamIdleDur != 300*time.Second {
+			t.Fatalf("解析值 = %v, want 300s", c.StreamIdleDur)
+		}
+	})
+	t.Run("环境变量覆盖", func(t *testing.T) {
+		t.Setenv("WILDWORK_STREAM_IDLE_SECONDS", "45")
+		c, err := Load("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.Upstream.StreamIdleSeconds != 45 || c.StreamIdleDur != 45*time.Second {
+			t.Fatalf("env 未生效: %d / %v", c.Upstream.StreamIdleSeconds, c.StreamIdleDur)
+		}
+	})
 }

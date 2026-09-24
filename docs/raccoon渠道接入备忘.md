@@ -397,3 +397,31 @@ fast 标签模型（`sn-glm-5-3-flash`，短 prompt）同样成立：默认 `rto
 - 但 WorkBuddy 侧的**面板默认档**（`currentReasoningEffort()`）与客户端的档位字段仍可能落到请求里
   （`prepareChatBody` 会写 `reasoning_effort`）→ 渠道层必须自行剥离，不能指望上游忽略。
 - 单测 `TestForceUpstreamDeepThinking` 守住该语义（含"未表达时逐字节不改写"）。
+
+---
+
+## 14. 流式总超时与截断收尾（2026-09-24）
+
+与 loomy 同批修复（完整根因分析见 `docs/loomy渠道接入备忘.md` §12），本渠道同款缺陷：
+
+- **`http.Client.Timeout` 是整请求上限**：计时器在 `Do()` 返回后继续跑直到 body 读完，
+  而 SSE 整个生成期都在读 body ⇒ 长思考请求被从流中间掐断。
+  本渠道「剥离档位、走上游默认最深思考」（§13），生成期天然比其它渠道更长，**风险更高**。
+- `internal/raccoon/sse.go` 在 `sc.Err() != nil` 时直接 return、不补 `[DONE]`
+  ⇒ 客户端收到无收尾的截断流 =「突然无响应」。
+
+### 14.1 修复
+
+- 新增 `StreamHTTP *http.Client`（**无总超时**），`ChatStream` 改用它；
+  非流式 `HTTP` 保留总超时（目录/积分/refresh 都是短请求）。
+- 补 `newTransport()`（禁 h2 + Dial/keepalive + TLS 握手 + `ResponseHeaderTimeout: 60s`）。
+  此前未设 Transport，实际共用 `http.DefaultTransport`；`StreamHTTP` 无总超时后
+  **必须**有 `ResponseHeaderTimeout` 兜底。
+- `IdleTimeout`（默认 90s，可配 `upstream.stream_idle_seconds`，下限 10s）+
+  `provider.IdleReader` 空闲看门狗。
+- 截断补 `provider.WriteTruncationFrames`（error 帧 + `[DONE]`）。
+
+### 14.2 守门测试
+
+`TestStreamClientHasNoTotalTimeout` / `TestStreamTruncationEmitsFrames` / `TestIdleTimeoutDefaults`
+（均在 `internal/raccoon/raccoon_test.go`）。

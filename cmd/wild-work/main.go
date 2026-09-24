@@ -243,31 +243,42 @@ func main() {
 	qcnUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
 	qcmUp := qodercom.New()
 	qcmUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
+	// raccoon / loomy：流式走独立 client（StreamHTTP 无总超时），TimeoutSeconds 只作用于
+	// 非流式调用；流式兜底改由 IdleTimeout（空闲看门狗）承担。理由见 config.StreamIdleSeconds。
 	rcUp := raccoon.New()
 	rcUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
+	rcUp.IdleTimeout = cfg.StreamIdleDur
 	lmUp := loomy.New()
 	lmUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
+	lmUp.IdleTimeout = cfg.StreamIdleDur
 	mcUp := monkeycode.New()
 	mcUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
 	ocUp := oczen.New()
 
 	// 单渠道上游代理：config.proxies 按 kind 套到各渠道 HTTP client 上（未配置 = 直连）。
-	// traework 的 StreamHTTP 与主 client 共用出厂 Transport，先切独立再套代理，
+	// StreamHTTP 与主 client 出厂共用 Transport，先切独立再套代理，
 	// 否则热更新代理时会把非流式 client 的 Transport 一起替换。
 	trUp.StreamHTTP.Transport = trUp.HTTP.Transport
-	applyProxies(cfg, map[string][]*http.Client{
-		provider.WorkBuddy.String():   {wbUp.HTTP, wbUp.BillingHTTP},
-		provider.WorkBuddyAI.String(): {wbaUp.HTTP},
-		provider.TraeWork.String():    {trUp.HTTP, trUp.StreamHTTP},
-		provider.Qoder.String():       {qdUp.HTTP},
-		provider.QoderCN.String():     {qcnUp.HTTP},
-		provider.QoderCOM.String():    {qcmUp.HTTP},
-		provider.QwenWork.String():    {qwUp.HTTP},
-		provider.Raccoon.String():     {rcUp.HTTP},
-		provider.Loomy.String():       {lmUp.HTTP},
-		provider.MonkeyCode.String():  {mcUp.HTTP},
-		provider.Oczen.String():       {ocUp.HTTP},
-	})
+	trCodeUp.StreamHTTP.Transport = trCodeUp.HTTP.Transport
+	// 代理目标清单（启动与面板热更新共用同一份，避免两处漂移 —— 热更新名单曾漏掉
+	// raccoon/loomy/monkeycode/traecode，表现为「改代理不生效，重启才行」）。
+	proxyTargets := func() map[string][]*http.Client {
+		return map[string][]*http.Client{
+			provider.WorkBuddy.String():   {wbUp.HTTP, wbUp.BillingHTTP},
+			provider.WorkBuddyAI.String(): {wbaUp.HTTP},
+			provider.TraeWork.String():    {trUp.HTTP, trUp.StreamHTTP},
+			provider.TraeCode.String():    {trCodeUp.HTTP, trCodeUp.StreamHTTP},
+			provider.Qoder.String():       {qdUp.HTTP},
+			provider.QoderCN.String():     {qcnUp.HTTP},
+			provider.QoderCOM.String():    {qcmUp.HTTP},
+			provider.QwenWork.String():    {qwUp.HTTP},
+			provider.Raccoon.String():     {rcUp.HTTP, rcUp.StreamHTTP},
+			provider.Loomy.String():       {lmUp.HTTP, lmUp.StreamHTTP},
+			provider.MonkeyCode.String():  {mcUp.HTTP},
+			provider.Oczen.String():       {ocUp.HTTP},
+		}
+	}
+	applyProxies(cfg, proxyTargets())
 	checkinMinutes, err := config.ParseClockTimes(cfg.Schedule.CheckinTimes)
 	if err != nil {
 		fatal("解析签到时间失败：%v", err)
@@ -425,20 +436,12 @@ func main() {
 	appInst.SetCompatSyncer(func(defaultChannel string, maxTokensCap int, modelMap map[string]string, reasoningSummary string) {
 		compat.SetCompat(defaultChannel, maxTokensCap, modelMap, channels, reasoningSummary)
 	})
-	// 面板保存代理配置时热更新各渠道 HTTP client（重建 Transport，无需重启）
+	// 面板保存代理配置时热更新各渠道 HTTP client（重建 Transport，无需重启）。
+	// 复用启动时的 proxyTargets()：名单只有一处，不会出现「启动套了、热更新漏了」。
 	appInst.SetProxySyncer(func(proxies map[string]string) {
 		next := *cfg
 		next.Proxies = proxies
-		applyProxies(&next, map[string][]*http.Client{
-			provider.WorkBuddy.String():   {wbUp.HTTP, wbUp.BillingHTTP},
-			provider.WorkBuddyAI.String(): {wbaUp.HTTP},
-			provider.TraeWork.String():    {trUp.HTTP, trUp.StreamHTTP},
-			provider.Qoder.String():       {qdUp.HTTP},
-			provider.QoderCN.String():     {qcnUp.HTTP},
-			provider.QoderCOM.String():    {qcmUp.HTTP},
-			provider.QwenWork.String():    {qwUp.HTTP},
-			provider.Oczen.String():       {ocUp.HTTP},
-		})
+		applyProxies(&next, proxyTargets())
 	})
 	// 面板保存 oczen key 后热更新渠道凭证；启动时也应用一次配置中的初始 key
 	appInst.SetOczenSyncer(ocUp.SetAPIKey)

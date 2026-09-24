@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"wild-work/internal/provider"
 )
 
 // errEmptyStream 上游返回 200 但没有有效 SSE 数据帧（空流/只有注释/[DONE]）。
@@ -615,6 +617,10 @@ readLoop:
 			if err == io.EOF {
 				break
 			}
+			// 读上游出错（空闲超时 / 连接被切断）：响应头早已按 200 发出，只能用流内帧
+			// 表达故障。不补帧 = 客户端收到无收尾的截断流 =「突然无响应」。
+			// 与空流兜底同理，本地生成的帧不走 hintFn（不编造 gateway_hint）。
+			provider.WriteTruncationFrames(w, err)
 			return err
 		}
 	}

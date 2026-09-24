@@ -5,6 +5,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"wild-work/internal/provider"
 )
 
 func TestPrepareBodyForcesStream(t *testing.T) {
@@ -416,4 +418,47 @@ func TestStreamEmptyUpstreamErrors(t *testing.T) {
 			t.Errorf("raw=%q: empty stream must still close with [DONE]", raw)
 		}
 	}
+}
+
+// TestStreamReadErrorEmitsTruncationFrames 守门：读上游出错时必须补 error 帧 + [DONE]。
+//
+// 这是 WorkBuddy 系（workbuddy/workbuddyai/traework/traecode 共用本函数）的
+// 「突然无响应」成因：响应头已按 200 发出，直接 return 会让客户端收到一条
+// 没有 [DONE] 的截断流，只能一直等。与 loomy/raccoon 同源修复。
+func TestStreamReadErrorEmitsTruncationFrames(t *testing.T) {
+	head := "data: " + `{"id":"x","choices":[{"index":0,"delta":{"content":"partial"}}]}` + "\n\n"
+	rc := &readErrAfter{data: head, err: provider.ErrIdleTimeout}
+
+	rec := httptest.NewRecorder()
+	err := Stream(rec, rc)
+	if err == nil {
+		t.Fatal("读错误必须上抛（供 handler 记日志）")
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"code":"upstream_timeout"`) {
+		t.Fatalf("缺少 upstream_timeout 错误帧: %s", body)
+	}
+	if !strings.Contains(body, "data: [DONE]") {
+		t.Fatalf("缺少 [DONE] 收尾: %s", body)
+	}
+	// 已透传的部分内容不能丢。
+	if !strings.Contains(body, "partial") {
+		t.Fatalf("已透传内容丢失: %s", body)
+	}
+}
+
+// readErrAfter 先吐完 data，再返回指定错误（模拟「读到一半流断了」）。
+type readErrAfter struct {
+	data string
+	err  error
+	off  int
+}
+
+func (r *readErrAfter) Read(p []byte) (int, error) {
+	if r.off >= len(r.data) {
+		return 0, r.err
+	}
+	n := copy(p, r.data[r.off:])
+	r.off += n
+	return n, nil
 }

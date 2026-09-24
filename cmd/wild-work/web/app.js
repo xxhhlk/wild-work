@@ -728,7 +728,10 @@ async function toggleAutostart() {
 
 // ---------- 设置弹层（统一配置：监听/API-Key/签到/自启/模型路由/渠道代理） ----------
 // PROXY_CHANNELS 渠道上游代理列表（顺序与面板渠道序一致；旧 qoder 已下线不提供代理配置）。
-const PROXY_CHANNELS = ["oczen", "workbuddy", "workbuddyai", "qodercn", "qodercom", "traework", "qwenwork"];
+// ⚠️ 必须覆盖全部已接渠道：SetProxies 是**整份替换** cfg.Proxies，此处漏掉的渠道
+// 在面板保存时会被静默清空（手改 config.json 配的代理会丢）。raccoon/loomy/monkeycode/
+// traecode 曾因漏登记而丢失代理配置（2026-09-24 补）。
+const PROXY_CHANNELS = ["oczen", "workbuddy", "workbuddyai", "qodercn", "qodercom", "traework", "traecode", "qwenwork", "raccoon", "loomy", "monkeycode"];
 // 代理行的渠道名同样复用 chLabel（原 PROXY_HINT 是第三份副本，已删除）。
 
 // renderProxyList 按当前 state.proxies 渲染每渠道一个输入行。

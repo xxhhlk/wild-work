@@ -2,9 +2,11 @@ package raccoon
 
 import (
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"wild-work/internal/auth"
 	"wild-work/internal/provider"
@@ -298,4 +300,84 @@ func TestForceUpstreamDeepThinking(t *testing.T) {
 			t.Fatalf("非法 JSON 应原样返回，得到 %s", got)
 		}
 	})
+}
+
+// TestStreamClientHasNoTotalTimeout 守门：流式必须走**无总超时**的 client。
+//
+// 与 loomy 同源（见其同名测试的完整背景）：http.Client.Timeout 是整请求上限，
+// 会把长思考的 SSE 流从中间掐断。本渠道「剥离档位、走上游默认最深思考」，
+// 生成期天然更长，风险更高。非流式 client 必须保留总超时。
+func TestStreamClientHasNoTotalTimeout(t *testing.T) {
+	c := New()
+	if c.StreamHTTP == nil {
+		t.Fatal("StreamHTTP 必须存在")
+	}
+	if c.StreamHTTP.Timeout != 0 {
+		t.Fatalf("StreamHTTP.Timeout = %v，必须为 0（流式不能有整请求上限）", c.StreamHTTP.Timeout)
+	}
+	if c.HTTP == nil || c.HTTP.Timeout <= 0 {
+		t.Fatalf("非流式 HTTP.Timeout = %v，必须 > 0", c.HTTP.Timeout)
+	}
+	tr, ok := c.StreamHTTP.Transport.(*http.Transport)
+	if !ok || tr == nil {
+		t.Fatalf("StreamHTTP.Transport = %T，应为 *http.Transport", c.StreamHTTP.Transport)
+	}
+	if tr.ResponseHeaderTimeout <= 0 {
+		t.Fatal("StreamHTTP 必须有 ResponseHeaderTimeout 兜底")
+	}
+	if tr.TLSNextProto == nil {
+		t.Fatal("应强制 HTTP/1.1（禁 h2）")
+	}
+}
+
+// TestIdleTimeoutDefaults 未注入配置时回落默认值。
+func TestIdleTimeoutDefaults(t *testing.T) {
+	c := New()
+	if got := c.idleTimeout(); got != DefaultIdleTimeout {
+		t.Fatalf("idleTimeout() = %v, want %v", got, DefaultIdleTimeout)
+	}
+	c.IdleTimeout = 33 * time.Second
+	if got := c.idleTimeout(); got != 33*time.Second {
+		t.Fatalf("idleTimeout() = %v, want 33s", got)
+	}
+}
+
+// TestStreamTruncationEmitsFrames 守门：流中断必须补 error 帧 + [DONE]。
+//
+// 此前 sc.Err() != nil 时直接 return，客户端收到无收尾的截断流 =「突然无响应」。
+func TestStreamTruncationEmitsFrames(t *testing.T) {
+	in := sseLine(map[string]any{"id": "a", "choices": []any{map[string]any{"index": 0, "delta": map[string]any{"content": "hi"}}}})
+	rc := &errAfterReader{data: in, err: provider.ErrIdleTimeout}
+
+	rec := httptest.NewRecorder()
+	_, err := Stream(rec, rc, "raccoon/raccoon-8c4485")
+	if err == nil {
+		t.Fatal("读错误必须上抛给 handler（用于日志）")
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"code":"upstream_timeout"`) {
+		t.Fatalf("缺少 upstream_timeout 错误帧: %s", body)
+	}
+	if !strings.Contains(body, "data: [DONE]") {
+		t.Fatalf("缺少 [DONE] 收尾，客户端会一直等: %s", body)
+	}
+	if !strings.Contains(body, "hi") {
+		t.Fatalf("已透传内容丢失: %s", body)
+	}
+}
+
+// errAfterReader 先吐完 data，再返回指定错误（模拟「读到一半流断了」）。
+type errAfterReader struct {
+	data string
+	err  error
+	off  int
+}
+
+func (r *errAfterReader) Read(p []byte) (int, error) {
+	if r.off >= len(r.data) {
+		return 0, r.err
+	}
+	n := copy(p, r.data[r.off:])
+	r.off += n
+	return n, nil
 }

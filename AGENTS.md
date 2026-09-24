@@ -145,6 +145,8 @@ POST /api/quit                     # 退出程序
 > **思考**：不接档位且**主动剥离** `reasoning_effort` —— 实测上游默认档才是最深思考，
 > 下发任何档位（含 high）反而让思考量锐减约 90%（`internal/raccoon/client.go` 的
 > `forceUpstreamDeepThinking`）。详见 `docs/raccoon渠道接入备忘.md` §13。
+> **流式**：走独立的 `StreamHTTP`（**无总超时**）+ `IdleReader` 空闲兜底 —— 本渠道思考最深、
+> 生成期最长，最易触发整请求总超时导致的流中断（见 §6 第 32 条）。
 > 详见 `docs/raccoon渠道接入备忘.md`。
 > **Loomy（`loomy/*`）**：讯飞自有网关 `https://loomyad.xunfei.cn/api/v1`（OpenAI 兼容，SSE）；
 > 请求头必须带 `Authorization` + `token`（双写）+ **`traceparent`**（缺失会挂死到超时）+ `loomy-version`；
@@ -152,6 +154,7 @@ POST /api/quit                     # 退出程序
 > 档位来自上游 `/models` 的 `reasoning_efforts`（权威值，独占 `RealmLoomy` 面），
 > 客户端三档（low/medium/high，客户端 `loomy:thinking-level`）→ `reasoning_effort` + 三件套，
 > 投影时按该模型 ladder `reasoning.Caps.Clamp` 就近降级。
+> **流式**：同 raccoon，走独立的 `StreamHTTP`（**无总超时**）+ `IdleReader` 空闲兜底。
 > 详见 `docs/loomy渠道接入备忘.md`。
 > **OpenCodeZen（`oczen/*`，匿名免费）**：凭证固定字面量 `public`，无账号/无签到/无积分；
 > 免费档有三道闸门（规范 `ses_<12hex><14Base62>` 会话头 + `stream:true` 且 tools 含 `bash`/`read` +
@@ -315,6 +318,30 @@ POST /api/quit                     # 退出程序
       `raccoon`/`loomy`/`monkeycode`/`traecode` 曾在用量面板显示成英文 id（2026-09-24 已删除两份副本）。
     - **新增渠道只需在 `CH_LABEL` / `CH_CLASS` 各加一行**；前缀、帮助清单、tooltip 均自动生成，不要再手写清单
       （帮助文案曾手写 4 个渠道且含已下线的 `qoder`）。
+32. **流式请求不得用 `http.Client.Timeout`；流内故障必须补 error 帧 + `[DONE]`**（2026-09-24 修复 loomy「突然无响应」）：
+    - **`http.Client.Timeout` 是整请求上限**（计时器在 `Do()` 返回后继续跑，直到 body 读完），
+      而 SSE 整个生成期都在读 body ⇒ 「慢但一直在出字」的请求会被**从流中间掐断**。
+      实测 loomy 两次中断都恰好 `120.00s`（= `config.upstream.timeout_seconds`），
+      客户端表现为「突然无响应」，且 `usage` 末帧从未到达（ledger 里该请求记成 `src=none / pt=0`）。
+      故流式必须走**无总超时**的独立 client（`StreamHTTP`，照 `traework` 既有范式），
+      由 Transport 的 `ResponseHeaderTimeout`（连头都等不到时兜底）+
+      `provider.IdleReader`（`ErrIdleTimeout`，默认 90s，可配 `upstream.stream_idle_seconds`，
+      下限 10s）两级承担。非流式调用（目录/积分/刷新）**保留**总超时 —— 短请求的总超时是恰当的。
+    - ⚠️ **`StreamHTTP` 无总超时后必须有 `ResponseHeaderTimeout`**：两者都去掉就是无限挂住。
+      顺带补齐了 loomy/raccoon 此前缺失的 Transport（原先未设 Transport，实际共用
+      `http.DefaultTransport`：h2 开启、无 `ResponseHeaderTimeout`）。
+    - **流中断（空闲超时 / 连接被切断）必须补一帧 error + `data: [DONE]`**：响应头早已按 200 发出，
+      流内帧是唯一能表达故障的通道。只 `return err` = 客户端收到无收尾的截断流（只能一直等）；
+      只补 `[DONE]` 则把故障伪装成正常结束。统一走 `provider.WriteTruncationFrames`，
+      错误码由 `TruncationErrorCode` 归一（空闲超时 `upstream_timeout` / 其它 `upstream_stream_error`）。
+      覆盖三处：`internal/loomy/sse.go`、`internal/raccoon/sse.go`、`internal/upstream/sse.go`
+      （后者为 WorkBuddy 系 workbuddy/workbuddyai/traework/traecode 共用，同款缺陷一并修）。
+      守门测试：`TestStreamTruncationEmitsFrames`（三包各一）+ `TestStreamReadErrorEmitsTruncationFrames`。
+    - **代理渠道清单有三处，必须同步**：`config.go` 的 `Proxies` 注释、`main.go` 的 `proxyTargets()`、
+      `web/app.js` 的 `PROXY_CHANNELS`。`App.SetProxies` 是**整份替换** `cfg.Proxies`，
+      面板漏登记的渠道在保存时会被**静默清空**（手改 config.json 的代理会丢）——
+      `raccoon`/`loomy`/`monkeycode`/`traecode` 曾同时漏在热更新名单与面板清单里（2026-09-24 已补）。
+      `main.go` 的启动与热更新现已共用同一个 `proxyTargets()`，不再有两份名单。
 
 ## 7. 平台能力差异表（internal/platform）
 

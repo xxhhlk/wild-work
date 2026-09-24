@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"wild-work/internal/provider"
 )
 
 // 上游已是标准 OpenAI SSE（`data: {...}` + 结尾 `data: [DONE]`），
@@ -78,6 +80,9 @@ func Stream(w http.ResponseWriter, r io.Reader, model string) (map[string]any, e
 		flush()
 	}
 	if err := sc.Err(); err != nil {
+		// 流中断（空闲超时 / 连接被切断）：响应头早已按 200 发出，只能用流内帧表达故障。
+		// 不补帧 = 客户端收到无收尾的截断流 =「突然无响应」（与 loomy 同源，见其注释）。
+		provider.WriteTruncationFrames(w, err)
 		return usage, err
 	}
 	// 上游异常收尾（无 [DONE]）时补一个，避免客户端一直等。

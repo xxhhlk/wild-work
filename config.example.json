@@ -19,7 +19,8 @@
     "expiring_threshold_hours": 24
   },
   "upstream": {
-    "timeout_seconds": 120
+    "timeout_seconds": 120,
+    "stream_idle_seconds": 90
   },
   "compat": {
     "default_channel": "workbuddy",
