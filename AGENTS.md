@@ -178,6 +178,34 @@ POST /api/quit                     # 退出程序
 > 不可增删停用。渠道特性（匿名凭证 `public`、三道免费档闸门、伪装头清单）见
 > `internal/oczen/constants.go` 包注释与 §6 不变量 29/30。
 
+### 5.1 思考档位有效性对照表（2026-09-25）
+
+「面板声明档位」= `reasoning.ListingForKind` 是否对该渠道放行（决定 `/v1/models` 与费率表是否显示档位选择器）；
+「实测是否生效」= 有**权威指标**（`reasoning_tokens`，而非思考字符数/块数）的实测证据。
+
+| 渠道 | 面板声明 | 投影方式 | 实测是否生效 | 证据 |
+|---|---|---|---|---|
+| workbuddy (CN) | ✅ | `reasoning_effort` + DeepSeek `thinking.type` | ⚠️ **未获证据** | 静态表已复核（`b3e0b9d`），但档位是否真改变思考量没测出 |
+| workbuddyai | ✅ | 同上（`RealmGlobal`） | ⚠️ **未获证据** | 同上；上游对非法档位**静默接受**不报错 |
+| qoder（旧，已下线） | ✅ | `is_reasoning` + `parameters.reasoning_effort` + `enable_thinking` 三件套 | ✅ **生效** | low 2206 字 < medium 2502 字 < xhigh 180s 超时截断 |
+| qodercn | ✅ | 同上 | ✅ **生效** | 2026-09-22 真实账号线上实测 |
+| qodercom | ✅ | 同上 | ✅ **生效** | 协议同源 CN（未独立实测） |
+| loomy | ✅ | `reasoning_effort` + 三件套 + `Clamp` | ✅ **生效** | `deepseek-v4-flash-0731` 三档单调递增（173/297/459，≈2.6×） |
+| raccoon | ❌ **不声明** | **主动剥离** `reasoning_effort` | ✅ **剥离即最深**（反向生效） | 无字段 rtok 2300+ vs `high` 142（~90% 降幅） |
+| qwenwork | ❌ | **不投影** | N/A（刻意不做，非缺口） | 官方客户端本身无思考控制 UI，抓包确认请求体不带该字段 |
+| traework | ❌ | 不投影 | ❌ **上游声明有、实际无效** | `custom_model.reasoning_effort` 传错类型也 200，字段未被反序列化 |
+| traecode | ❌ | 同上 | ❌ 同 traework（同协议族） | 同上 |
+| monkeycode | ❌ **不声明** | anthropic 面 `thinking.type`（两态）／responses 面 `reasoning.effort` | ⚠️ **分面**：anthropic 面 effort 无效（只开/关）；responses 面 `none`/`low`/`high` 有效 | 评估文档 §3.13 |
+| oczen | ❌ | 不投影 | N/A | — |
+
+**读表要点**：
+- **未获证据 ≠ 不生效**，也 **≠ 生效** —— WorkBuddy 双面属此列，别在文档里写成「已验证」。
+- **上游接受 ≠ 生效**：TraeWork 传错类型都回 200，说明字段根本没被反序列化。
+- **度量纪律**：验证档位必须用 `reasoning_tokens`；思考**字符数/块数都不可用**
+  （块数取决于上游分块粒度，字符数同档内方差可达 20 倍）。单次采样也会得出错误结论
+  （易题下 low≈medium≈high 全撞下限），必须用吃推理的难题 + 重复采样。
+- **不声明档位 ≠ 缺功能**：raccoon（不下发才最深）、qwenwork（官方无此 UI）都是**刻意**的。
+
 ## 6. 关键不变量（改动前必读）
 
 0. **每次代码变更后必须本地重新构建 `dist/wild-work.exe`**（见 §8）。
