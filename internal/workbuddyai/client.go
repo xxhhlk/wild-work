@@ -449,7 +449,7 @@ func (c *Client) userResource(a *auth.Auth) (int64, []provider.ResourceItem, err
 			ExpireAt: expireDate(acct.CycleEndTime),
 			// 套餐名+到期日组合伪键（同国内版口径）
 			Key:    fmt.Sprintf("%s|%s", acct.PackageName, expireDate(acct.CycleEndTime)),
-			Usable:   true, // 国际版无端点分区，所有套餐均可被本工具消耗
+			Usable: true, // 国际版无端点分区，所有套餐均可被本工具消耗
 		})
 	}
 	return total, items, nil

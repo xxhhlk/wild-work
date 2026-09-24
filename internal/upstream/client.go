@@ -503,7 +503,7 @@ func (c *Client) UserResourceDetail(a *auth.Auth) (int64, []provider.ResourceIte
 			ExpireAt: acct.expireAt(),
 			// 套餐名+到期日组合伪键：上游无显式 ID，同名录包靠周期结束时间区分
 			Key:    fmt.Sprintf("%s|%s", acct.PackageName, acct.expireAt()),
-			Usable:   true, // 国内版无端点分区，所有套餐均可被本工具消耗
+			Usable: true, // 国内版无端点分区，所有套餐均可被本工具消耗
 		})
 	}
 	return total, items, nil

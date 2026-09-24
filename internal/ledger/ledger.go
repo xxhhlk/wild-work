@@ -274,9 +274,9 @@ type DayTokens struct {
 // CreditStats 积分口径统计：总量 + 原始条目（分页/图表由前端自算）。
 type CreditStats struct {
 	Earn    int64             `json:"earn"`
-	Spend   int64             `json:"spend"`   // 正数
-	Expire  int64             `json:"expire"`  // 正数
-	Entries []RecentCredit    `json:"entries"` // 窗口内全量条目（时间升序）
+	Spend   int64             `json:"spend"`              // 正数
+	Expire  int64             `json:"expire"`             // 正数
+	Entries []RecentCredit    `json:"entries"`            // 窗口内全量条目（时间升序）
 	NameMap map[string]string `json:"name_map,omitempty"` // uid → 昵称
 }
 
