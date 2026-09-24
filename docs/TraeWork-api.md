@@ -387,9 +387,14 @@ SSE 事件序列（真实可用）：
 但**档位在服务端不改变思考量** —— 这是服务端行为，不是客户端字段问题。
 若 wild-work 要接 trae 渠道，可用该端点做**普通对话**；**档位需求仍须走 qodercn / workbuddyai**。
 
-> ⚠️ **适用范围限定（2026-09-25 补）**：本节结论**只覆盖公网辅助端点**（`/api/ide/v1/chat`、
-> `llm_utils_chat`）。**不能**据此推断桌面客户端的档位也无效 —— 客户端主聊天走 native
-> `chat.start_chat`，是另一条链路。详见 **§4.4**（客户端侧档位「渲染 / 持久化 / 发出」三段硬证据）。
+> ⚠️ **适用范围（2026-09-25 更新）**：本节结论原**只覆盖公网辅助端点**（`/api/ide/v1/chat`、
+> `llm_utils_chat`）。**现已补齐客户端主链路** ——
+> §4.4 证明客户端侧档位「渲染 / 持久化 / 发出」三段全通过；
+> §4.5 在客户端 **native 主链路**上实测 `extra_high` ×3 vs `light` ×3（串行、同题），
+> 两个指标（生成空档、整轮时长）区间大幅重叠、p 均不显著、组内 CV 31~54%。
+>
+> ⇒ **结论现已覆盖两条链路**：档位在服务端不生效，**客户端主链路亦然**。
+> 客户端能改、能存、能发，只是服务端不据此改变思考量。
 
 **复现**：`.gotmp/mc-e2e4/` 下的 `dump-models*.ps1`、`t-direct*.ps1`、`t-round9/10/11/13.ps1`、
 `t-round14.ps1`（`model_info` 容器）、`t-round15.ps1`（native 端点 404）、`t-round16.ps1`（`llm_raw_chat`）、
@@ -468,17 +473,84 @@ native 提取：`...\modules\ai-agent\{harness,ai_agent,toolhost}.dll`（`string
 
 | 路 | 做法 | 度量 | 成本 |
 |---|---|---|---|
-| **A. 客户端实测 + 日志度量** | 客户端切到 **SOLO Code**，用 `solo_agent_lite` + `deepseek-v4.1-flash`，light/xhigh 各跑**同一难题 n≥3** | 客户端日志**自带计时戳**：`rs_16_llm_generate_plain_item` → `rs_18_llm_response_first_token` = **TTFT**；`calculate step durations total` 的 `llm:` 字段；+ 回答/思考块字数 | **0** |
+| **A. 客户端实测 + 日志度量** ✅**已做，见 §4.5** | 客户端切到 **SOLO Code**，用 `solo_agent_lite` + `deepseek-v4.1-flash`，light/xhigh 各跑**同一难题 n≥3** | ★**`svr_06_platform_first_token_timing`**（服务端侧，不含本地网络）+ **整轮时长**（metadata→done）+ **生成空档** | **0** |
 | **B. 抓客户端主链路的包** | Proxifier（已装 `C:\Program Files (x86)\Proxifier\`）→ mitmproxy/Charles 抓 `trae-api-cn.mchost.guru` 的 HTTPS | 上游请求体里档位字段的**确切位置** + 响应 reasoning 长度 | 中 |
 | **C. 程序化打 `llm_raw_chat`** | 重新登录拿 token → 客户端 `custom_model` 形状 + `reasoning_effort_level` 做 A/B | SSE 里 `reasoning_content` **累计字符数** | 低（前提是 token） |
 
-**A 的实测基线（本次从客户端日志算出）**：`extra_high` 一次 → TTFT **24.5s**、`llm:` **2811ms**、`network:` 20541ms。
-⚠️ TTFT 受网络影响大，**必须 n≥3 且同题**，否则重蹈 n=2 假分离的坑。
+⚠️ **A 路的度量必须挑「哪一侧测的」**：日志 `calculate step durations` 同时给
+`svr_06_platform_first_token_timing`（服务端测，**不含**本地网络）与 `network:`
+（本地↔服务端往返）。实测一轮 `network: 20541ms` 是 `llm: 2811ms` 的 **7.3 倍**
+⇒ 端到端 TTFT 里 84% 是网络噪声。**别用 `rs_18 - rs_16` 的端到端 TTFT。**
 
 **复现**：`.gotmp/mc-e2e4/` 下 `read_state.py`（读客户端档位持久化）、`decode_auth.py`（确认客户端 token 加密）、
 `h2routes.py`（51000 非 HTTP）、`enum2.py`（CodeKG 方法枚举）、`refl2.py`（反射关闭）、
 `t-round41.py`（带 lite 头重测读回）、`t-round42.py`（`llm_raw_chat` 接受 custom_model 形状）、
 `t-round43.py`（该端点鉴权先于 schema）、`t-refresh.py`（refreshToken 失效）。
+
+---
+
+### 4.5 【2026-09-25】A 路实测完成 —— 客户端主链路上档位**不改变工作量**（与 §4.3 一致）
+
+**这是 §4.4 遗留的「未测客户端主链路」的补完。** §4.3 的结论此前只覆盖
+公网辅助端点 `llm_utils_chat`，不能推断客户端 native 链路；本轮在客户端实测补齐。
+
+**设置**：SOLO Code（`solo_agent_lite`）+ `deepseek-v4.1-flash`，
+同题「解释一下 TCP 三次握手为什么不能是两次」，`extra_high` ×3 / `light` ×3，
+**串行执行**（一轮结束再发下一条）。
+
+| # | 档位 | 发起 | 结束 | 整轮 | upTTFT | network | plan | 重叠 |
+|---|---|---|---|---|---|---|---|---|
+| 1 | extra_high | 03:29:17 | 03:32:19 | 182s | 1434ms | 271ms | 8 | 0 |
+| 2 | extra_high | 03:32:41 | 03:36:56 | 255s | 2066ms | 177ms | 9 | 0 |
+| 3 | extra_high | 03:38:02 | 03:40:54 | 172s | 1501ms | 253ms | 9 | 0 |
+| 4 | light | 03:43:06 | 03:44:42 | 96s | 1743ms | 201ms | 7 | 0 |
+| 5 | light | 03:45:00 | 03:47:48 | 168s | 1580ms | 247ms | 8 | 0 |
+| 6 | light | 03:52:11 | 03:55:19 | 188s | 1441ms | 296ms | 9 | 0 |
+
+数据有效性：6 轮**全部 `stopType: complete`**（无中断）；**重叠数全 0**（串行成功）；
+`network` 177~296ms（无网络污染）。
+
+**两个指标，结论一致**
+
+| 指标 | extra_high (n=3) | light (n=3) | 区间重叠 | MW 精确 p | Cliff's δ |
+|---|---|---|---|---|---|
+| **生成空档**（纯生成耗时） | 44 / 148 / 156，中位 148s | 74 / 126 / 140，中位 126s | **100%** | **0.700** | +0.33 |
+| **整轮时长** | 172 / 182 / 255，中位 182s | 96 / 168 / 188，中位 168s | 19% | **0.400** | +0.56 |
+
+> **生成空档**定义：plan item 突发段结束 → 末尾项出现之间的静默期
+> （该段无 plan item，只有 LLM 在生成）。比整轮时长更贴近纯生成耗时，**不受排队影响**。
+
+**结论：档位在客户端主链路上不改变思考量/工作量。**
+
+支撑不只是 p 值（n=3 时 p 有数学上限，见下），更关键的是：
+- **组内 CV 31%~54%**（同档位 44s~156s，跨度 **3.5×**）——
+  **模型自身波动远超档位可能带来的差异**
+- 效应量模拟：Cohen's d ≈ 0.44，**即使每组 n=20 也达不到 80% 检验力**
+
+⇒ 与 §4.3 一致。**现在 trae 系档位「不生效」的结论已覆盖客户端主链路**
+（此前只覆盖公网辅助端点）。
+
+**⚠️ 三条实测方法论（比结论本身更重要）**
+
+1. **`n≥3` 不足以做统计判定**：Mann-Whitney 在 `n1=n2=3` 时**最小可能双侧 p = 0.100**
+   —— 即使两组**完全分离**也达不到 p<0.05。要显著至少 `n=6`（下限降至 0.002）。
+   ⇒ n=3 且 p 不显著时**只能说「未检出差异」**，不能说「已证明无差异」。
+   判据优先级：**区间重叠度 + CV** > 效应量/最小 n 估算 > p 值。
+
+2. **必须串行**：首轮实测因 52 秒内连发 4 条，导致 **6/6 轮时间重叠**，
+   排队时间伪装成效能差异（某轮 470s 实为排队 7 分钟），整份数据作废。
+
+3. **必须交替设计**（`H L H L H L`，不能 `H H H L L L`）：连续块设计
+   **无法区分「档位效应」与「时间效应」**。自检：`upTTFT` 与整轮时长
+   Pearson r = **+0.37**（弱正相关 → 存在共同外部因素）。
+
+**复现工具**：`wild-work/.gotmp/trae-effort/` ——
+`check_effort_state.py`（前置自检：agent 族档位能力）、
+`analyze_ab.py`（整轮时长 + **并发检测** + `--strict`）、
+`gap_analysis.py`（生成空档）、`stats_test.py`（MW 精确检验 + 最小 n 估算）、
+`check_confounders.py`（顺序/时间趋势混淆检查）、
+`plan_items.py` / `timeline.py`、`RUNBOOK.md`（操作手册 + 两轮实测记录）。
+
 
 ## 说明
 
