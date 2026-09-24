@@ -39,7 +39,7 @@ Wild-Work 是 WorkBuddy（国内版+国际版）/TraeWork/Qoder 多渠道账号�
 | R11 | Windows 产物在 WSL 交叉编译（`GOOS=windows CGO_ENABLED=0`，已验证可行）；macOS 产物走 GitHub Actions macos-latest（cgo 必需） | WSL 无法编 darwin cgo；CI 增加 darwin job |
 | R12 | **无桌面 Linux 使用 `--no-tray` 参数** | 无参启动在无 DBus 环境托盘 panic 直接 exit 并提示；`--no-tray` 跳过托盘打印信息阻塞等待 Ctrl+C |
 | R13 | **三接口兼容采用两层结构：内层 handler 不动，新增 `internal/gateway` 边缘层**，经 **in-process 调用**（`io.Pipe` + ResponseWriter 形状）复用内层 | 代码量比内联重构多 20%，但改动面小一个数量级（主链路仅 2 处调用点 + 1 个访问器），回归风险低、可脱离 pool 单测。**不得用 HTTP 自环**（`0.0.0.0` 监听不可作目标、鉴权双份、启动竞态） |
-| R14 | **`Stream`/`Aggregate` 的 model 由调用方显式传入**，渠道不得用实例字段记忆「上次请求的模型名」 | 旧实现 qoder 用全局 `lastModel`，多账号并发会串号；traework 恒为空串。详见 `docs/三接口兼容改造备忘.md` §3 |
+| R14 | **`Stream`/`Aggregate` 的 model 由调用方显式传入**，渠道不得用实例字段记忆「上次请求的模型名」 | 旧实现 qoder 用全局 `lastModel`，多账号并发会串号；traework 恒为空串。详见 `本地 docs/三接口兼容改造备忘.md` §3 |
 | R15 | **Responses 的 `function_call` 必须是独立 output item**（带 `call_id`），Anthropic 的 tool_use 参数必须走 `input_json_delta` | 参考实现 `tokligence-gateway` 两处写法不合规范（塞进 `message.content`、start 里一次性给完整 input），Codex/Claude Code 会解析失败 |
 | R16 | **思考强度统一走 `internal/reasoning`**：客户端各写法（`reasoning_effort` / `reasoning.effort` / `thinking.*` / `output_config.effort` / `enable_thinking` / `disable_reasoning` / `think`）在**内层 handler**（`prepareChatBody`）归一化成顶层 `reasoning_effort`，非法/自相矛盾回 400 `invalid_reasoning_control`；**渠道层只做方言投影**（WorkBuddy 家族 → low/high/max；Qoder → `is_reasoning` + `parameters.reasoning_effort`/`enable_thinking`；TraeWork 协议无此字段），不重复做兼容字段解析 | 移植自 Buddy2api `reasoning_controls.py`。规则只应存在一处：渠道各自解析会让「同一客户端写法在不同渠道表现不同」。默认档 `compat.reasoning_effort` 只在**客户端未表达**时注入，对 WorkBuddy 双面与 Qoder 生效（Qoder 的具体档位由渠道层按模型 ladder 就近降级）。Loomy 按 `RealmLoomy` ladder Clamp；**raccoon 例外：必须剥离该字段**（其实测默认档最深，下发档位反而削弱思考量，见 §13 备忘） |
 | R17 | **Responses 的思考链是独立 `reasoning` output item，且必须排在 `output_index=0`**；`output_index` 按实际输出顺序动态分配（思考 → 文本 → 工具），不得硬编码 | 官方顺序要求思考先于回答；硬编码 message=0 会让带思考的响应出现倒序 item。思考增量只在文本开始前接受，文本开始后到达的片段丢弃 |
@@ -143,7 +143,7 @@ POST /api/quit                     # 退出程序
 > session_type=qoder、identity userType 实测回填）；签到双路径（campaigns 主 + daily-check-in 兑底，
 > 实测 legacy 已 DISABLED）；每日 10:00 开放 + 10:00–12:00 窗口内重试（见不变量 23）；动态模型表（无静态兑底，上次成功缓存）。详见 `docs/qoderCN渠道接入备忘.md`。
 > **QoderCOM（`qodercom/*`）**：国际版（qoder.com/openapi.qoder.sh/api1+api2.qoder.sh 三域分离）；
-> 凭据与 CN 区完全隔离（双向 401）；签到仅 campaigns（无 daily-check-in，实测 404）；每日 10:00 开放 + 10:00–12:00 窗口内重试（同 CN，见不变量 23）。详见 `docs/qoderCOM渠道抓包分析与接入计划.md`。
+> 凭据与 CN 区完全隔离（双向 401）；签到仅 campaigns（无 daily-check-in，实测 404）；每日 10:00 开放 + 10:00–12:00 窗口内重试（同 CN，见不变量 23）。详见 `本地 docs/qoderCOM渠道抓包分析与接入计划.md`。
 > **旧 Qoder（`qoder/*`，QoderWork）已从界面下线**：代码与路由保留，存量账号仍可用；不新增功能，后续可移除。
 > 旧 Qoder 无签到活动：`DailyCheckin` 返回错误，调度器只做 token keepalive；故 `noExplicitCheckin`
 > 排除 `qoder`（面板不显示手动签到按钮），web/app.js 的 `NO_EXPLICIT_CHECKIN` 与之同源。
@@ -160,10 +160,10 @@ POST /api/quit                     # 退出程序
 > 由 `UserResourceDetail` 按池拆分并用 `ResourceItem.Usable` 表达冻结；费率取上游 `billing_multiplier`。
 > **思考**：不接档位且**主动剥离** `reasoning_effort` —— 实测上游默认档才是最深思考，
 > 下发任何档位（含 high）反而让思考量锐减约 90%（`internal/raccoon/client.go` 的
-> `forceUpstreamDeepThinking`）。详见 `docs/raccoon渠道接入备忘.md` §13。
+> `forceUpstreamDeepThinking`）。详见 `本地 docs/raccoon渠道接入备忘.md` §13。
 > **流式**：走独立的 `StreamHTTP`（**无总超时**）+ `IdleReader` 空闲兜底 —— 本渠道思考最深、
 > 生成期最长，最易触发整请求总超时导致的流中断（见 §6 第 32 条）。
-> 详见 `docs/raccoon渠道接入备忘.md`。
+> 详见 `本地 docs/raccoon渠道接入备忘.md`。
 > **Loomy（`loomy/*`）**：讯飞自有网关 `https://loomyad.xunfei.cn/api/v1`（OpenAI 兼容，SSE）；
 > 请求头必须带 `Authorization` + `token`（双写）+ **`traceparent`**（缺失会挂死到超时）+ `loomy-version`；
 > 凭据来自 `C:\Users\Public\Loomy\<sha256(用户)[:12]>\userData\auth-session.json`（session ≈14 天，**无 refresh 端点**）；
@@ -171,7 +171,7 @@ POST /api/quit                     # 退出程序
 > 客户端三档（low/medium/high，客户端 `loomy:thinking-level`）→ `reasoning_effort` + 三件套，
 > 投影时按该模型 ladder `reasoning.Caps.Clamp` 就近降级。
 > **流式**：同 raccoon，走独立的 `StreamHTTP`（**无总超时**）+ `IdleReader` 空闲兜底。
-> 详见 `docs/loomy渠道接入备忘.md`。
+> 详见 `本地 docs/loomy渠道接入备忘.md`。
 > **OpenCodeZen（`oczen/*`，匿名免费）**：凭证固定字面量 `public`，无账号/无签到/无积分；
 > 免费档有三道闸门（规范 `ses_<12hex><14Base62>` 会话头 + `stream:true` 且 tools 含 `bash`/`read` +
 > OpenCode CLI 伪装头），缺一即 403 FreeTierError；面板固定一项「[OpenCodeZen] 匿名」、积分显示「不适用」，
@@ -205,7 +205,7 @@ POST /api/quit                     # 退出程序
     - TraeWork 判据（2026-09-23 更新，R25）是 **`available_endpoint==1 \|\| product_id==209` 为不可用**：
       上游已不再下发 ep=1（专用池也标 0），ep 判据仅作历史兑底；实测三账号 `product_id=209`
       （200 档每日签到）used 恒为 0。**不得用 `group_type` 判定**——同名「每日签到」既有
-      通用份也有专用份。早期仅用 ep 判定的实砰证据见 `docs/upstream-reverse-engineering.md` §2.3。
+      通用份也有专用份。早期仅用 ep 判定的实砰证据见 `本地 docs/upstream-reverse-engineering.md` §2.3。
     - `UserResource` / `UserResourceDetail` 返回的 remain **只能是可消耗余额**，
       否则 pool 会按虚高余额选号。含专用池的总量（`usage_summary.total_amount`）不能作路由依据。
     - 不可消耗额度仅用于面板展示（`pool.Status.UnusableCredits`），不参与 `Pick()` 排序；
@@ -268,7 +268,7 @@ POST /api/quit                     # 退出程序
     上游按它选「模型目录」，缺省时推理端点恒回 HTTP 200 + envelope
     `{"code":"503","message":"Model catalog unavailable"}`，且**与请求头集合、与 `Encode=1`/body 编码、
     与 body 其余字段（model_config / system / tools / parameters / chat_context / session_type）全部无关**。
-    实测矩阵与取证方法见 `docs/千问办公QwenWork逆向对比备忘.md` §10。
+    实测矩阵与取证方法见 `本地 docs/千问办公QwenWork逆向对比备忘.md` §10。
     改本渠道请求形状前后必须跑 `TestLiveProbeReasoning`（`-tags live`，走 `ChatStream` 全链路）。
     **本渠道刻意不投影任何思考字段**：千问办公官方客户端本身没有思考控制设置（无档位/开关 UI），
     抓包确认其请求体也不带 `reasoning_effort` / `enable_thinking` —— 这是符合官方行为、**不是缺口**，
@@ -297,7 +297,7 @@ POST /api/quit                     # 退出程序
       协议劫持登录新建独立会话（新 `sid`），可与官方客户端并存；
       导入器复制客户端同一份 token（同一 `sid`），两边会抢着消费同一个 refresh_token，
       后刷者报 `refresh_conflict`（实测 400）。判据是 `sid`，详见
-      `docs/loomy-raccoon接入记录.md` §6.3。
+      `本地 docs/loomy-raccoon接入记录.md` §6.3。
 26. **`loomy` 的档位面独占 `RealmLoomy`**（`RealmForKind` / `SupportsEffortKind` 已同时登记）：
     档位来自上游 `/models` 的 `reasoning_efforts`（无静态兜底）；投影时补 `enable_thinking` 与
     `chat_template_kwargs.enable_thinking` 三件套。实测该系列模型**无法完全关闭思考**
@@ -450,13 +450,25 @@ git tag vX.Y.Z && git push origin vX.Y.Z
 - [LICENSE](LICENSE) — MIT 许可
 - [NOTICE](NOTICE) — 第三方组件版权与许可声明
 - [DEVELOPMENT.md](DEVELOPMENT.md) — 开发者文档（面向 AI Agent）
-- [HANDOFF.md](HANDOFF.md) — 交接文档（历史记录）
-- [docs/三接口兼容改造备忘.md](docs/三接口兼容改造备忘.md) — 三接口（Chat/Responses/Anthropic）兼容层架构决策、实施记录、验证清单、已知限制
-- [docs/loomy-raccoon接入记录.md](docs/loomy-raccoon接入记录.md) — 两渠道接入全记录（A–F 六阶段：决策/取证/探针实测/实施/验收/风险与回退，含并发刷新竞态 A/B 对照）
-- [docs/loomy渠道接入备忘.md](docs/loomy渠道接入备忘.md) — Loomy 协议取证（端点/签名算法/登录 API/积分端点 + A3 实测）
-- [docs/raccoon渠道接入备忘.md](docs/raccoon渠道接入备忘.md) — 小浣熊协议取证（端点/凭据文件/refresh 链路 + A3 实测）
+- [docs/三端点四能力矩阵.md](docs/三端点四能力矩阵.md) — 三渠道横向能力矩阵（模型/档位/签到/积分）
+- [docs/qoder2api端点覆盖度对比.md](docs/qoder2api端点覆盖度对比.md) — qoder2api 端点覆盖度对比
+- [docs/qoderCN渠道接入备忘.md](docs/qoderCN渠道接入备忘.md) — QoderCN 协议取证与实测矩阵
 - [docs/用量积分流水记账备忘.md](docs/用量积分流水记账备忘.md) — 双流水统计（token/积分）架构、差分算法、实测验证、已知限制（R23）
 
 > **docs/ 采用白名单制**：`.gitignore` 中 `docs/*` 默认忽略全部文档，仅 `!docs/<文件名>` 显式反选的才入库。
-> 含敏感抓包产物、凭据原值、可复现的攻击面细节的文档一律**只保留本地、不入库**；接口结构与端点清单类文档可入库。
-> 新增需要入库的文档时，追加一行 `!docs/<文件名>`。
+> **入库判据（2026-09-25 收紧）**：只放「接口结构与端点清单」类文档。含**凭据原值/客户端内嵌常量、
+> 可复现的攻击面细节（协议劫持/注册表改写/回调截获/端点不校验身份）、抓包产物原文、
+> 真实账号标识（uid/昵称/邮箱/机器指纹/内网 IP/本机用户名）、客户端插桩或中间人取数方法**
+> 的文档一律**只保留本地、不入库**（判据同步写在 `.gitignore` 注释里）。
+>
+> 以下备忘**仅本地可见**（未反选入库），代码注释中引用它们时按「见本地 docs/xxx.md」理解：
+> `TraeWork-api.md`、`loomy-raccoon接入记录.md`、`loomy渠道接入备忘.md`、`raccoon渠道接入备忘.md`、
+> `upstream-reverse-engineering.md`、`三接口兼容改造备忘.md`、`千问办公QwenWork逆向对比备忘.md`、
+> `qoder签到补齐改造方案.md`、`qoderCOM渠道抓包分析与接入计划.md`、`qoderCN-IDE抓包分析备忘.md`、
+> `MonkeyCode渠道接入评估.md`。
+>
+> **脱敏守门（提交前必跑）**：历史上有过三次「改完又回归」的脱敏遗漏，故新增/修改文档后跑一次
+> ```bash
+> grep -rnE "uid=[0-9]|C:\\\\Users\\\\[^\\\\]+|machine_id=[0-9a-f]{8}-|dt-[A-Za-z0-9]{20,}|drt-[A-Za-z0-9]{20,}" docs/
+> ```
+> 命中即视为泄露，先脱敏再入库（真实 uid / 本机用户名 / 机器指纹 / 凭据前缀均不得出现）。

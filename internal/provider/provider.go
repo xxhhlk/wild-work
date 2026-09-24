@@ -24,7 +24,7 @@ const (
 	QoderCOM    Kind = "qodercom" // QoderCOM 国际版（qoder.com / qoder.sh，移植自 qodercn）
 	QwenWork    Kind = "qwenwork" // 千问办公（gateway.qwenwork.cn + qwenwork.cn）
 	// 以下两渠道的凭据不由本工具登录产生，而是「从本机已安装的官方客户端导入」
-	// （见 docs/loomy-raccoon接入记录.md §8.2 的形态 B；导入器 = internal/app 的 ImportLocal）。
+	// （见 本地 docs/loomy-raccoon接入记录.md §8.2 的形态 B；导入器 = internal/app 的 ImportLocal）。
 	Raccoon Kind = "raccoon" // 商汤小浣熊（xiaohuanxiong.com，access 2h + refresh 30d）
 	Loomy   Kind = "loomy"   // 讯飞 Loomy（loomyad.xunfei.cn，session 14d，无 refresh）
 	// MonkeyCode 平台托管模型（proxy.monkeycode-ai.com，Anthropic 形状）。

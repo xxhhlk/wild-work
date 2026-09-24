@@ -1,7 +1,7 @@
 // constants.go MonkeyCode 平台托管模型渠道的静态常量。
 //
 // 取证来源：官方客户端 ohmyagent（Go 编写）经 `--model-config` 重定向抓包，
-// 见 docs/MonkeyCode渠道接入评估.md §3。本文件只放**非敏感**常量：
+// 见 本地 docs/MonkeyCode渠道接入评估.md §3。本文件只放**非敏感**常量：
 // 端点、协议版本、UA 与静态模型表。凭据（oma_ key / omas_ secret）一律来自
 // auth 文件，**不得**出现在这里。
 package monkeycode

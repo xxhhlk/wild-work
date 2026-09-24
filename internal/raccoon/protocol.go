@@ -1,7 +1,7 @@
 // protocol.go 小浣熊「桌面协议回调」的跨平台部分：深链解析 + 回调载荷落盘。
 //
 // 背景：小浣熊的网页授权把授权码通过**深链**回传（逆向自 desktopLogin.js 与服务端 SPA，见
-// docs/raccoon渠道接入备忘.md §11）：
+// 本地 docs/raccoon渠道接入备忘.md §11）：
 //
 //	① 打开 https://xiaohuanxiong.com/code/authorize?login_source=desktop&appname=办公小浣熊客户端
 //	② 用户在系统浏览器完成登录

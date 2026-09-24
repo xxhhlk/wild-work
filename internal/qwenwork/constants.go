@@ -2,7 +2,7 @@
 // 实现 provider.Upstream 接口。与 qoder 渠道同属「Qoder 系 COSY 框架」但完全独立：
 // 独立 Kind、独立 auth 文件前缀、独立模型表、独立鉴权组合（COSY + Bearer 双轨）。
 //
-// 协议要点（2026-09 实测，见 docs/千问办公QwenWork逆向对比备忘.md）：
+// 协议要点（2026-09 实测，见 本地 docs/千问办公QwenWork逆向对比备忘.md）：
 //   - 推理/模型列表走 COSY 签名（RSA_PKCS1 包 16 字符 AES key + AES-128-CBC 身份 + MD5），
 //     与 internal/qoder 的 cosy.go 同构；请求体明文 JSON（不带 Encode=1，实测可省）。
 //   - **推理 body 必须带 business.product="qoder_work"**（模型目录选路键），否则恒 503
@@ -48,7 +48,7 @@ const ChannelName = "qwenwork"
 // envelope `{"code":"503","message":"Model catalog unavailable"}`**，与请求头集合、
 // 以及 body 的其余字段（model_config / system / tools / parameters /
 // chat_context / session_type …）全部无关。只补 business.product 即恢复 200。
-// 实测矩阵见 docs/千问办公QwenWork逆向对比备忘.md。
+// 实测矩阵见 本地 docs/千问办公QwenWork逆向对比备忘.md。
 const (
 	BusinessProduct = "qoder_work"
 	BusinessType    = "agent"

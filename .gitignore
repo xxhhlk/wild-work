@@ -17,20 +17,17 @@ ref/
 
 # 文档目录白名单制：默认全部不提交，仅显式反选（!）的文档入库。
 # 新增需要入库的文档时，在下方追加一行 `!docs/<文件名>`。
+#
+# 入库判据（2026-09-25 收紧）：只放「接口结构与端点清单」类文档。
+# 含以下任一内容的文档一律**只保留本地**，不得反选：
+#   - 凭据原值/前缀+长度、客户端内嵌常量原值、签名密钥
+#   - 可复现的攻击面细节（协议劫持/注册表改写/回调截获/端点不校验身份）
+#   - 抓包产物原文、真实账号标识（uid/昵称/邮箱/机器指纹/内网 IP/本机用户名）
+#   - 客户端插桩/中间人取数方法
 docs/*
-!docs/TraeWork-api.md
-!docs/loomy-raccoon接入记录.md
-!docs/loomy渠道接入备忘.md
 !docs/qoder2api端点覆盖度对比.md
-!docs/qoderCN-IDE抓包分析备忘.md
 !docs/qoderCN渠道接入备忘.md
-!docs/qoderCOM渠道抓包分析与接入计划.md
-!docs/qoder签到补齐改造方案.md
-!docs/raccoon渠道接入备忘.md
-!docs/upstream-reverse-engineering.md
-!docs/三接口兼容改造备忘.md
 !docs/三端点四能力矩阵.md
-!docs/千问办公QwenWork逆向对比备忘.md
 !docs/用量积分流水记账备忘.md
 
 # 临时文件
