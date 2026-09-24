@@ -63,6 +63,19 @@
 | [bzym2/QoderGateway](https://github.com/bzym2/QoderGateway) | 新版 api2-v2 协议文档（MIT） |
 | [apmantza/pi-free](https://github.com/apmantza/pi-free) | 输出侧 thinking 标签的兜底解析思路（MIT） |
 | [simonsmh/pi-provider-qoder](https://github.com/simonsmh/pi-provider-qoder) | `thinking_config.enabled.efforts` 类型定义与 per-model 静态档位表 |
+| [yuan240324/workbuddy-openai-proxy](https://github.com/yuan240324/workbuddy-openai-proxy) | 请求体纯透传反证上游契约；空回答放大 `max_tokens` 重试思路（MIT） |
+| [Wang-JQ77/dsh-trae-api](https://github.com/Wang-JQ77/dsh-trae-api) | Trae Work CN 反代；`reasoning_content` → `<think>` 标签状态机（MIT） |
+| [DASungta/trae-proxy](https://github.com/DASungta/trae-proxy) | Trae 系反代；确认**无请求侧思考控制**，反向佐证本项目「TraeWork 不投影」 |
+| [arch3rPro/Trae-Proxy](https://github.com/arch3rPro/Trae-Proxy) | 同上，raw 透传（MIT） |
+| [OpenSenseNova/SenseNova6.7](https://github.com/OpenSenseNova/SenseNova6.7) | 纯文档仓；响应侧 `reasoning` 字段语义（无请求侧档位） |
+| [alhza/GPT-Load](https://github.com/alhza/GPT-Load) | key 池轮询 / 阈值拉黑 / 递归换 key 重试设计（MIT） |
+
+以下项目用于**同类项目形态**调研（渠道覆盖、模型目录、账号池组织方式）。本项目借鉴其思路与结论，未复制代码：
+
+| 项目 | 贡献 |
+|------|------|
+| [HUIdada1/AgentHub](https://github.com/HUIdada1/AgentHub) | 动态模型目录（上游拉取 → 落盘缓存 → 别名表并集）、模型元数据与规则文件热加载（MIT） |
+| [1416277987/proxy-hub](https://github.com/1416277987/proxy-hub) | 多平台反代统一网关；渠道适配器与模型常量表结构对比 |
 
 > 若上述项目作者认为本项目的引用方式不当，请提 issue 联系，我们会立即调整或移除相关内容。
 
