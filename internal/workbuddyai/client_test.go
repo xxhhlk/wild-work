@@ -249,7 +249,7 @@ func TestStaticModelsSane(t *testing.T) {
 }
 
 // 国际版档位能力与国内版刻意不同：deepseek-v4.1-flash 在国际版只认 high，
-// 客户端发 low/max 必须降级（发过去是非法参数）。
+// 客户端发 low/max 必须降级（上游静默接受不报错，但声明外的档位语义失真）。
 func TestPrepareBodyClampsEffortByGlobalRealm(t *testing.T) {
 	cases := []struct{ model, in, want string }{
 		{"deepseek-v4.1-flash", "low", "high"},

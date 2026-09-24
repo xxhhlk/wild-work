@@ -2,9 +2,10 @@
 //
 // 背景：上游对不同模型只接受特定档位。例如国内版 deepseek-v4-pro 只认
 // low/high/xhigh（**没有 max**），国际版 deepseek-v4.1-flash 只认 high，
-// glm-5.1 / kimi-* / minimax-m3 只认 medium。客户端发别的档位会被上游拒绝
-// （非法参数）或静默忽略，此前 wild-work 只对 2 个模型做固定三档压缩、
-// 其余模型把标准档位原样透传，因此存在真实错配。
+// glm-5.1 / kimi-* / minimax-m3 只认 medium。客户端发别的档位时，上游**静默接受**
+// 而不报错（2026-09-25 实测：国际版发声明外的档位全部 200），因此错配不会失败，
+// 只会让档位语义失真；此前 wild-work 只对 2 个模型做固定三档压缩、
+// 其余模型把标准档位原样透传，故存在真实错配。
 //
 // 数据来源三级（语义对齐 workbuddy2api/internal/upstream/effort_catalog.go）：
 //  1. 远端目录接口返回的 reasoning.supportedEfforts / defaultEffort（权威，优先）；
@@ -20,6 +21,8 @@
 //
 // ⚠️ 静态表数值来自对官方客户端（codebuddy.js / product.ts）的逆向记录，
 // 本仓库未独立复现；远端返回值始终优先，实测不符时只改本文件即可。
+// 国际版面已于 2026-09-25 用真实账号复核（`internal/workbuddyai/live_probe_test.go`）：
+// 远端下发的 8 个模型与静态表**逐条一致**（0 处冲突）；其余条目远端不下发，属兜底职责。
 package reasoning
 
 import (
@@ -101,7 +104,8 @@ var cnEffortFallback = map[string]Cap{
 
 // globalEffortFallback 国际版静态兜底表。
 // 注意 deepseek-v4.1-flash 在国际版**只有 high**，与国内版三档刻意不同：
-// 往国际版上游发 low/max 是非法参数。
+// 往国际版上游发 low/max 不会报错（实测 200），但该模型对档位不敏感，
+// 声明外的值只会让语义失真 —— 故仍按「只认 high」收口。
 var globalEffortFallback = map[string]Cap{
 	"fast-model":          {Efforts: []string{"medium"}},
 	"balanced-model":      {Efforts: []string{"medium"}},
