@@ -385,7 +385,6 @@ func (c *Client) FetchModelPricing(a *auth.Auth) ([]provider.ModelPricing, error
 			Model:    id,
 			Channel:  ChannelName,
 			Rate:     rate,
-			Note:     cleanName(m.Name),
 			Explicit: &explicit,
 		})
 		explicit = true

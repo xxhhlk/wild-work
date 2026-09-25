@@ -436,20 +436,10 @@ func (c *Client) FetchModelPricing(a *auth.Auth) ([]provider.ModelPricing, error
 		if id == "" {
 			continue
 		}
-		note := strings.TrimSpace(m.BillingCategory)
-		if m.Visible {
-			// 可见模型即客户端默认展示的模型，面板给个更直观的说明。
-			if note == "" {
-				note = "official"
-			}
-		} else {
-			note = "internal"
-		}
 		out = append(out, provider.ModelPricing{
 			Model:    id,
 			Channel:  ChannelName,
 			Rate:     m.BillingMultiplier,
-			Note:     note,
 			Explicit: &explicit,
 		})
 	}
