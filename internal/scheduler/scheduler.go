@@ -261,7 +261,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 		next := nextFireMinutes(time.Now(), all)
 		if next.IsZero() {
 			// 无任何待触发时刻（理论上不会：KeepaliveHours 至少 [22]）。
-			// 兑底睡一分钟，避免零值时间导致 time.NewTimer 立即返回造成忙循环。
+			// 兜底睡一分钟，避免零值时间导致 time.NewTimer 立即返回造成忙循环。
 			next = time.Now().Add(time.Minute)
 		}
 		timer := time.NewTimer(time.Until(next))

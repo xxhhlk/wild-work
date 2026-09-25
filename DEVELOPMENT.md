@@ -133,7 +133,7 @@ Base: CN `openapi.qoder.com.cn`+`gateway.qoder.com.cn`；COM `openapi.qoder.sh`+
 identity.userType 从 `/api/v1/userinfo` 实测回填；请求体 `session_type:"qoder"`、
 `parameters.max_tokens`（默认 32768）、`model_config.source:"system"`（思考总开关）；
 消息体经 `qoderEncode()` 编码，SSE 嵌套格式（`data:{"body":"<json>"}`）。
-模型表无静态兑底：上次成功拉取作进程内缓存；场景解析 assistant→developer→chat 三级回退。
+模型表无静态兜底：上次成功拉取作进程内缓存；场景解析 assistant→developer→chat 三级回退。
 签到必须 `cosy-clienttype: 10`（桌面端），与推理链路的 5 不同；活动 campaignKey 每日变化不可硬码。
 **绝不用 legacy `daily-check-in/claim`**：该端点已 DISABLED 却对未领取日恒返 409，走它会造成
 「假成功零积分」（上游 qoder2api 99ab022 同款结论，2026-09-21 抓包实测）。

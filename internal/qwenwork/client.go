@@ -474,7 +474,7 @@ type walletTotals struct {
 }
 
 // FetchNickname 拉取账号昵称（/user/info 的 nickname/name/username 首个非空字段）。
-// 用途：登录时 JWT 解不出 username 时的兑底（OAuth 兑换的 access token 实测
+// 用途：登录时 JWT 解不出 username 时的兜底（OAuth 兑换的 access token 实测
 // 偶发无 username，而 deviceToken/refresh 后的 token 才有；详见备忘 §9.10）。
 func (c *Client) FetchNickname(a *auth.Auth) (string, error) {
 	data, err := c.doBearer(c.web()+EpUserInfo, a)

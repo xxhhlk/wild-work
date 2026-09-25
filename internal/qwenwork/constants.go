@@ -31,7 +31,7 @@ const (
 	EpModels    = "/api/v2/model/list"                                 // COSY GET
 	EpDTRefresh = "/api/v1/deviceToken/refresh"                        // COSY 域的 token 刷新（body {refresh_token,target:"c"}）
 	EpBalance   = "/user/balance"                                      // Bearer GET
-	EpUserInfo  = "/user/info"                                         // Bearer GET（账号昵称兑底）
+	EpUserInfo  = "/user/info"                                         // Bearer GET（账号昵称兜底）
 	EpWallets   = "/user/wallets"                                      // Bearer GET
 	EpBillings  = "/user/billings?source=all"                          // Bearer GET
 	EpChatModes = "/api/chat-modes"                                    // Bearer GET（费率表）

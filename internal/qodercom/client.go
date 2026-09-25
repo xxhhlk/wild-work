@@ -146,7 +146,7 @@ func (c *Client) FetchUserInfo(a *auth.Auth) (string, string, error) {
 	c.setUserType(a.UID, info.UserType)
 	name := info.Name
 	if name == "" {
-		name = info.Email // 部分账号 name 为空，email 兑底
+		name = info.Email // 部分账号 name 为空，email 兜底
 	}
 	log.Printf("qodercom userinfo uid=%s userType=%s name=%s", a.UID, info.UserType, name)
 	return name, info.UserType, nil

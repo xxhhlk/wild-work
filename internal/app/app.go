@@ -712,10 +712,10 @@ func (a *App) completeLogin(r login.Result) {
 		} else {
 			log.Printf("新账号签到完成 %s：%s", r.Nickname, res.Msg)
 		}
-		// 积分兑底：签到路径失败（余额查询失败/签到异常）时 pool 内 credits 仍为 0，
+		// 积分兜底：签到路径失败（余额查询失败/签到异常）时 pool 内 credits 仍为 0，
 		// 独立刷一次保证新账号首屏正确（幂等：多刷无害）。
 		if _, err := a.RefreshCredits(r.UID); err != nil {
-			log.Printf("workbuddy 新账号积分兑底失败 %s: %v", r.Nickname, err)
+			log.Printf("workbuddy 新账号积分兜底失败 %s: %v", r.Nickname, err)
 		}
 	})
 }
@@ -788,9 +788,9 @@ func (a *App) completeTraeLogin(r logintrae.Result) {
 		} else {
 			log.Printf("TraeWork 新账号签到完成 %s：%s", r.Nickname, res.Msg)
 		}
-		// 积分兑底（对齐 workbuddy）：签到路径失败时 pool 内 credits 仍为 0
+		// 积分兜底（对齐 workbuddy）：签到路径失败时 pool 内 credits 仍为 0
 		if _, err := a.RefreshCredits(r.UID); err != nil {
-			log.Printf("TraeWork 新账号积分兑底失败 %s: %v", r.Nickname, err)
+			log.Printf("TraeWork 新账号积分兜底失败 %s: %v", r.Nickname, err)
 		}
 	})
 }
@@ -922,7 +922,7 @@ func (a *App) completeQwenWorkLogin(r loginqwenwork.Result) {
 	// 首屏初始化（顺序敏感，串行执行）：
 	// 1) 刷新余额 —— 若 Poll 兑换的首个 token 无效（实测 OAuth 兑换 token 调 /user/info
 	//    会 401 invalid-credential），refreshIfSessionDead 会自动换新 token；
-	// 2) 之后再用有效 token 拉昵称兑底（Poll 兑换的 JWT 实测无 username 字段，
+	// 2) 之后再用有效 token 拉昵称兜底（Poll 兑换的 JWT 实测无 username 字段，
 	//    refresh 后的 device_token 才有），写回 auth 文件，否则面板显示 hex uid。
 	a.safeGo(func() {
 		var nickname = r.Nickname
@@ -948,9 +948,9 @@ func (a *App) completeQwenWorkLogin(r loginqwenwork.Result) {
 				nickname = nick
 				au.Nickname = nick // AuthByUID 返回池内指针，改字段即生效；SaveAtomic 自带锁
 				_ = au.SaveAtomic()
-				log.Printf("qwenwork 昵称兑底成功 uid=%s nickname=%s", r.UID, nick)
+				log.Printf("qwenwork 昵称兜底成功 uid=%s nickname=%s", r.UID, nick)
 			} else if nerr != nil {
-				log.Printf("qwenwork 昵称兑底失败 uid=%s err=%v", r.UID, nerr)
+				log.Printf("qwenwork 昵称兜底失败 uid=%s err=%v", r.UID, nerr)
 			}
 		}
 	})
@@ -2826,7 +2826,7 @@ func normalizeMinutes(minutes []int) []int {
 
 // lanIP 返回非环回的出站 IPv4/IPv6 地址（如 192.168.1.5），用于监听 0.0.0.0 时
 // 面板提示局域网可用的 API 地址。UDP Dial 不实际发包，仅让内核选路由；
-// 无网络/全部环回时返回空串，调用方自行兑底。
+// 无网络/全部环回时返回空串，调用方自行兜底。
 func lanIP() string {
 	conn, err := net.Dial("udp", "8.8.8.8:53")
 	if err != nil {

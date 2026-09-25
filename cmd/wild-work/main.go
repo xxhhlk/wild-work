@@ -300,7 +300,7 @@ func main() {
 	// 每日 10:00（UTC+8）开放，活动可能在整点之后才创建，故 10:00–12:00 每分钟重试。
 	const (
 		qoderCheckinMinute     = 10 * 60 // 10:00
-		qoderCheckinRetryUntil = 12 * 60 // 12:00（上游同款兑底截止）
+		qoderCheckinRetryUntil = 12 * 60 // 12:00（上游同款兜底截止）
 	)
 
 	// 临期阈值（全渠道共用，scheduler/App 两侧同源，默认 24h，下限 24h）
@@ -573,7 +573,7 @@ func main() {
 		trayTip := fmt.Sprintf("wild-work — 渠道聚合代理\nhttp://%s:%d", displayHost(cfg), cfg.Listen.Port)
 		systray.Run(trayIconICO, trayTip, systray.Actions{
 			OpenUI: func() {
-				// 本机打开面板：通配监听时浏览器访问不了 0.0.0.0，用局域网 IP 兑底
+				// 本机打开面板：通配监听时浏览器访问不了 0.0.0.0，用局域网 IP 兜底
 				_ = platform.OpenURL(fmt.Sprintf("http://%s:%d/", openHost(cfg), cfg.Listen.Port))
 			},
 			OpenLog: func() {
@@ -663,7 +663,7 @@ func buildRevision() string {
 // 通配监听（0.0.0.0/::/空）是用户主动配置的意图，如实显示 0.0.0.0；
 // localhost 归一为 127.0.0.1。不做任何「善意」替换——面板顶栏同理（见 app.js renderTopbar）。
 // 注意：浏览器/托盘打开面板时用此值，0.0.0.0 在浏览器不可直接访问，
-// 故 OpenUI 场景改用 lanIPOrLocalhost() 兑底（见 main.go 调用处）。
+// 故 OpenUI 场景改用 lanIPOrLocalhost() 兜底（见 main.go 调用处）。
 func displayHost(cfg *config.Config) string {
 	if cfg.Listen.Host == "" || cfg.Listen.Host == "::" {
 		return "0.0.0.0"
@@ -674,7 +674,7 @@ func displayHost(cfg *config.Config) string {
 	return cfg.Listen.Host
 }
 
-// lanIPOrLocalhost 返回局域网出口 IP，取不到时兑底 127.0.0.1。
+// lanIPOrLocalhost 返回局域网出口 IP，取不到时兜底 127.0.0.1。
 // 用于「本机打开面板」场景：监听 0.0.0.0 时浏览器不能访问 0.0.0.0，
 // 用局域网 IP（或 127.0.0.1）代替，用户可从本机或局域网其他机器访问。
 func lanIPOrLocalhost() string {
@@ -690,7 +690,7 @@ func lanIPOrLocalhost() string {
 	return addr.IP.String()
 }
 
-// openHost 返回适合「本机浏览器打开」的主机：通配监听时用局域网 IP 兑底。
+// openHost 返回适合「本机浏览器打开」的主机：通配监听时用局域网 IP 兜底。
 func openHost(cfg *config.Config) string {
 	switch cfg.Listen.Host {
 	case "", "0.0.0.0", "::":

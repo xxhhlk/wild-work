@@ -50,7 +50,7 @@ Wild-Work 是 WorkBuddy（国内版+国际版）/TraeWork/Qoder 多渠道账号�
 | R22 | **无账号渠道（oczen）不建 auth 文件、不进 `reloadAccounts`、不参与禁用/冷却惩罚** | 匿名凭证是常量 `public`；`SyncToDir` 会剔除磁盘上不存在的虚拟账号，故只在装配时注入一次。单账号 + 不可重登 ⇒ 任何账号级冷却都等于整渠道下线，故 4xx 一律走新增的 `ErrPassthrough`（原文透传、不计错不冷却），只有 429 才短冷却。渠道特性见 `internal/oczen/constants.go` 包注释与 §6 不变量 29/30 |
 | R23 | **用量/积分双流水分口径统计，不强关联、不折算** | `internal/ledger` 双 JSONL（usage 按渠道×模型 / credit 按账号 earn·spend·expire）；写入仅 append 缓冲句柄（30s AutoFlush），读取仅在 UI 请求 `/api/usage` 时按月分段扫描聚合，常驻内存 ≈0。`Upstream.Stream` 返回末帧 usage（R14 同款显式传参哲学）。首见账号只记一条「存量额度」baseline，不逐条展开。**同 key 重复条目（WorkBuddy 伪键一对多）先聚合求和再差分**，每 key 每次刷新最多一条事件；升级首启将旧错误流水一次性归档为 `old-credit-*.jsonl` 并删快照重建 baseline（issue #38）。详见 `docs/用量积分流水记账备忘.md` |
 | R24 | **临期阈值可配（默认 24h，下限 24h）** | `config.schedule.expiring_threshold_hours`，normalize 钳下限（日期粒度到期判定低于一天无意义）；scheduler 与 app.creditTotals 同源取 `cfg.ExpiringThresholdDur` |
-| R25 | **TraeWork 专用池判据是 `product_id==209`** | 2026-09-23 起上游不再下发 `available_endpoint=1`（专用池也标 0），ep 判据整体失效；实测三账号 `product_id=209`（200 档每日签到）used 恒为 0，判定改为 `ep==1 \|\| pid==209`（ep 保留为历史兑底）。pid=208（150 签到）/221（每月登录）均可消耗 |
+| R25 | **TraeWork 专用池判据是 `product_id==209`** | 2026-09-23 起上游不再下发 `available_endpoint=1`（专用池也标 0），ep 判据整体失效；实测三账号 `product_id=209`（200 档每日签到）used 恒为 0，判定改为 `ep==1 \|\| pid==209`（ep 保留为历史兜底）。pid=208（150 签到）/221（每月登录）均可消耗 |
 
 ## 2. 架构选型（依据）
 
@@ -140,8 +140,8 @@ POST /api/quit                     # 退出程序
 
 > provider.Kind 即模型名前缀；server 按 `channel/<model>` 前缀路由，无需改接口。
 > **QoderCN（`qodercn/*`）**：qoder2api 参数形态（cosyVersion 1.0.10、18 头含 cosy-scene 族、
-> session_type=qoder、identity userType 实测回填）；签到双路径（campaigns 主 + daily-check-in 兑底，
-> 实测 legacy 已 DISABLED）；每日 10:00 开放 + 10:00–12:00 窗口内重试（见不变量 23）；动态模型表（无静态兑底，上次成功缓存）。详见 `docs/qoderCN渠道接入备忘.md`。
+> session_type=qoder、identity userType 实测回填）；签到双路径（campaigns 主 + daily-check-in 兜底，
+> 实测 legacy 已 DISABLED）；每日 10:00 开放 + 10:00–12:00 窗口内重试（见不变量 23）；动态模型表（无静态兜底，上次成功缓存）。详见 `docs/qoderCN渠道接入备忘.md`。
 > **QoderCOM（`qodercom/*`）**：国际版（qoder.com/openapi.qoder.sh/api1+api2.qoder.sh 三域分离）；
 > 凭据与 CN 区完全隔离（双向 401）；签到仅 campaigns（无 daily-check-in，实测 404）；每日 10:00 开放 + 10:00–12:00 窗口内重试（同 CN，见不变量 23）。详见 `本地 docs/qoderCOM渠道抓包分析与接入计划.md`。
 > **旧 Qoder（`qoder/*`，QoderWork）已从界面下线**：代码与路由保留，存量账号仍可用；不新增功能，后续可移除。
@@ -231,7 +231,7 @@ POST /api/quit                     # 退出程序
 16. **脱敏层仅做文本替换不做语义变更**：`internal/sanitize` 只改模板句、不改用户内容语义；预检不命中时零分配原样通过。将来配置 `features.sanitize_fingerprints` 可一键关闭（逃生门）。
 17. **积分「可用/不可用」拆分统计**：`provider.ResourceItem.Usable` 标记条目是否属于本工具可消耗的额度池，`provider.Summarize()` 汇总小计。
     - TraeWork 判据（2026-09-23 更新，R25）是 **`available_endpoint==1 \|\| product_id==209` 为不可用**：
-      上游已不再下发 ep=1（专用池也标 0），ep 判据仅作历史兑底；实测三账号 `product_id=209`
+      上游已不再下发 ep=1（专用池也标 0），ep 判据仅作历史兜底；实测三账号 `product_id=209`
       （200 档每日签到）used 恒为 0。**不得用 `group_type` 判定**——同名「每日签到」既有
       通用份也有专用份。早期仅用 ep 判定的实砰证据见 `本地 docs/upstream-reverse-engineering.md` §2.3。
     - `UserResource` / `UserResourceDetail` 返回的 remain **只能是可消耗余额**，

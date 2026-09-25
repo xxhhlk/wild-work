@@ -189,7 +189,7 @@ func Poll(client *http.Client, statePath string) (Result, error) {
 			return Result{}, err
 		}
 	} else {
-		// 兑底路径：回调只给了 userJwt.Token，无 refreshToken（后续 refresh 会失败，但本轮可用）
+		// 兜底路径：回调只给了 userJwt.Token，无 refreshToken（后续 refresh 会失败，但本轮可用）
 		if a.AccessToken == "" {
 			return Result{}, errors.New("no token in callback")
 		}
@@ -248,7 +248,7 @@ type CallbackInfo struct {
 //	或新流程：?authCodeInfo={AuthCode,...}&host=...&userInfo={...}
 //
 // refreshToken 优先；缺失时回退 userJwt.RefreshToken（URL 编码 JSON），
-// 再兑底 userJwt.Token 作为 accessToken，最后尝试 authCodeInfo.AuthCode（PKCE 新流程）。
+// 再兜底 userJwt.Token 作为 accessToken，最后尝试 authCodeInfo.AuthCode（PKCE 新流程）。
 func ParseCallback(rawURL string) CallbackInfo {
 	info := CallbackInfo{}
 	rawURL = strings.TrimSpace(rawURL)
