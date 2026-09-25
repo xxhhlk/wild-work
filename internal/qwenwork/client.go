@@ -23,17 +23,43 @@ import (
 
 // Client 千问办公上游 HTTP 客户端。
 type Client struct {
-	HTTP    *http.Client
-	Gateway string // 推理网关（COSY），默认 https://gateway.qwenwork.cn
-	Web     string // 网页域（Bearer），默认 https://qwenwork.cn
+	HTTP *http.Client
+	// StreamHTTP 专供对话流式请求：**无总超时**。
+	//
+	// 为什么必须分开：http.Client.Timeout 是整请求上限（计时器在 Do() 返回后继续跑，
+	// 直到 body 读完），而 SSE 整个生成期都在读 body —— 长思考请求会被从流中间掐断。
+	// 客户端表现为「突然无响应」。空闲兜底改由 IdleReader 承担。
+	StreamHTTP *http.Client
+	// IdleTimeout 流式空闲超时：连续该时长读不到任何字节即判上游卡死。
+	// 0 = 用 DefaultIdleTimeout。由 main 装配时注入 config.upstream.stream_idle_seconds。
+	IdleTimeout time.Duration
+	Gateway     string // 推理网关（COSY），默认 https://gateway.qwenwork.cn
+	Web         string // 网页域（Bearer），默认 https://qwenwork.cn
 }
+
+// DefaultIdleTimeout 流式空闲超时默认值。
+//
+// 实测正常请求 8~40s 完成（同一模型），90s 足够宽松——只拦「真的一个字节都不出」。
+const DefaultIdleTimeout = 90 * time.Second
 
 // New 生产默认。网关对 HTTP/2 不友好（对齐 qoder 渠道经验），强制 HTTP/1.1。
 func New() *Client { return NewWithTimeout(180 * time.Second) }
 
-// NewWithTimeout 指定上游 HTTP 超时；配置连接池。
+// NewWithTimeout 指定非流式超时；配置连接池。
 func NewWithTimeout(timeout time.Duration) *Client {
-	tr := &http.Transport{
+	return &Client{
+		HTTP:       &http.Client{Timeout: timeout, Transport: newTransport()},
+		StreamHTTP: &http.Client{Transport: newTransport()},
+		Gateway:    GatewayBase,
+		Web:        WebBase,
+	}
+}
+
+// newTransport 出厂 Transport：禁 h2 + 连接池 + ResponseHeaderTimeout 兜底。
+//
+// StreamHTTP 无总超时后**必须**有 ResponseHeaderTimeout，否则连响应头都等不到就会无限挂住。
+func newTransport() *http.Transport {
+	return &http.Transport{
 		MaxIdleConns:          100,
 		MaxIdleConnsPerHost:   20,
 		IdleConnTimeout:       90 * time.Second,
@@ -41,11 +67,22 @@ func NewWithTimeout(timeout time.Duration) *Client {
 		ResponseHeaderTimeout: 60 * time.Second,
 		TLSNextProto:          map[string]func(string, *tls.Conn) http.RoundTripper{}, // 强制 HTTP/1.1
 	}
-	return &Client{
-		HTTP:    &http.Client{Timeout: timeout, Transport: tr},
-		Gateway: GatewayBase,
-		Web:     WebBase,
+}
+
+// streamClient 返回流式调用用的客户端（无总超时，回落新建保证 nil 安全）。
+func (c *Client) streamClient() *http.Client {
+	if c.StreamHTTP == nil {
+		c.StreamHTTP = &http.Client{Transport: newTransport()}
 	}
+	return c.StreamHTTP
+}
+
+// idleTimeout 生效的空闲超时（未注入时用默认值）。
+func (c *Client) idleTimeout() time.Duration {
+	if c.IdleTimeout <= 0 {
+		return DefaultIdleTimeout
+	}
+	return c.IdleTimeout
 }
 
 func (c *Client) gateway() string {
@@ -228,7 +265,8 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 	}
 	req.Header.Set("x-model-key", modelKeyOf(prepared))
 
-	resp, err := c.HTTP.Do(req)
+	// 用无总超时的 client：长思考请求不受整请求上限约束（见 Client.StreamHTTP）。
+	resp, err := c.streamClient().Do(req)
 	if err != nil {
 		log.Printf("qwenwork chat_stream uid=%s: transport error: %v", a.UID, err)
 		return nil, 0, nil, err
@@ -240,7 +278,10 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 			a.UID, resp.StatusCode, provider.LogBody(string(raw)), provider.LogParams(prepared))
 		return nil, resp.StatusCode, raw, nil
 	}
-	return resp.Body, resp.StatusCode, nil, nil
+	// 空闲看门狗兜底：连续 idleTimeout 读不到字节即判上游卡死并关掉 body。
+	// 流式与 stream:false 的聚合路径共用这一层（聚合时由「总时长硬上限」
+	// 变为「空闲上限」，长而持续输出的响应不再被误杀）。
+	return provider.NewIdleReader(resp.Body, c.idleTimeout()), resp.StatusCode, nil, nil
 }
 
 // prepareChatBody 解析客户端 OpenAI body，补 request_id/session_id、business、

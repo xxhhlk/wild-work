@@ -26,10 +26,20 @@ import (
 
 // Client QoderCOM 上游客户端。
 type Client struct {
-	HTTP       *http.Client
-	Base       string // 业务 API，默认 https://openapi.qoder.sh
-	Gateway    string // 推理网关，默认 https://api1.qoder.sh
-	ModelsBase string // 模型列表，默认 https://api2.qoder.sh
+	HTTP *http.Client
+	// StreamHTTP 专供对话流式请求：**无总超时**。
+	//
+	// 为什么必须分开：http.Client.Timeout 是整请求上限（计时器在 Do() 返回后继续跑，
+	// 直到 body 读完），而 SSE 整个生成期都在读 body —— 长思考请求会被从流中间掐断。
+	// 2026-09-25 实测同源渠道一次中断恰好 120.00s（= config.upstream.timeout_seconds），
+	// 客户端表现为「突然无响应」。空闲兜底改由 IdleReader 承担。
+	StreamHTTP *http.Client
+	// IdleTimeout 流式空闲超时：连续该时长读不到任何字节即判上游卡死。
+	// 0 = 用 DefaultIdleTimeout。由 main 装配时注入 config.upstream.stream_idle_seconds。
+	IdleTimeout time.Duration
+	Base        string // 业务 API，默认 https://openapi.qoder.sh
+	Gateway     string // 推理网关，默认 https://api1.qoder.sh
+	ModelsBase  string // 模型列表，默认 https://api2.qoder.sh
 
 	// modelMap 客户端名（display_name 规范化）→ 上游 model key；
 	// cache 为最近一次成功拉取的完整模型表（无静态兜底，仅此缓存）。
@@ -47,22 +57,51 @@ func New() *Client {
 	return NewWithTimeout(180 * time.Second)
 }
 
-// NewWithTimeout 指定上游 HTTP 超时；配置连接池。
+// DefaultIdleTimeout 流式空闲超时默认值。
+//
+// 实测正常请求 8~40s 完成（同一模型），90s 足够宽松——只拦「真的一个字节都不出」。
+const DefaultIdleTimeout = 90 * time.Second
+
+// NewWithTimeout 指定非流式超时；配置连接池。
 func NewWithTimeout(timeout time.Duration) *Client {
-	tr := &http.Transport{
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 20,
-		IdleConnTimeout:     90 * time.Second,
-		TLSNextProto:        map[string]func(string, *tls.Conn) http.RoundTripper{}, // 强制 HTTP/1.1
-	}
 	return &Client{
-		HTTP:       &http.Client{Timeout: timeout, Transport: tr},
+		HTTP:       &http.Client{Timeout: timeout, Transport: newTransport()},
+		StreamHTTP: &http.Client{Transport: newTransport()},
 		Base:       OpenAPIBase,
 		Gateway:    GatewayBase,
 		ModelsBase: ModelsBase,
 		modelMap:   map[string]string{},
 		userTypes:  map[string]string{},
 	}
+}
+
+// newTransport 出厂 Transport：禁 h2 + 连接池 + ResponseHeaderTimeout 兜底。
+//
+// StreamHTTP 无总超时后**必须**有 ResponseHeaderTimeout，否则连响应头都等不到就会无限挂住。
+func newTransport() *http.Transport {
+	return &http.Transport{
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   20,
+		IdleConnTimeout:       90 * time.Second,
+		TLSNextProto:          map[string]func(string, *tls.Conn) http.RoundTripper{}, // 强制 HTTP/1.1
+		ResponseHeaderTimeout: 60 * time.Second,
+	}
+}
+
+// streamClient 返回流式调用用的客户端（无总超时，回落新建保证 nil 安全）。
+func (c *Client) streamClient() *http.Client {
+	if c.StreamHTTP == nil {
+		c.StreamHTTP = &http.Client{Transport: newTransport()}
+	}
+	return c.StreamHTTP
+}
+
+// idleTimeout 生效的空闲超时（未注入时用默认值）。
+func (c *Client) idleTimeout() time.Duration {
+	if c.IdleTimeout <= 0 {
+		return DefaultIdleTimeout
+	}
+	return c.IdleTimeout
 }
 
 // NewWithBase 测试用：覆盖 base/gateway。
@@ -387,7 +426,8 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 	if err := sess.ApplyHeaders(req, encoded, url, a.UID, "text/event-stream", true, modelKey); err != nil {
 		return nil, 0, nil, fmt.Errorf("cosy headers: %w", err)
 	}
-	resp, err := c.HTTP.Do(req)
+	// 用无总超时的 client：长思考请求不受整请求上限约束（见 Client.StreamHTTP）。
+	resp, err := c.streamClient().Do(req)
 	if err != nil {
 		log.Printf("qodercom chat_stream uid=%s model=%s: transport error: %v", a.UID, modelKey, err)
 		return nil, 0, nil, err
@@ -399,7 +439,10 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 			a.UID, modelKey, resp.StatusCode, truncate(string(raw), 200))
 		return nil, resp.StatusCode, raw, nil
 	}
-	return resp.Body, resp.StatusCode, nil, nil
+	// 空闲看门狗兜底：连续 idleTimeout 读不到字节即判上游卡死并关掉 body。
+	// 流式与 stream:false 的聚合路径共用这一层（聚合时由「总时长硬上限」
+	// 变为「空闲上限」，长而持续输出的响应不再被误杀）。
+	return provider.NewIdleReader(resp.Body, c.idleTimeout()), resp.StatusCode, nil, nil
 }
 
 // modelEntry 按 key 找缓存中的模型条目（构造 model_config 全字段用）；找不到返回 nil（auto 兜底）。

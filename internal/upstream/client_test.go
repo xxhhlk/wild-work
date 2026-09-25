@@ -7,8 +7,10 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"wild-work/internal/auth"
+	"wild-work/internal/provider"
 )
 
 func TestClassify(t *testing.T) {
@@ -112,6 +114,7 @@ func jsonResp(status int, body string) *http.Response {
 func testClient(fn rtFunc) *Client {
 	return &Client{
 		HTTP:            &http.Client{Transport: fn},
+		StreamHTTP:      &http.Client{Transport: fn},
 		ChatBaseCN:      "https://chat.example",
 		BillingBaseCN:   "https://billing.example",
 		ChatBaseGlobal:  "https://gchat.example",
@@ -289,5 +292,76 @@ func TestRegionBases(t *testing.T) {
 	}
 	if c.chatBase(gl) != "https://gchat.example" || c.billingBase(gl) != "https://gbilling.example" {
 		t.Error("global bases wrong")
+	}
+}
+
+// TestStreamClientHasNoTotalTimeout 守门：流式必须走**无总超时**的 client。
+//
+// 背景：http.Client.Timeout 是整请求上限，计时器在 Do() 返回后继续跑直到 body 读完；
+// SSE 整个生成期都在读 body，故长思考请求会被从流中间掐断（实测 120.00s =
+// config.upstream.timeout_seconds）。非流式 client 必须保留总超时（短请求的合理兜底）。
+func TestStreamClientHasNoTotalTimeout(t *testing.T) {
+	c := New()
+	if c.StreamHTTP == nil {
+		t.Fatal("StreamHTTP 必须存在")
+	}
+	if c.StreamHTTP.Timeout != 0 {
+		t.Fatalf("StreamHTTP.Timeout = %v，必须为 0（流式不能有整请求上限）", c.StreamHTTP.Timeout)
+	}
+	if c.HTTP == nil || c.HTTP.Timeout <= 0 {
+		t.Fatalf("非流式 HTTP.Timeout = %v，必须 > 0", c.HTTP.Timeout)
+	}
+	// 无总超时后必须靠 ResponseHeaderTimeout 兜底，否则连响应头都等不到会无限挂住。
+	tr, ok := c.StreamHTTP.Transport.(*http.Transport)
+	if !ok || tr == nil {
+		t.Fatalf("StreamHTTP.Transport = %T，应为 *http.Transport", c.StreamHTTP.Transport)
+	}
+	if tr.ResponseHeaderTimeout <= 0 {
+		t.Fatal("StreamHTTP 必须有 ResponseHeaderTimeout 兜底")
+	}
+	if tr.TLSNextProto == nil {
+		t.Fatal("应强制 HTTP/1.1（禁 h2）")
+	}
+}
+
+// TestIdleTimeoutDefaults 未注入配置时回落默认值（装配漏注入不应退化成「无兜底」）。
+func TestIdleTimeoutDefaults(t *testing.T) {
+	c := New()
+	if got := c.idleTimeout(); got != DefaultIdleTimeout {
+		t.Fatalf("idleTimeout() = %v, want %v", got, DefaultIdleTimeout)
+	}
+	c.IdleTimeout = 33 * time.Second
+	if got := c.idleTimeout(); got != 33*time.Second {
+		t.Fatalf("idleTimeout() = %v, want 33s", got)
+	}
+}
+
+// TestChatStreamUsesStreamClientAndIdleReader 守门：对话流必须走 StreamHTTP 且包看门狗。
+func TestChatStreamUsesStreamClientAndIdleReader(t *testing.T) {
+	httpCalled := false
+	c := &Client{
+		HTTP: &http.Client{Transport: rtFunc(func(*http.Request) (*http.Response, error) {
+			httpCalled = true
+			return nil, errors.New("对话流不得走带总超时的 HTTP client")
+		})},
+		StreamHTTP: &http.Client{Transport: rtFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: 200,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(strings.NewReader("data: [DONE]\n\n")),
+			}, nil
+		})},
+		ChatBaseCN: "https://chat.example",
+	}
+	rc, status, _, err := c.ChatStream(&auth.Auth{AccessToken: "at", UID: "u1"}, []byte(`{"model":"glm-5.2","messages":[]}`))
+	if err != nil || status != 200 {
+		t.Fatalf("chat: status=%d err=%v", status, err)
+	}
+	defer rc.Close()
+	if httpCalled {
+		t.Fatal("ChatStream 走了 HTTP（有总超时）而不是 StreamHTTP")
+	}
+	if _, ok := rc.(*provider.IdleReader); !ok {
+		t.Fatalf("ChatStream 返回体未包 IdleReader（got %T），空闲卡死将无法兜底", rc)
 	}
 }

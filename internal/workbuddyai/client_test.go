@@ -2,8 +2,10 @@ package workbuddyai
 
 import (
 	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestPrepareBodyForcesStream 上游拒绝非流式请求（实测 code=11101）。
@@ -304,5 +306,46 @@ func TestPrepareBodyConvergesOutputLimits(t *testing.T) {
 		if obj["max_tokens"] != c.want {
 			t.Errorf("%s: max_tokens=%v want %v", c.name, obj["max_tokens"], c.want)
 		}
+	}
+}
+
+// TestStreamClientHasNoTotalTimeout 守门：流式必须走**无总超时**的 client。
+//
+// 背景：http.Client.Timeout 是整请求上限，计时器在 Do() 返回后继续跑直到 body 读完；
+// SSE 整个生成期都在读 body，故长思考请求会被从流中间掐断（实测本渠道 15582 completion
+// tokens 的长输出）。非流式 client 必须保留总超时（短请求的合理兜底）。
+func TestStreamClientHasNoTotalTimeout(t *testing.T) {
+	c := New()
+	if c.StreamHTTP == nil {
+		t.Fatal("StreamHTTP 必须存在")
+	}
+	if c.StreamHTTP.Timeout != 0 {
+		t.Fatalf("StreamHTTP.Timeout = %v，必须为 0（流式不能有整请求上限）", c.StreamHTTP.Timeout)
+	}
+	if c.HTTP == nil || c.HTTP.Timeout <= 0 {
+		t.Fatalf("非流式 HTTP.Timeout = %v，必须 > 0", c.HTTP.Timeout)
+	}
+	// 无总超时后必须靠 ResponseHeaderTimeout 兜底，否则连响应头都等不到会无限挂住。
+	tr, ok := c.StreamHTTP.Transport.(*http.Transport)
+	if !ok || tr == nil {
+		t.Fatalf("StreamHTTP.Transport = %T，应为 *http.Transport", c.StreamHTTP.Transport)
+	}
+	if tr.ResponseHeaderTimeout <= 0 {
+		t.Fatal("StreamHTTP 必须有 ResponseHeaderTimeout 兜底")
+	}
+	if tr.TLSNextProto == nil {
+		t.Fatal("应强制 HTTP/1.1（禁 h2）")
+	}
+}
+
+// TestIdleTimeoutDefaults 未注入配置时回落默认值（装配漏注入不应退化成「无兜底」）。
+func TestIdleTimeoutDefaults(t *testing.T) {
+	c := New()
+	if got := c.idleTimeout(); got != DefaultIdleTimeout {
+		t.Fatalf("idleTimeout() = %v, want %v", got, DefaultIdleTimeout)
+	}
+	c.IdleTimeout = 33 * time.Second
+	if got := c.idleTimeout(); got != 33*time.Second {
+		t.Fatalf("idleTimeout() = %v, want 33s", got)
 	}
 }

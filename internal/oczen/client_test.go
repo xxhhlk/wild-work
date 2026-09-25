@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"wild-work/internal/provider"
 )
@@ -300,5 +301,64 @@ func TestAnonymousAuthShape(t *testing.T) {
 	}
 	if a.NeedsRefresh(365 * 24 * 60 * 60 * 1e9) {
 		t.Fatal("虚拟账号不应需要刷新（ExpiresAt 必须为远期值）")
+	}
+}
+
+// TestStreamClientHasNoTotalTimeout 守门：流式必须走**无总超时**的 client。
+//
+// http.Client.Timeout 是整请求上限，SSE 整个生成期都在读 body ⇒ 长思考请求会被从流中间
+// 掐断。非流式 client 必须保留总超时（短请求的合理兜底）。
+func TestStreamClientHasNoTotalTimeout(t *testing.T) {
+	c := New()
+	if c.StreamHTTP == nil {
+		t.Fatal("StreamHTTP 必须存在")
+	}
+	if c.StreamHTTP.Timeout != 0 {
+		t.Fatalf("StreamHTTP.Timeout = %v，必须为 0（流式不能有整请求上限）", c.StreamHTTP.Timeout)
+	}
+	if c.HTTP == nil || c.HTTP.Timeout <= 0 {
+		t.Fatalf("非流式 HTTP.Timeout = %v，必须 > 0", c.HTTP.Timeout)
+	}
+	// 无总超时后必须靠 ResponseHeaderTimeout 兜底，否则连响应头都等不到会无限挂住。
+	tr, ok := c.StreamHTTP.Transport.(*http.Transport)
+	if !ok || tr == nil {
+		t.Fatalf("StreamHTTP.Transport = %T，应为 *http.Transport", c.StreamHTTP.Transport)
+	}
+	if tr.ResponseHeaderTimeout <= 0 {
+		t.Fatal("StreamHTTP 必须有 ResponseHeaderTimeout 兜底")
+	}
+	if tr.TLSNextProto == nil {
+		t.Fatal("应强制 HTTP/1.1（禁 h2）")
+	}
+}
+
+// TestIdleTimeoutDefaults 未注入配置时回落默认值（装配漏注入不应退化成「无兜底」）。
+func TestIdleTimeoutDefaults(t *testing.T) {
+	c := New()
+	if got := c.idleTimeout(); got != DefaultIdleTimeout {
+		t.Fatalf("idleTimeout() = %v, want %v", got, DefaultIdleTimeout)
+	}
+	c.IdleTimeout = 33 * time.Second
+	if got := c.idleTimeout(); got != 33*time.Second {
+		t.Fatalf("idleTimeout() = %v, want 33s", got)
+	}
+}
+
+// TestChatStreamWrapsIdleReader 守门：对话流返回体必须包空闲看门狗。
+func TestChatStreamWrapsIdleReader(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+	c := NewWithBase(srv.URL)
+	rc, status, _, err := c.ChatStream(AnonymousAuth(), []byte(
+		`{"model":"mimo-v2.6-flash-free","stream":false,"messages":[{"role":"user","content":"say ok"}]}`))
+	if err != nil || status != 200 {
+		t.Fatalf("chat: status=%d err=%v", status, err)
+	}
+	defer rc.Close()
+	if _, ok := rc.(*provider.IdleReader); !ok {
+		t.Fatalf("ChatStream 返回体未包 IdleReader（got %T），空闲卡死将无法兜底", rc)
 	}
 }

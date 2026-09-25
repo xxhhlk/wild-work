@@ -139,6 +139,8 @@ POST /api/quit                     # 退出程序
    > 且 `app.reloadAccounts` 不得纳入（否则 `SyncToDir` 会把它剔除）。
 
 > provider.Kind 即模型名前缀；server 按 `channel/<model>` 前缀路由，无需改接口。
+> **流式（所有对话渠道）**：走独立的 `StreamHTTP`（**无总超时**）+ `provider.IdleReader`
+> 空闲兜底，流中断补 error 帧 + `[DONE]`（见 §6 第 32 条）；非流式调用（目录/积分/刷新/签到）保留总超时。
 > **QoderCN（`qodercn/*`）**：qoder2api 参数形态（cosyVersion 1.0.10、18 头含 cosy-scene 族、
 > session_type=qoder、identity userType 实测回填）；签到双路径（campaigns 主 + daily-check-in 兜底，
 > 实测 legacy 已 DISABLED）；每日 10:00 开放 + 10:00–12:00 窗口内重试（见不变量 23）；动态模型表（无静态兜底，上次成功缓存）。详见 `docs/qoderCN渠道接入备忘.md`。
@@ -404,6 +406,9 @@ POST /api/quit                     # 退出程序
       由 Transport 的 `ResponseHeaderTimeout`（连头都等不到时兜底）+
       `provider.IdleReader`（`ErrIdleTimeout`，默认 90s，可配 `upstream.stream_idle_seconds`，
       下限 10s）两级承担。非流式调用（目录/积分/刷新）**保留**总超时 —— 短请求的总超时是恰当的。
+      覆盖全部对话渠道：workbuddy / workbuddyai / traework / traecode / qoder 三兄弟 / qwenwork /
+      raccoon / loomy / monkeycode / oczen（main 各注入 `IdleTimeout = cfg.StreamIdleDur`，
+      `proxyTargets()` 均登记 `StreamHTTP`）。
     - ⚠️ **`StreamHTTP` 无总超时后必须有 `ResponseHeaderTimeout`**：两者都去掉就是无限挂住。
       顺带补齐了 loomy/raccoon 此前缺失的 Transport（原先未设 Transport，实际共用
       `http.DefaultTransport`：h2 开启、无 `ResponseHeaderTimeout`）。
@@ -411,9 +416,10 @@ POST /api/quit                     # 退出程序
       流内帧是唯一能表达故障的通道。只 `return err` = 客户端收到无收尾的截断流（只能一直等）；
       只补 `[DONE]` 则把故障伪装成正常结束。统一走 `provider.WriteTruncationFrames`，
       错误码由 `TruncationErrorCode` 归一（空闲超时 `upstream_timeout` / 其它 `upstream_stream_error`）。
-      覆盖三处：`internal/loomy/sse.go`、`internal/raccoon/sse.go`、`internal/upstream/sse.go`
-      （后者为 WorkBuddy 系 workbuddy/workbuddyai/traework/traecode 共用，同款缺陷一并修）。
-      守门测试：`TestStreamTruncationEmitsFrames`（三包各一）+ `TestStreamReadErrorEmitsTruncationFrames`。
+      覆盖：`internal/loomy/sse.go`、`internal/raccoon/sse.go`、`internal/upstream/sse.go`
+      （workbuddy/workbuddyai 与 monkeycode/oczen 共用）、`internal/traework/solosse.go`、
+      `internal/{qoder,qodercn,qodercom,qwenwork}/sse.go`。
+      守门测试：`TestStreamTruncationEmitsFrames`（各流式包各一）+ `TestStreamReadErrorEmitsTruncationFrames`。
     - **代理渠道清单有三处，必须同步**：`config.go` 的 `Proxies` 注释、`main.go` 的 `proxyTargets()`、
       `web/app.js` 的 `PROXY_CHANNELS`。`App.SetProxies` 是**整份替换** `cfg.Proxies`，
       面板漏登记的渠道在保存时会被**静默清空**（手改 config.json 的代理会丢）——

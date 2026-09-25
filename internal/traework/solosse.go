@@ -384,6 +384,9 @@ func streamOpts(w http.ResponseWriter, r io.Reader, onErr func(*SOLOStreamError)
 	for {
 		line, err := br.ReadString('\n')
 		if err != nil && err != io.EOF {
+			// 流中断（空闲超时 / 连接被切断）：响应头早已按 200 发出，只能用流内帧表达故障。
+			// 不补帧 = 客户端收到无收尾的截断流 =「突然无响应」。
+			provider.WriteTruncationFrames(w, err)
 			return usage, err
 		}
 		if ev := scanLine(st, strings.TrimRight(line, "\r\n")); ev != nil {

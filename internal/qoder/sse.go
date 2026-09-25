@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"wild-work/internal/provider"
 )
 
 // parseNestedSSE 逐行解析嵌套 SSE，每个有效 chunk 调 onChunk。
@@ -250,6 +252,9 @@ func streamAsOpenAI(w io.Writer, r io.Reader, model string, flush func()) (map[s
 		return nil
 	})
 	if err != nil {
+		// 流中断（空闲超时 / 连接被切断）：响应头早已按 200 发出，只能用流内帧表达故障。
+		// 不补帧 = 客户端收到无收尾的截断流 =「突然无响应」（2026-09-25 实测形态）。
+		provider.WriteTruncationFrames(w, err)
 		return usage, err
 	}
 	if contentLen == 0 && reasoningLen == 0 && toolCallsLen == 0 {

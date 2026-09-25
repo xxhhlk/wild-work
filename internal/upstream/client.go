@@ -176,6 +176,16 @@ type Client struct {
 	// BillingHTTP 供账单/签到接口使用（短超时，慢网络下避免面板操作长时间假死）。
 	// 为 nil 时回退到 HTTP。
 	BillingHTTP *http.Client
+	// StreamHTTP 专供对话流式请求：**无总超时**。
+	//
+	// 为什么必须分开：http.Client.Timeout 是整请求上限（计时器在 Do() 返回后继续跑，
+	// 直到 body 读完），而 SSE 整个生成期都在读 body —— 长思考请求会被从流中间掐断。
+	// 客户端表现为「突然无响应」（补帧后改为收到 error 帧 + [DONE]）。空闲兜底改由
+	// IdleReader 承担。
+	StreamHTTP *http.Client
+	// IdleTimeout 流式空闲超时：连续该时长读不到任何字节即判上游卡死。
+	// 0 = 用 DefaultIdleTimeout。由 main 装配时注入 config.upstream.stream_idle_seconds。
+	IdleTimeout time.Duration
 
 	ChatBaseCN      string
 	BillingBaseCN   string
@@ -183,12 +193,18 @@ type Client struct {
 	BillingBaseGlob string
 }
 
+// DefaultIdleTimeout 流式空闲超时默认值。
+//
+// 实测正常请求 8~40s 完成（同一模型），90s 足够宽松——只拦「真的一个字节都不出」。
+const DefaultIdleTimeout = 90 * time.Second
+
 // New 生产默认值。Transport 加固：禁 h2 + Dial 超时/keepalive + TLS 握手超时 + ResponseHeaderTimeout。
 func New() *Client {
 	tr := newTransport()
 	return &Client{
 		HTTP:            &http.Client{Timeout: 120 * time.Second, Transport: tr},
 		BillingHTTP:     &http.Client{Timeout: 30 * time.Second, Transport: tr},
+		StreamHTTP:      &http.Client{Transport: newTransport()},
 		ChatBaseCN:      "https://copilot.tencent.com",
 		BillingBaseCN:   "https://www.codebuddy.cn",
 		ChatBaseGlobal:  "https://www.workbuddy.ai",
@@ -215,6 +231,22 @@ func (c *Client) billingClient() *http.Client {
 		return c.BillingHTTP
 	}
 	return c.HTTP
+}
+
+// streamClient 返回流式调用用的客户端（无总超时，回落新建保证 nil 安全）。
+func (c *Client) streamClient() *http.Client {
+	if c.StreamHTTP == nil {
+		c.StreamHTTP = &http.Client{Transport: newTransport()}
+	}
+	return c.StreamHTTP
+}
+
+// idleTimeout 生效的空闲超时（未注入时用默认值）。
+func (c *Client) idleTimeout() time.Duration {
+	if c.IdleTimeout <= 0 {
+		return DefaultIdleTimeout
+	}
+	return c.IdleTimeout
 }
 
 func (c *Client) chatBase(a *auth.Auth) string {
@@ -335,7 +367,8 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 		return nil, 0, nil, err
 	}
 	ChatHeaders(req, a)
-	resp, err := c.HTTP.Do(req)
+	// 用无总超时的 client：长思考请求不受整请求上限约束（见 Client.StreamHTTP）。
+	resp, err := c.streamClient().Do(req)
 	if err != nil {
 		log.Printf("chat_stream uid=%s: transport error: %v", a.UID, err)
 		return nil, 0, nil, err
@@ -348,7 +381,10 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 			a.UID, resp.StatusCode, kind, provider.LogBody(string(raw)), provider.LogParams(prepared))
 		return nil, resp.StatusCode, raw, nil
 	}
-	return resp.Body, resp.StatusCode, nil, nil
+	// 空闲看门狗兜底：连续 idleTimeout 读不到字节即判上游卡死并关掉 body。
+	// 流式与 stream:false 的聚合路径共用这一层（聚合时由「总时长硬上限」
+	// 变为「空闲上限」，长而持续输出的响应不再被误杀）。
+	return provider.NewIdleReader(resp.Body, c.idleTimeout()), resp.StatusCode, nil, nil
 }
 
 // ModelInfo 动态模型信息（含 maxInputTokens/maxOutputTokens）。

@@ -14,6 +14,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"wild-work/internal/provider"
 )
 
 // envelope SSE 外层信封。
@@ -277,6 +279,9 @@ func streamAsOpenAI(w io.Writer, r io.Reader, model string, flush func()) (map[s
 		return nil
 	})
 	if err != nil {
+		// 流中断（空闲超时 / 连接被切断）：响应头早已按 200 发出，只能用流内帧表达故障。
+		// 不补帧 = 客户端收到无收尾的截断流 =「突然无响应」。
+		provider.WriteTruncationFrames(w, err)
 		return usage, err
 	}
 	if !sawDone {

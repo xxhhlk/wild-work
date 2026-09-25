@@ -238,25 +238,33 @@ func main() {
 	ocPool.SetDisabled(oczen.AnonymousUID, false)
 	ocPool.ClearPenalty(oczen.AnonymousUID)
 
+	// 所有流式渠道（对话）：走独立 client（StreamHTTP 无总超时），TimeoutSeconds 只作用于
+	// 非流式调用；流式兜底改由 IdleTimeout（空闲看门狗）承担。理由见 config.StreamIdleSeconds。
 	wbUp := upstream.New()
 	wbUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
+	wbUp.IdleTimeout = cfg.StreamIdleDur
 	trUp := traework.New()
 	trUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
+	trUp.IdleTimeout = cfg.StreamIdleDur
 	// TraeCode（代码版）：与 TraeWork 同一上游、共用账号，仅 function 不同（solo_agent）。
 	trCodeUp := traework.NewTraeCode()
 	trCodeUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
+	trCodeUp.IdleTimeout = cfg.StreamIdleDur
 	qdUp := qoder.New()
 	qdUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
+	qdUp.IdleTimeout = cfg.StreamIdleDur
 	wbaUp := workbuddyai.New()
 	wbaUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
+	wbaUp.IdleTimeout = cfg.StreamIdleDur
 	qwUp := qwenwork.New()
 	qwUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
+	qwUp.IdleTimeout = cfg.StreamIdleDur
 	qcnUp := qodercn.New()
 	qcnUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
+	qcnUp.IdleTimeout = cfg.StreamIdleDur
 	qcmUp := qodercom.New()
 	qcmUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
-	// raccoon / loomy：流式走独立 client（StreamHTTP 无总超时），TimeoutSeconds 只作用于
-	// 非流式调用；流式兜底改由 IdleTimeout（空闲看门狗）承担。理由见 config.StreamIdleSeconds。
+	qcmUp.IdleTimeout = cfg.StreamIdleDur
 	rcUp := raccoon.New()
 	rcUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
 	rcUp.IdleTimeout = cfg.StreamIdleDur
@@ -265,7 +273,9 @@ func main() {
 	lmUp.IdleTimeout = cfg.StreamIdleDur
 	mcUp := monkeycode.New()
 	mcUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
+	mcUp.IdleTimeout = cfg.StreamIdleDur
 	ocUp := oczen.New()
+	ocUp.IdleTimeout = cfg.StreamIdleDur
 
 	// 单渠道上游代理：config.proxies 按 kind 套到各渠道 HTTP client 上（未配置 = 直连）。
 	// StreamHTTP 与主 client 出厂共用 Transport，先切独立再套代理，
@@ -276,18 +286,18 @@ func main() {
 	// raccoon/loomy/monkeycode/traecode，表现为「改代理不生效，重启才行」）。
 	proxyTargets := func() map[string][]*http.Client {
 		return map[string][]*http.Client{
-			provider.WorkBuddy.String():   {wbUp.HTTP, wbUp.BillingHTTP},
-			provider.WorkBuddyAI.String(): {wbaUp.HTTP},
+			provider.WorkBuddy.String():   {wbUp.HTTP, wbUp.BillingHTTP, wbUp.StreamHTTP},
+			provider.WorkBuddyAI.String(): {wbaUp.HTTP, wbaUp.StreamHTTP},
 			provider.TraeWork.String():    {trUp.HTTP, trUp.StreamHTTP},
 			provider.TraeCode.String():    {trCodeUp.HTTP, trCodeUp.StreamHTTP},
-			provider.Qoder.String():       {qdUp.HTTP},
-			provider.QoderCN.String():     {qcnUp.HTTP},
-			provider.QoderCOM.String():    {qcmUp.HTTP},
-			provider.QwenWork.String():    {qwUp.HTTP},
+			provider.Qoder.String():       {qdUp.HTTP, qdUp.StreamHTTP},
+			provider.QoderCN.String():     {qcnUp.HTTP, qcnUp.StreamHTTP},
+			provider.QoderCOM.String():    {qcmUp.HTTP, qcmUp.StreamHTTP},
+			provider.QwenWork.String():    {qwUp.HTTP, qwUp.StreamHTTP},
 			provider.Raccoon.String():     {rcUp.HTTP, rcUp.StreamHTTP},
 			provider.Loomy.String():       {lmUp.HTTP, lmUp.StreamHTTP},
-			provider.MonkeyCode.String():  {mcUp.HTTP},
-			provider.Oczen.String():       {ocUp.HTTP},
+			provider.MonkeyCode.String():  {mcUp.HTTP, mcUp.StreamHTTP},
+			provider.Oczen.String():       {ocUp.HTTP, ocUp.StreamHTTP},
 		}
 	}
 	applyProxies(cfg, proxyTargets())
