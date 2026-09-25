@@ -619,7 +619,7 @@ func TestLiveProbeEffortGradient(t *testing.T) {
 			// raw 路径：手工构造原生 body，直发。
 			mc := c.modelEntry(key)
 			raw, berr := buildAgentBody([]map[string]any{{"role": "user", "content": usePrompt}}, mc, nil,
-				reasoningSpec{Enabled: tc.enabled, Effort: ""}, 0, c.userTypeOf(a))
+				reasoningSpec{Enabled: tc.enabled, Effort: ""}, 0, c.userTypeOf(a), mc.ContextWindow)
 			if berr != nil {
 				t.Fatalf("%s: 构造 body 失败：%v", tc.name, berr)
 			}
@@ -824,7 +824,7 @@ func TestLiveProbeProjectionDryRun(t *testing.T) {
 	spec := reasoningSpecFor("qwen3.8-flash", "xhigh", nil)
 	raw, err := buildAgentBody(
 		[]map[string]any{{"role": "user", "content": "hi"}},
-		&ModelEntry{Key: "qfmodel", DisplayName: "Qwen3.8-Flash"}, nil, spec, 0, "personal_standard")
+		&ModelEntry{Key: "qfmodel", DisplayName: "Qwen3.8-Flash"}, nil, spec, 0, "personal_standard", 0)
 	if err != nil {
 		t.Fatalf("buildAgentBody: %v", err)
 	}

@@ -731,7 +731,7 @@ func TestLiveProbeCaseTableDryRun(t *testing.T) {
 	for _, c := range cases {
 		if c.id == "3" {
 			var obj map[string]any
-			raw, _ := buildAgentBody([]map[string]any{{"role": "user", "content": "test"}}, "qfmodel", nil, reasoningSpec{Enabled: true, Effort: "medium"})
+			raw, _ := buildAgentBody([]map[string]any{{"role": "user", "content": "test"}}, "qfmodel", nil, reasoningSpec{Enabled: true, Effort: "medium"}, 0)
 			json.Unmarshal(raw, &obj)
 			c.mutate(obj)
 			jb, _ := json.Marshal(obj)
@@ -814,7 +814,7 @@ func TestLiveProbeProjectionDryRun(t *testing.T) {
 			t.Fatalf("%s: 解析失败: %v", name, err)
 		}
 		spec := reasoningSpecFor(req.Model, req.ReasoningEffort, req.Thinking)
-		raw, err := buildAgentBody(req.Messages, "qfmodel", req.Tools, spec)
+		raw, err := buildAgentBody(req.Messages, "qfmodel", req.Tools, spec, 0)
 		if err != nil {
 			t.Fatalf("%s: build 失败: %v", name, err)
 		}
@@ -975,7 +975,7 @@ func TestLiveProbeEffort(t *testing.T) {
 		okCount := 0
 		for i := 0; i < repeat; i++ {
 			messages := []map[string]any{{"role": "user", "content": usePrompt}}
-			raw, err := buildAgentBody(messages, modelKey, nil, reasoningSpec{Enabled: tc.reasoning})
+			raw, err := buildAgentBody(messages, modelKey, nil, reasoningSpec{Enabled: tc.reasoning}, 0)
 			if err != nil {
 				t.Fatalf("%s: 构造 body 失败：%v", tc.name, err)
 			}

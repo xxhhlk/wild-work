@@ -450,6 +450,10 @@ POST /api/quit                     # 退出程序
 > ⚠️ **本地构建是日常约束**：任何代码变更后都要重新构建 `dist/wild-work.exe`
 > （见 §6 第 0 条）。CI 不生成该文件，且 `dist/` 不入版本控制。
 > 标准流程：`go build ./... && go vet ./... && go test ./...` 全绿后再构建。
+> 注意：`go test ./...` **不编译** `//go:build live` 的探针文件，改动其调用的
+> 函数签名后探针会静默腐烂（2026-09-26 实测：`qoder` / `qodercn` / `qodercom`
+> 三个探针都因 `buildAgentBody` 增参而编译不过，长期无人察觉）。故标准流程为：
+> `go build ./... && go vet ./... && go test ./... && go vet -tags live ./...`。
 
 ```bash
 # Windows（本机直接构建，或 WSL 交叉编译）
