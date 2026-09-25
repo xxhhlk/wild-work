@@ -417,6 +417,9 @@ func (c *Client) fetchWallet(cookie string) (*walletResponse, error) {
 
 // deriveConsoleSession 用百智云会话现换一份控制台会话，返回 `monkeycode_ai_session` 的值。
 //
+// 背景：MonkeyCode 不是自建登录，而是长亭百智云（baizhi.cloud）SSO 的 OAuth 客户端；
+// 控制台会话（≈6 天）由百智云会话（≈29 天）派生。动力与实测见评估文档 §3.14 ④。
+//
 // 链路（与官方前端「同意授权」按钮跳转的完全同形，纯 HTTP 两步）：
 //
 //	GET  {baizhiBase}/api/v1/oauth/authorize?client_id=monkeycode-ai

@@ -319,12 +319,15 @@ POST /api/quit                     # 退出程序
       **注意：同族 dt-/drt- 渠道（qoder/qodercn/qodercom）token 为不透明串、无 JWT 可交叉验证，
       其 `// ms` 标注未被本次改动触及**（无证据不做改动）。
 
-25. **导入型渠道（`raccoon` / `loomy`）不做登录编排**：凭据由面板「从本机客户端导入」产生
+25. **导入型渠道（`raccoon` / `loomy` / `monkeycode`）不做登录编排**：凭据由面板「从本机客户端导入」产生
     （`internal/app/import_local.go`，写 `auths/<渠道>-<uid>.json`，路径**自适应探测**多候选目录）。
-    由此产生三条硬约束：
-    - **未知模型必须本地拒绝**：两个上游对未知模型名都会**静默回落到默认模型并返回 200**（阶段 C 实测），
-      渠道层不校验就会让用户以为在用 A 模型、实际消耗 B 模型的额度。守门测试见各渠道包的
-      `TestChatStreamRejectsUnknownModel`。
+    由此产生四条硬约束：
+    - **未知模型必须本地拒绝**：三个上游对未知模型名都会**静默回落到默认模型并返回 200**
+      （raccoon/loomy 阶段 C 实测；monkeycode 由 `staticSet` 白名单拦，见其 `client.go` 注释），
+      渠道层不校验就会让用户以为在用 A 模型、实际消耗 B 模型的额度。monkeycode 另在
+      `Classify` 里把上游回的 `model_not_found` 归 `ErrBadParams`（请求级、不罚号）。
+      守门测试：raccoon/loomy 的 `TestChatStreamRejectsUnknownModel`、
+      monkeycode 的 `TestUnknownModelRejectedLocally`。
     - **聚合必须同时支持 JSON 与 SSE**：上游对非流式请求可能直接返回 JSON（Loomy 实测），
       只按 SSE 解析会得到「content 空 + created 用 time.Now() 兜底」的假响应。
     - **小浣熊的 refresh_token 单次消费、会话可多份并存**（2026-09-25 实测更正）：
@@ -332,6 +335,11 @@ POST /api/quit                     # 退出程序
       导入器复制客户端同一份 token（同一 `sid`），两边会抢着消费同一个 refresh_token，
       后刷者报 `refresh_conflict`（实测 400）。判据是 `sid`，详见
       `本地 docs/loomy-raccoon接入记录.md` §6.3。
+    - **`monkeycode` 有两层凭据、生命周期差 5 倍**：`oma_`/`omas_`（agent，无刷新端点）
+      是长期凭据，控制台会话（积分用）只活 ≈6 天，但可由**百智云会话**（≈29 天，同一 bundle
+      目录的 `baizhi-cookies.json`）经 OAuth 派生续期 —— 故导入器**必须两支 cookie 都取**，
+      缺 baizhiCookie 时积分到期就只剩「重新导入」一条路。凭据链与实测见
+      `本地 docs/MonkeyCode渠道接入评估.md` §3.14 ③④。
 26. **`loomy` 的档位面独占 `RealmLoomy`**（`RealmForKind` / `SupportsEffortKind` 已同时登记）：
     档位来自上游 `/models` 的 `reasoning_efforts`（无静态兜底）；投影时补 `enable_thinking` 与
     `chat_template_kwargs.enable_thinking` 三件套。实测该系列模型**无法完全关闭思考**

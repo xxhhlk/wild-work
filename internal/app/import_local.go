@@ -316,6 +316,9 @@ func monkeyCodeImportNote(consoleWhy, baizhiWhy string) string {
 
 // monkeyCodeCookie 从客户端 cookie 文件里取指定名字的 Cookie 值（尽力而为）。
 //
+// 为什么要取两支（控制台 + 百智云）：控制台会话短寿（≈6 天）但可由百智云会话
+// （≈29 天）自动派生续期。凭据链与端点见评估文档 §3.14 ③④。
+//
 // 与 api_key/signing_secret 不同，控制台接口（积分钱包等）只认 Cookie，而本工具
 // 没有登录流程 —— 因此文件缺失、读取失败或已过期都只返回空串 + 一句**原因**，
 // 由调用方决定怎么向用户表述（都不影响凭据导入本身）。
