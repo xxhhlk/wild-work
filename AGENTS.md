@@ -195,7 +195,7 @@ POST /api/quit                     # 退出程序
 | qwenwork | ❌ | **不投影** | N/A（刻意不做，非缺口） | 官方客户端本身无思考控制 UI，抓包确认请求体不带该字段 |
 | traework | ❌ | 不投影 | ❌ **上游声明有、实际无效** | `custom_model.reasoning_effort` 传错类型也 200，字段未被反序列化 |
 | traecode | ❌ | 同上 | ❌ 同 traework（同协议族） | 同上 |
-| monkeycode | ❌ **不声明** | anthropic 面 `thinking.type`（两态）／responses 面 `reasoning.effort` | ⚠️ **分面**：anthropic 面 effort 无效（只开/关）；responses 面 `none`/`low`/`high` 有效 | 评估文档 §3.13 |
+| monkeycode | ❌ **不声明** | anthropic 面 `thinking.type`（两态）／responses 面 `reasoning.effort` | ⚠️ **按模型分型**：客户端按内置能力目录决定——`binary` 型 anthropic 面只开/关；`effort` 型（anthropic 面仅 kimi-k2.6）走 `adaptive` + `output_config.effort`（wild-work 目前会丢该档位）；responses 面 `none`/`low`/`high` 有效 | 评估文档 §3.13 |
 | oczen | ❌ | 不投影 | N/A | — |
 
 **读表要点**：

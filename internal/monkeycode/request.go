@@ -113,14 +113,20 @@ func reasoningLevel(in map[string]any) string {
 //   - `{type:"enabled"}` 与「不传」等价（65 帧 / output 70）；
 //   - `budget_tokens` 被接受但**对思考量无可测影响**（1024 → 59 帧/64 out，
 //     与不带 budget 的 65 帧/70 out 同量级），故不下发；
-//   - 官方客户端配置里的 `thinking.effort` **根本不上线**：抓包证实 low 与 high
-//     产出的 body **完全相同**，都是 `{type:"enabled"}`。
+//   - `effort` 是否上线**取决于模型能力**（2026-09-25 复测更正）：官方客户端按内置
+//     目录的 `thinking_control` 分型——`binary` 型丢弃 effort（low/high 产出的 body
+//     逐字节相同），`effort` 型则发 `{type:"adaptive"}` + `output_config.effort`。
+//     本渠道 25 个托管模型里 anthropic 面仅 kimi-k2.6 属 effort 型（pro 档）。
 //
 // 因此本面只能表达「开 / 关」两态，没有梯度：
 //   - 客户端明确表达任何档位（`low`/`medium`/`high`…）→ 开；
 //   - `none` → 关；
 //   - **未表达 → 开**（2026-09-24 拍板「两面未表达即开」，与 responses 面统一，
 //     也与官方客户端默认形态一致；此处**显式**补 `enabled`，不依赖上游默认值不变）。
+//
+// ⚠️ 已知缺口：effort 型模型客户端走 `{type:"adaptive"}` + `output_config.effort`，
+// 本函数会把档位压成 `enabled` 丢掉。是否补取决于上游是否真认 `output_config.effort`
+// （未验证，见评估文档 §3.13）。
 //
 // 注：R19「不在客户端未表达时强行开思考」是**积分/DeepSeek 系**渠道的取舍（省额度），
 // 不适用于本渠道 —— 上游默认本就开着，不补字段同样是开，显式补只是把契约写死。
