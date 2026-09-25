@@ -1196,3 +1196,28 @@ func TestChatStreamWrapsIdleReader(t *testing.T) {
 		t.Fatalf("ChatStream 返回体未包 IdleReader（got %T），空闲卡死将无法兜底", rc)
 	}
 }
+
+// TestWalletErrorMentionsBothSides 401 且派生也失败时，错误必须同时说明
+// 「会话失效」与「续期失败原因」—— 只报前者用户不知道该做什么，
+// 只报后者又不知道原问题（本次 monkeycode 凭据缺 baizhiCookie 就是这种场景）。
+func TestWalletErrorMentionsBothSides(t *testing.T) {
+	console := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized) // 会话已失效
+	}))
+	defer console.Close()
+
+	c := New()
+	c.Console = console.URL
+	// 有（失效的）控制台会话，但**没有**百智云会话 → 派生必然失败
+	a := &auth.Auth{ConsoleCookie: "expired"}
+	_, _, err := c.UserResourceDetail(a)
+	if err == nil {
+		t.Fatal("应报错")
+	}
+	msg := err.Error()
+	for _, want := range []string{"控制台会话已失效", "自动续期失败", "百智云会话"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("错误信息缺少 %q：%s", want, msg)
+		}
+	}
+}
