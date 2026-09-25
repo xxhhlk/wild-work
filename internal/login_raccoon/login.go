@@ -1,4 +1,4 @@
-// Package login_raccoon 实现商汤小浣熊的「协议劫持登录」。
+// Package login_raccoon 实现商汤小浣熊的「浏览器授权登录」。
 //
 // 官方登录链路（逆向自 desktopLogin.js 与服务端 SPA，见 本地 docs/raccoon渠道接入备忘.md §11）：
 //
@@ -8,16 +8,16 @@
 //	④ 该深链交给 HKCU\Software\Classes\office-raccoon 注册的协议处理器（默认是官方客户端 exe）
 //	⑤ 客户端 POST {authApi}/login_with_authorization_code {"authorization_code": code} 兑换 token
 //
-// 回调地址由服务端前端硬编码、全站 JS 无 redirect_uri，第三方改不了；但**兑换端点不校验调用方身份**
-// （无签名头、无设备身份、无鉴权头），谁拿到 code 谁就能换到 token。于是本包的做法是：
-// 登录期间把 office-raccoon 协议临时指向 wild-work 自身来截获深链，兑换完成后立刻恢复注册表。
+// 授权码只经这条深链回传（回调地址由服务端前端硬编码、全站 JS 无 redirect_uri），
+// 要拿到它就只能在第④步成为该协议的接收方。于是本包的做法是：
+// 登录期间把 office-raccoon 协议临时指向 wild-work 自身来接住深链，兑换完成后立刻恢复注册表。
 //
 // 与「从本机客户端导入」的关系：
-//   - 两者最终拿到的是**同一个账号**，但会话语义不同：协议登录新建独立会话（新 sid），
+//   - 两者最终拿到的是**同一个账号**，但会话语义不同：浏览器授权登录新建独立会话（新 sid），
 //     可与客户端并存；导入复用客户端同一份凭据（同一 sid），两边会抢着消费同一个 refresh_token；
 //   - 导入要求客户端已登录；
-//   - 协议登录不依赖客户端登录态，但登录期间官方客户端收不到回调（协议被抢占）；
-//     若客户端在此期间启动，它会重新注册协议 → 劫持失效（面板文案与文档均已提示）。
+//   - 授权登录不依赖客户端登录态，但登录期间官方客户端收不到回调（协议被本工具接管）；
+//     若客户端在此期间启动，它会重新注册协议 → 本工具的注册失效（面板文案与文档均已提示）。
 //
 // 注册表读写的实现在 internal/raccoon/protocol_windows.go（仅 Windows）。
 package login_raccoon
@@ -65,10 +65,10 @@ type state struct {
 // NewClient 登录流程用的 HTTP 客户端（兑换是普通 JSON 请求，无 cookie 需求）。
 func NewClient() *http.Client { return &http.Client{Timeout: 30 * time.Second} }
 
-// Start 发起登录：劫持协议注册 → 返回授权 URL。
+// Start 发起登录：改写协议注册 → 返回授权 URL。
 //
-// 顺序上先清残留回调文件（避免上次登录的 code 被当成这次的结果），再劫持注册表，
-// 最后写 state；任何一步失败都保证不留下「劫持着但没人恢复」的状态。
+// 顺序上先清残留回调文件（避免上次登录的 code 被当成这次的结果），再改写注册表，
+// 最后写 state；任何一步失败都保证不留下「注册表被改着但没人恢复」的状态。
 func Start(_ *http.Client, statePath, stateDir, exePath string) (string, error) {
 	// 上一次登录可能留下没人读的回调文件（超时后用户才在浏览器点完），先清掉。
 	if err := raccoon.ClearCallback(stateDir); err != nil {

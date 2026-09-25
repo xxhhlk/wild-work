@@ -49,7 +49,7 @@ func seedOfficialLike(t *testing.T, keyPath, clientExe string) {
 	_ = ck.Close()
 }
 
-// TestProtocolHijackRestoreRoundTrip 核心用例：备份 → 劫持 → 恢复必须逐值还原，
+// TestProtocolHijackRestoreRoundTrip 核心用例：备份 → 改写 → 恢复必须逐值还原，
 // 包括键树结构（shell / open / command 三个中间键都是 CreateKey 自动建的）。
 func TestProtocolHijackRestoreRoundTrip(t *testing.T) {
 	keyPath := testKeyPath(t)
@@ -75,10 +75,10 @@ func TestProtocolHijackRestoreRoundTrip(t *testing.T) {
 	}
 	cur, err := currentCommandAt(keyPath)
 	if err != nil {
-		t.Fatalf("劫持后读 command：%v", err)
+		t.Fatalf("改写后读 command：%v", err)
 	}
 	if !strings.Contains(cur, ourExe) || !strings.Contains(cur, CallbackFlag) {
-		t.Fatalf("劫持后 command 不符：%q", cur)
+		t.Fatalf("改写后 command 不符：%q", cur)
 	}
 
 	if err := restoreFrom(keyPath, b); err != nil {
@@ -122,7 +122,7 @@ func TestProtocolRestoreWhenKeyAbsent(t *testing.T) {
 		t.Fatalf("applyHijack: %v", err)
 	}
 	if _, err := currentCommandAt(keyPath); err != nil {
-		t.Fatalf("劫持后应能读到 command：%v", err)
+		t.Fatalf("改写后应能读到 command：%v", err)
 	}
 	if err := restoreFrom(keyPath, b); err != nil {
 		t.Fatalf("restoreFrom: %v", err)

@@ -315,8 +315,9 @@ const noExplicitCheckin = (g) => NO_EXPLICIT_CHECKIN.has(g);
 // 导入型渠道：凭据由本机已登录的官方客户端提供，没有浏览器登录流程（见 internal/app/import_local.go）。
 const IMPORT_LOCAL_CHANNELS = new Set(["raccoon", "loomy", "monkeycode"]);
 const isImportLocal = (ch) => IMPORT_LOCAL_CHANNELS.has(ch);
-// 支持「协议登录」的渠道：登录期间临时接管该渠道的自定义协议深链，自己拿授权码换 token。
-// 小浣熊两个集合都命中 —— 弹窗里同时给「协议登录」与「从客户端导入」两个动作。
+// 支持「浏览器授权登录」的渠道：登录期间临时把该渠道的自定义协议回调指向本工具，
+// 以便接住授权码并完成 token 兑换。
+// 小浣熊两个集合都命中 —— 弹窗里同时给「浏览器授权登录」与「从客户端导入」两个动作。
 const PROTOCOL_LOGIN_CHANNELS = new Set(["raccoon"]);
 const hasProtocolLogin = (ch) => PROTOCOL_LOGIN_CHANNELS.has(ch);
 // 无手动签到渠道的状态文案：国际版是「自动领日活奖励」，千问办公为「无签到」。
@@ -657,7 +658,7 @@ function promptLogin(channel) {
   altBtn.classList.add("hidden");
   altBtn.onclick = null;
 
-  // 协议登录渠道：主按钮走浏览器授权 + 协议接管，次按钮回退到本机客户端导入。
+  // 浏览器授权登录渠道：主按钮走浏览器授权 + 协议回调接管，次按钮回退到本机客户端导入。
   if (hasProtocolLogin(channel)) {
     pendingAction = "login";
     $("lcTitle").textContent = "添加 " + name + " 账号";

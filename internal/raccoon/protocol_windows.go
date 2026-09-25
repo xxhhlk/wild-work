@@ -1,6 +1,6 @@
 //go:build windows
 
-// protocol_windows.go 协议劫持的注册表实现（Windows）。
+// protocol_windows.go 协议回调接管的注册表实现（Windows）。
 //
 // 做法：登录期间把 HKCU\Software\Classes\office-raccoon 的 shell\open\command
 // 临时改成 wild-work 自身，从而在网页授权完成后收到 office-raccoon://auth/callback?code=…
@@ -57,7 +57,7 @@ type regKey struct {
 	Values []regValue `json:"values"`
 }
 
-// protocolBackup 劫持前的注册表快照。
+// protocolBackup 改写前的注册表快照。
 type protocolBackup struct {
 	Existed   bool     `json:"existed"`
 	Keys      []regKey `json:"keys"`
@@ -65,11 +65,11 @@ type protocolBackup struct {
 	CreatedAt int64    `json:"createdAt"`
 }
 
-// HijackProtocol 备份并劫持协议注册表。exePath 为 wild-work 自身可执行文件路径。
+// HijackProtocol 备份并把协议注册表指向本工具。exePath 为 wild-work 自身可执行文件路径。
 func HijackProtocol(exePath, backupFP string) error {
 	exePath = strings.TrimSpace(exePath)
 	if exePath == "" {
-		return errors.New("无法确定自身可执行文件路径，协议劫持登录不可用")
+		return errors.New("无法确定自身可执行文件路径，小浣熊授权登录不可用")
 	}
 	b, err := captureBackup(ProtocolKeyPath, exePath)
 	if err != nil {
@@ -127,7 +127,7 @@ func IsHijackedBy(exePath string) bool {
 	return strings.Contains(cur, exePath)
 }
 
-// HasPendingHijack 是否存在未清理的劫持备份（= 上次登录没走到恢复，需要启动自愈）。
+// HasPendingHijack 是否存在未清理的改设备份（= 上次登录没走到恢复，需要启动自愈）。
 func HasPendingHijack(stateDir string) bool {
 	_, err := os.Stat(BackupPath(stateDir))
 	return err == nil
@@ -146,7 +146,7 @@ func CurrentProtocolCommand() string {
 // 内部实现
 // ---------------------------------------------------------------------------
 
-// commandFor 生成劫持用的命令行。%1 由 Windows 替换为深链原文（含引号）。
+// commandFor 生成改写用的命令行。%1 由 Windows 替换为深链原文（含引号）。
 func commandFor(exePath string) string {
 	return "\"" + exePath + "\" " + callbackFlag + " \"%1\""
 }

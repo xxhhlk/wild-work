@@ -173,7 +173,7 @@ func New(opts Options) (*App, error) {
 // stateDir 数据目录（loginStateFP / pricingFP 都在这里）。
 func (a *App) stateDir() string { return filepath.Dir(a.cfg.StateFile) }
 
-// healRaccoonProtocol 启动自愈：小浣熊协议劫持登录会在 data/ 留一份注册表备份，
+// healRaccoonProtocol 启动自愈：小浣熊授权登录会在 data/ 留一份注册表备份，
 // 正常结束时会自行删除。若启动时它还在，说明上次登录中途退出/崩溃/被强杀，
 // 此时立刻把 office-raccoon 注册表恢复原状，避免协议长期指向本程序。
 func (a *App) healRaccoonProtocol() {
@@ -186,7 +186,7 @@ func (a *App) healRaccoonProtocol() {
 	case err != nil:
 		log.Printf("启动自愈：小浣熊协议注册表恢复失败：%v（可手动检查 HKCU\\%s）", err, raccoon.ProtocolKeyPath)
 	case restored:
-		log.Printf("启动自愈：检测到上次登录残留的协议劫持，已恢复 %s 注册表", raccoon.ProtocolScheme)
+		log.Printf("启动自愈：检测到上次登录残留的协议注册改写，已恢复 %s 注册表", raccoon.ProtocolScheme)
 	default:
 		log.Printf("启动自愈：残留备份存在但注册表已被官方客户端重写，仅清理备份文件")
 	}
@@ -466,7 +466,7 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 	case provider.WorkBuddy, provider.WorkBuddyAI, provider.TraeWork, provider.Qoder, provider.QoderCN, provider.QoderCOM, provider.QwenWork:
 		// 这些渠道已有登录编排
 	case provider.Raccoon:
-		// 小浣熊：协议劫持登录 —— 登录期间临时接管 office-raccoon 深链，
+		// 小浣熊：浏览器授权登录 —— 登录期间临时接管 office-raccoon 协议回调，
 		// 拿到网页授权码后自行兑换 token，随后恢复注册表（见 internal/login_raccoon）。
 		// 面板同时保留「从本机客户端导入」作为回退路径。
 	case provider.Loomy, provider.MonkeyCode:
@@ -523,7 +523,7 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 	case provider.QwenWork:
 		authURL, err = loginqwenwork.Start(a.loginClient, a.loginStateFP)
 	case provider.Raccoon:
-		// 协议劫持要把「自身 exe 绝对路径」写进注册表命令行，故这里先取 os.Executable。
+		// 协议回调接管要把「自身 exe 绝对路径」写进注册表命令行，故这里先取 os.Executable。
 		if exe, eerr := os.Executable(); eerr != nil {
 			err = fmt.Errorf("无法确定自身可执行文件路径：%w", eerr)
 		} else {
@@ -563,7 +563,7 @@ func (a *App) CancelLogin() error {
 	if kind == provider.QwenWork {
 		loginqwenwork.Shutdown()
 	}
-	// 小浣熊协议劫持登录：取消时立刻恢复注册表（幂等；pollLogin 的 defer 还会再兜一次）
+	// 小浣熊授权登录：取消时立刻恢复注册表（幂等；pollLogin 的 defer 还会再兜一次）
 	if kind == provider.Raccoon {
 		loginraccoon.Shutdown(a.loginStateFP, a.stateDir())
 	}
@@ -577,7 +577,7 @@ func (a *App) pollLogin(ctx context.Context) {
 		if r := recover(); r != nil {
 			log.Printf("login poll panic: %v", r)
 		}
-		// 小浣熊协议劫持登录：无论成功、失败、超时、取消还是 panic，
+		// 小浣熊授权登录：无论成功、失败、超时、取消还是 panic，
 		// 都必须把 office-raccoon 注册表恢复原状（Shutdown 幂等）。
 		if a.loginKind == provider.Raccoon {
 			loginraccoon.Shutdown(a.loginStateFP, a.stateDir())
@@ -956,7 +956,7 @@ func (a *App) completeQwenWorkLogin(r loginqwenwork.Result) {
 	})
 }
 
-// completeRaccoonLogin 协议劫持登录成功：写 auth 文件、重载账号池。
+// completeRaccoonLogin 授权登录成功：写 auth 文件、重载账号池。
 //
 // 凭据形态与「从本机客户端导入」完全一致（两者拿到的是同一个上游账号）：
 // uid 取 access_token 的 JWT name claim，domain/apiHost 对齐 internal/raccoon 的调用前缀。
@@ -1074,7 +1074,7 @@ func (a *App) reloadAccounts() {
 			rt.Pool.SyncToDir(auths)
 		}
 	}
-	// 导入型 / 协议登录渠道：凭据由「从本机客户端导入」或「小浣熊协议登录」写入 auths/，
+	// 导入型 / 浏览器授权登录渠道：凭据由「从本机客户端导入」或「小浣熊浏览器授权登录」写入 auths/，
 	// 添加后必须一并重载——否则新账号要等下次重启才进池，面板账号列表与 /v1/models 都看不到它。
 	if rt := a.runtime(provider.Raccoon); rt != nil && rt.Pool != nil {
 		auths, err := auth.LoadRaccoonDir(a.cfg.AuthDir)

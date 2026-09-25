@@ -331,7 +331,7 @@ POST /api/quit                     # 退出程序
     - **聚合必须同时支持 JSON 与 SSE**：上游对非流式请求可能直接返回 JSON（Loomy 实测），
       只按 SSE 解析会得到「content 空 + created 用 time.Now() 兜底」的假响应。
     - **小浣熊的 refresh_token 单次消费、会话可多份并存**（2026-09-25 实测更正）：
-      协议劫持登录新建独立会话（新 `sid`），可与官方客户端并存；
+      浏览器授权登录新建独立会话（新 `sid`），可与官方客户端并存；
       导入器复制客户端同一份 token（同一 `sid`），两边会抢着消费同一个 refresh_token，
       后刷者报 `refresh_conflict`（实测 400）。判据是 `sid`，详见
       `本地 docs/loomy-raccoon接入记录.md` §6.3。

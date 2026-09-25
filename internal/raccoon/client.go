@@ -19,7 +19,7 @@ import (
 
 // Client 商汤小浣熊（官方托管网关 xiaohuanxiong.com）上游客户端。
 // 登录编排不在本包：既有「从本机客户端导入」（internal/app/import_local.go），
-// 也有「协议劫持登录」（internal/login_raccoon，复用本包 protocol*.go 的协议工具）。
+// 也有「浏览器授权登录」（internal/login_raccoon，复用本包 protocol*.go 的协议工具）。
 // 本包只负责上游调用与桌面协议底层能力。
 type Client struct {
 	HTTP *http.Client

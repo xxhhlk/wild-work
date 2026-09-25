@@ -9,7 +9,10 @@
 //	④ 该深链由 HKCU\Software\Classes\office-raccoon 注册的协议处理器接收
 //	   （官方值指向「商汤小浣熊.exe」，本包在登录期间临时指向 wild-work 自身）
 //	⑤ 拿到 code 后 POST {authApi}/login_with_authorization_code 兑换 token
-//	   —— 该端点不校验调用方身份（无签名头、无设备身份），故第三方可自兑。
+//
+// 桌面客户端走的就是上述这条链路，本包只是把第④步的协议处理方临时换成本工具，
+// 以便在用户用浏览器完成官方授权后接住回调（官方客户端本身不参与，故登录期间
+// 请勿启动它 —— 它会重新注册该协议）。
 //
 // 平台相关的注册表读写见 protocol_windows.go；本文件只放纯逻辑与文件读写，
 // 因此在任意平台都能被测试覆盖。
@@ -38,7 +41,7 @@ const (
 	// CallbackFileName 协议处理器子进程把深链参数落盘的文件名（位于 data/ 下）。
 	CallbackFileName = "raccoon-callback.json"
 	// BackupFileName 注册表备份文件名（位于 data/ 下）。
-	// 它同时是「是否存在未完成劫持」的判据：启动时若存在则自愈恢复。
+	// 它同时是「是否存在未完成改写」的判据：启动时若存在则自愈恢复。
 	BackupFileName = "raccoon-protocol-backup.json"
 
 	// MainSite 主站（授权页与兑换端点所在站点）。
@@ -56,8 +59,8 @@ const (
 // （不能让它启动第二份服务/托盘）。
 const CallbackFlag = "--raccoon-callback"
 
-// ErrProtocolUnsupported 协议劫持登录仅支持 Windows（官方客户端只有 Windows 版）。
-var ErrProtocolUnsupported = errors.New("协议劫持登录仅支持 Windows")
+// ErrProtocolUnsupported 协议回调接管仅支持 Windows（官方客户端只有 Windows 版）。
+var ErrProtocolUnsupported = errors.New("小浣熊授权登录仅支持 Windows")
 
 // AuthorizeURL 授权入口（desktopLogin.js 的 DESKTOP_AUTH_PATH + DESKTOP_AUTH_PARAMS）。
 // appname 走 percent-encoding，避免非 ASCII 在 URL 里出现歧义。
