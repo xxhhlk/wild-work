@@ -238,6 +238,10 @@ POST /api/quit                     # 退出程序
       否则 pool 会按虚高余额选号。含专用池的总量（`usage_summary.total_amount`）不能作路由依据。
     - 不可消耗额度仅用于面板展示（`pool.Status.UnusableCredits`），不参与 `Pick()` 排序；
       展示的唯一目的是让用户看到的总积分能和官网对上。
+    - **`InfoOnly`（2026-09-25 新增）**：条目**只展示、不入任何算术**（`Summarize` /
+      `ExpiringWithin` / `ledger.DiffCredits` 三处一律跳过），前端加「仅展示」角标。
+      用于**同账号下计量单位不同的另一套额度**——MonkeyCode 的「每日 Token 额度」（单位是 token）
+      与「积分余额」（credits）都该显示，但相加无意义。构造时须同时置 `Usable=true`。
 18. **到期时间字段因渠道而异，缺失则不显示**：WorkBuddy 系是 `CycleEndTime`（**上游从不下发 `PackageEndTime`**，旧判据恒 miss），
     TraeWork 是 `expire_time`（Unix 秒），Qoder 无此字段。均按 **UTC+8 墙钟**解析（`softRateResetLoc`），
     用 `time.Local` 会在非 UTC+8 机器上算错一天。上游未下发时 `ResourceItem.ExpireAt` 必须为空串，

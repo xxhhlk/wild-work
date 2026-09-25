@@ -203,7 +203,13 @@ function renderCreditDetail() {
   for (const it of slice) {
     // 不可用额度整行淡显 + 角标，与可用额度区分开（如 TraeWork 的官方客户端专用池）。
     const cls = it.usable ? "" : ' class="detail-unusable"';
-    const tag = it.usable ? "" : '<span class="detail-tag" title="该额度仅供官方客户端使用，本工具无法消耗">不可用</span>';
+    let tag = "";
+    if (!it.usable) {
+      tag = '<span class="detail-tag" title="该额度仅供官方客户端使用，本工具无法消耗">不可用</span>';
+    } else if (it.info_only) {
+      // 单位与积分不同（如 MonkeyCode 的每日 Token 额度）：展示但不计入合计。
+      tag = '<span class="detail-tag" title="单位与积分不同，仅作展示，不计入合计">仅展示</span>';
+    }
     html += `<tr${cls}><td>${esc(it.name)}${tag}</td><td>${it.total}</td><td>${it.used}</td><td>${it.remain}</td>`;
     if (hasExpiry) html += `<td>${it.expire_at ? esc(it.expire_at) : "-"}</td>`;
     html += `</tr>`;

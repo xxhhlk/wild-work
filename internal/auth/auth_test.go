@@ -134,3 +134,34 @@ func TestAdoptJWTExpiry(t *testing.T) {
 		t.Fatalf("expiresAt = %d, want 5（非 JWT 不应改动）", c.ExpiresAt)
 	}
 }
+
+// TestParseConsoleCookie MonkeyCode 专有的两个字段（控制台 Cookie / 签名密钥）
+// 在嵌套、扁平两种形态下都要能解析，且「保存→重解析」能读回
+// ——否则面板永远拿不到积分（导入器写的是嵌套形态）。
+func TestParseConsoleCookie(t *testing.T) {
+	nested := []byte(`{"auth":{"accessToken":"oma_k","consoleCookie":"sess-1","signingSecret":"omas_s"},"account":{"uid":"mc_1"}}`)
+	sa, err := Parse(nested)
+	if err != nil || sa.ConsoleCookie != "sess-1" || sa.SigningSecret != "omas_s" {
+		t.Fatalf("nested: %+v %v", sa, err)
+	}
+	flat := []byte(`{"accessToken":"oma_k","consoleCookie":"sess-2","signingSecret":"omas_s"}`)
+	sb, err := Parse(flat)
+	if err != nil || sb.ConsoleCookie != "sess-2" {
+		t.Fatalf("flat: %+v %v", sb, err)
+	}
+
+	fp := filepath.Join(t.TempDir(), "monkeycode-mc_1.json")
+	c := &Auth{AccessToken: "oma_k", ConsoleCookie: "sess-3", SigningSecret: "omas_s",
+		UID: "mc_1", FilePath: fp}
+	if err := c.SaveAtomic(); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	raw, err := os.ReadFile(fp)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	d, err := Parse(raw)
+	if err != nil || d.ConsoleCookie != "sess-3" || d.SigningSecret != "omas_s" {
+		t.Fatalf("roundtrip: %+v %v", d, err)
+	}
+}

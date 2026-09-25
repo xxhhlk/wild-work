@@ -305,12 +305,22 @@ type ResourceItem struct {
 	// 本工具走的是 ep=0；这类额度对用户是「看得见用不了」，需在界面上分开统计。
 	// 注意：零值为 false，故各渠道构造时须显式置位；渠道无此概念时统一填 true。
 	Usable bool `json:"usable"`
+	// InfoOnly 标记该条目**只作展示**，不参与任何积分算术（Summarize 小计、
+	// ExpiringWithin 临期、ledger 差分）。用于「同一账号下计量单位不同的另一套额度」——
+	// 如 MonkeyCode 的每日 Token 额度（单位是 token，而积分是 credits）：
+	// 两者都该显示，但相加无意义。
+	// 注意：InfoOnly 条目应同时置 Usable=true（它在界面上既非「不可用」，也不该被小计）。
+	InfoOnly bool `json:"info_only,omitempty"`
 }
 
 // Summarize 按 Usable 标记汇总条目：返回 (可消耗剩余, 不可消耗剩余)。
 // 供 app 层统一填充 ResourceDetail 接口的两个小计字段，避免多处各写一份循环。
+// InfoOnly 条目两不计入（单位不同，相加无意义）。
 func Summarize(items []ResourceItem) (usable, unusable int64) {
 	for _, it := range items {
+		if it.InfoOnly {
+			continue
+		}
 		if it.Usable {
 			usable += it.Remain
 		} else {
@@ -333,7 +343,7 @@ func ExpiringWithin(items []ResourceItem, horizon time.Duration) int64 {
 	deadline := time.Now().In(expireLoc).Add(horizon)
 	var expiring int64
 	for _, it := range items {
-		if !it.Usable || it.ExpireAt == "" {
+		if !it.Usable || it.InfoOnly || it.ExpireAt == "" {
 			continue
 		}
 		// 日期解析到当天零点（UTC+8），零点落在 deadline 之前即视为临期

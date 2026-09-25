@@ -14,6 +14,7 @@ import (
 	"bytes"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -30,6 +31,8 @@ import (
 type Client struct {
 	HTTP *http.Client
 	Base string
+	// Console 控制台站点（钱包等 Cookie 认证接口）；空则用 consoleBase。
+	Console string
 }
 
 // New 生产默认客户端。
@@ -44,7 +47,7 @@ func New() *Client {
 		IdleConnTimeout:       30 * time.Second,
 		ResponseHeaderTimeout: 120 * time.Second,
 	}
-	return &Client{HTTP: &http.Client{Timeout: requestTimeout, Transport: tr}, Base: DefaultBase}
+	return &Client{HTTP: &http.Client{Timeout: requestTimeout, Transport: tr}, Base: DefaultBase, Console: consoleBase}
 }
 
 // NewWithBase 测试用：覆盖上游基址。
@@ -52,6 +55,14 @@ func NewWithBase(base string) *Client {
 	c := New()
 	c.Base = base
 	return c
+}
+
+// console 返回控制台站点基址（测试可覆盖）。
+func (c *Client) console() string {
+	if c.Console != "" {
+		return strings.TrimRight(c.Console, "/")
+	}
+	return consoleBase
 }
 
 // base 返回该账号的上游基址（账号自带 ApiHost+Domain 优先，否则回默认）。
@@ -233,12 +244,101 @@ func (c *Client) FetchModelPricing(_ *auth.Auth) ([]provider.ModelPricing, error
 // 即便走到也不报错，避免把「没有刷新机制」误判成会话失效。
 func (c *Client) RefreshToken(_ *auth.Auth) error { return nil }
 
-// UserResource 上游无额度查询接口，恒 0（面板显示「不适用」）。
-func (c *Client) UserResource(_ *auth.Auth) (int64, error) { return 0, nil }
+// UserResource 查询账号积分余额（面板/pool 路由口径）。
+//
+// 数据来自**控制台**钱包接口（console 域，Cookie 认证），不是 agent 域——
+// 本渠道是「导入型」，agent 的 oma_ key 在 console 域一律 401。
+// 账号没带控制台 Cookie（老凭据或客户端未登录）时返回错误，调用方按
+// 「无额度信息」处理，不罚号。
+func (c *Client) UserResource(a *auth.Auth) (int64, error) {
+	remain, _, err := c.wallet(a)
+	return remain, err
+}
 
-// UserResourceDetail 同上：无明细条目。
-func (c *Client) UserResourceDetail(_ *auth.Auth) (int64, []provider.ResourceItem, error) {
-	return 0, nil, nil
+// UserResourceDetail 返回两行：**积分余额**（计入合计）与**每日 Token 额度**
+// （InfoOnly，只展示、不入任何算术——单位是 token，与积分相加无意义）。
+func (c *Client) UserResourceDetail(a *auth.Auth) (int64, []provider.ResourceItem, error) {
+	return c.wallet(a)
+}
+
+// walletResponse 控制台钱包接口响应（2026-09-25 实测）：
+//
+//	{"code":0,"message":"success","data":{"id":"…","balance":54487,
+//	 "daily_token_balance":0,"daily_token_limit":10000000}}
+type walletResponse struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	Data    struct {
+		// Balance 单位是**毫积分**（console 前端除以 1e3 后再 ceil 展示）。
+		Balance int64 `json:"balance"`
+		// DailyTokenBalance 是**当日剩余 token**（console 的进度条分子，
+		// 百分比 = (limit-balance)/limit），DailyTokenLimit 是当日上限。
+		DailyTokenBalance int64 `json:"daily_token_balance"`
+		DailyTokenLimit   int64 `json:"daily_token_limit"`
+	} `json:"data"`
+}
+
+// wallet 单次请求同时产出总额与明细条目。
+func (c *Client) wallet(a *auth.Auth) (int64, []provider.ResourceItem, error) {
+	cookie := consoleCookieOf(a)
+	if cookie == "" {
+		return 0, nil, errors.New("monkeycode：账号缺少控制台 Cookie，无法查询积分（客户端重新登录后再次导入即可）")
+	}
+	req, err := http.NewRequest(http.MethodGet, c.console()+epWallet, nil)
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("Cookie", "monkeycode_ai_session="+cookie)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", userAgent)
+
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode >= 400 {
+		return 0, nil, fmt.Errorf("monkeycode：钱包接口 HTTP %d", resp.StatusCode)
+	}
+	var w walletResponse
+	if err := json.Unmarshal(raw, &w); err != nil {
+		return 0, nil, fmt.Errorf("monkeycode：钱包响应解析失败：%w", err)
+	}
+	if w.Code != 0 {
+		return 0, nil, fmt.Errorf("monkeycode：钱包接口 code=%d message=%s", w.Code, w.Message)
+	}
+
+	credits := milliCredits(w.Data.Balance)
+	items := []provider.ResourceItem{{
+		Name: "积分余额", Total: credits, Remain: credits, Usable: true, Key: "credits",
+	}}
+	// 每日 Token 额度：单位与积分不同，只展示不参与合计（InfoOnly）。
+	if w.Data.DailyTokenLimit > 0 || w.Data.DailyTokenBalance > 0 {
+		used := w.Data.DailyTokenLimit - w.Data.DailyTokenBalance
+		if used < 0 {
+			used = 0
+		}
+		items = append(items, provider.ResourceItem{
+			Name:     "每日 Token 额度",
+			Total:    w.Data.DailyTokenLimit,
+			Used:     used,
+			Remain:   w.Data.DailyTokenBalance,
+			Usable:   true,
+			InfoOnly: true,
+			Key:      "daily_token",
+		})
+	}
+	return credits, items, nil
+}
+
+// milliCredits 毫积分 → 积分。取整方式与 console 前端一致（`Math.ceil(balance/1e3)`），
+// 保证面板数字与用户在自己控制台看到的相同。
+func milliCredits(milli int64) int64 {
+	if milli <= 0 {
+		return 0
+	}
+	return (milli + 999) / 1000
 }
 
 // DailyCheckin 本渠道无签到活动（渠道声明 noExplicitCheckin，调度器不会调用）。
@@ -323,4 +423,13 @@ func secretOf(a *auth.Auth) string {
 		return ""
 	}
 	return strings.TrimSpace(a.SigningSecret)
+}
+
+// consoleCookieOf 取账号的控制台会话 Cookie（monkeycode_ai_session）。
+// 仅控制台接口（钱包等）用得到；老凭据里为空。
+func consoleCookieOf(a *auth.Auth) string {
+	if a == nil {
+		return ""
+	}
+	return strings.TrimSpace(a.ConsoleCookie)
 }

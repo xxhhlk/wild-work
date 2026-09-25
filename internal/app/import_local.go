@@ -65,6 +65,8 @@ type authSection struct {
 	MachineType  string `json:"machineType"`
 	// SigningSecret 只在 MonkeyCode 凭据里非空（omas_ secret，见 internal/monkeycode）
 	SigningSecret string `json:"signingSecret"`
+	// ConsoleCookie 只在 MonkeyCode 凭据里非空（控制台会话 Cookie，见 internal/auth）
+	ConsoleCookie string `json:"consoleCookie"`
 }
 
 type accountSection struct {
@@ -257,6 +259,8 @@ func (a *App) importMonkeyCode() (*ImportLocalResult, error) {
 		return nil, fmt.Errorf("客户端配置里的托管条目没有 api_key（%s）", path)
 	}
 	host, path0 := splitBaseURL(strings.TrimSpace(entry.BaseURL))
+	// 控制台会话 Cookie（积分查询用）是**尽力而为**：拿不到也不影响导入。
+	consoleCookie, cookieNote := monkeyCodeConsoleCookie()
 	// 上游无 uid：用 api_key 派生稳定标识，避免同一账号重复导入生成多个凭据文件。
 	sum := sha256.Sum256([]byte(key))
 	uid := "mc_" + hex.EncodeToString(sum[:5])
@@ -270,6 +274,7 @@ func (a *App) importMonkeyCode() (*ImportLocalResult, error) {
 			Domain:        path0,
 			ApiHost:       host,
 			SigningSecret: secret,
+			ConsoleCookie: consoleCookie,
 		},
 		Account: accountSection{UID: uid, Nickname: "MonkeyCode " + strings.TrimPrefix(uid, "mc_")},
 	}
@@ -279,10 +284,83 @@ func (a *App) importMonkeyCode() (*ImportLocalResult, error) {
 	}
 	a.reloadAccounts()
 	a.afterAccountAdded(provider.MonkeyCode)
+	note := "凭据来自本机 MonkeyCode 客户端（api_key + signing_secret）。上游无刷新接口，客户端重新登录后需再次导入。"
+	if cookieNote != "" {
+		note += " " + cookieNote + "。"
+	}
 	return &ImportLocalResult{
 		Channel: "monkeycode", UID: uid, File: filepath.Base(file),
-		Note: "凭据来自本机 MonkeyCode 客户端（api_key + signing_secret）。上游无刷新接口，客户端重新登录后需再次导入。",
+		Note: note,
 	}, nil
+}
+
+// monkeyCodeConsoleCookieName 是控制台会话 Cookie 的名字（积分等控制台接口只认它）。
+const monkeyCodeConsoleCookieName = "monkeycode_ai_session"
+
+// monkeyCodeConsoleCookie 读取客户端登录控制台时落下的会话 Cookie。
+//
+// 与 api_key/signing_secret 不同，控制台接口（积分钱包等）只认 Cookie，而本工具
+// 没有登录流程、无法刷新它 —— 因此这里**尽力而为**：文件缺失、解析失败或已过期
+// 都只返回空串与一句说明，不影响凭据导入本身（只是面板拿不到积分）。
+func monkeyCodeConsoleCookie() (string, string) {
+	path, err := monkeyCodeCookiePath()
+	if err != nil {
+		return "", "未找到控制台 Cookie 文件，面板不显示积分（不影响对话）"
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", "读取控制台 Cookie 失败，面板不显示积分（不影响对话）"
+	}
+	// 客户端落盘格式（2026-09-24 实测）：
+	//   [{"name":"monkeycode_ai_session","value":"…","expires":"2026-10-01T10:17:37Z"}, …]
+	var items []struct {
+		Name    string `json:"name"`
+		Value   string `json:"value"`
+		Expires string `json:"expires"`
+	}
+	if err := json.Unmarshal(raw, &items); err != nil {
+		return "", "解析控制台 Cookie 失败，面板不显示积分（不影响对话）"
+	}
+	for _, it := range items {
+		if it.Name != monkeyCodeConsoleCookieName {
+			continue
+		}
+		if exp, perr := time.Parse(time.RFC3339, it.Expires); perr == nil && !exp.IsZero() && time.Now().After(exp) {
+			return "", "控制台 Cookie 已过期，面板不显示积分（客户端重新登录后再次导入即可）"
+		}
+		if v := strings.TrimSpace(it.Value); v != "" {
+			return v, ""
+		}
+	}
+	return "", "控制台 Cookie 里没有 " + monkeyCodeConsoleCookieName + "，面板不显示积分（不影响对话）"
+}
+
+// monkeyCodeCookiePath 定位客户端保存控制台 Cookie 的文件。
+//
+// 该文件与 settings.json **不同级**：settings.json 在 ohmyagent 子目录，
+// cookie 直接落在 bundle 根目录（%APPDATA%\com.chaitin.baizhi.monkeycode\）。
+func monkeyCodeCookiePath() (string, error) {
+	var cands []string
+	if dir := strings.TrimSpace(os.Getenv("MONKEYCODE_CONFIG_DIR")); dir != "" {
+		cands = append(cands, filepath.Join(dir, "monkeycode-cookies.json"))
+	}
+	if appData := strings.TrimSpace(os.Getenv("APPDATA")); appData != "" {
+		cands = append(cands, filepath.Join(appData, "com.chaitin.baizhi.monkeycode", "monkeycode-cookies.json"))
+	}
+	if local := strings.TrimSpace(os.Getenv("LOCALAPPDATA")); local != "" {
+		cands = append(cands, filepath.Join(local, "com.chaitin.baizhi.monkeycode", "monkeycode-cookies.json"))
+		cands = append(cands, filepath.Join(local, "MonkeyCode", "monkeycode-cookies.json"))
+	}
+	for _, p := range cands {
+		if fileExists(p) {
+			return p, nil
+		}
+	}
+	last := ""
+	if len(cands) > 0 {
+		last = cands[len(cands)-1]
+	}
+	return "", fmt.Errorf("未找到 MonkeyCode 控制台 Cookie（已尝试 %d 个路径，最后一个是 %s）", len(cands), last)
 }
 
 // splitBaseURL 把客户端 base_url 拆成 (host, path)。

@@ -17,6 +17,15 @@ const (
 	// 该常量只作缺省与静态兜底。
 	DefaultBase = "https://proxy.monkeycode-ai.com/v1"
 
+	// consoleBase 控制台站点。**与 agent 的 proxy 域是两个不同的域**：
+	// 钱包等控制台接口只在 console 域上，且只认登录 Cookie（agent 的 oma_ key 401）。
+	consoleBase = "https://monkeycode-ai.com"
+
+	// epWallet 控制台钱包接口（GET，Cookie 认证）：
+	// `{code,message,data:{balance, daily_token_balance, daily_token_limit}}`。
+	// balance 单位是**毫积分**（console 前端 `balance/1e3`），daily_token_* 是 token 数。
+	epWallet = "/api/v1/users/wallet"
+
 	// anthropicVersion 与官方客户端一致（抓包实测）。
 	anthropicVersion = "2023-06-01"
 

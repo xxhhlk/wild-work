@@ -827,3 +827,105 @@ func TestEndToEndAgainstFakeUpstream(t *testing.T) {
 		t.Fatal("未捕获到 usage（记账会记 0 token）")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// 控制台钱包（积分 / 每日 Token 额度）
+// ---------------------------------------------------------------------------
+
+// TestMilliCredits 毫积分 → 积分的取整与 console 前端一致（Math.ceil）。
+func TestMilliCredits(t *testing.T) {
+	cases := []struct {
+		in   int64
+		want int64
+	}{
+		{0, 0}, {1, 1}, {999, 1}, {1000, 1}, {1001, 2},
+		{54487, 55}, // 54.487 → 55
+		{-5, 0},
+	}
+	for _, c := range cases {
+		if got := milliCredits(c.in); got != c.want {
+			t.Errorf("milliCredits(%d)=%d want %d", c.in, got, c.want)
+		}
+	}
+}
+
+// TestUserResourceDetailWallet 钱包接口 → 两行明细：积分计入合计、每日 Token 只展示。
+func TestUserResourceDetailWallet(t *testing.T) {
+	var gotCookie string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != epWallet {
+			t.Errorf("路径=%s want %s", r.URL.Path, epWallet)
+		}
+		gotCookie = r.Header.Get("Cookie")
+		io.WriteString(w, `{"code":0,"message":"success","data":{"id":"x",`+
+			`"balance":54487,"daily_token_balance":0,"daily_token_limit":10000000}}`)
+	}))
+	defer srv.Close()
+
+	c := New()
+	c.Console = srv.URL
+	a := &auth.Auth{AccessToken: "oma_k", SigningSecret: "omas_s", ConsoleCookie: "sess-123"}
+
+	remain, items, err := c.UserResourceDetail(a)
+	if err != nil {
+		t.Fatalf("UserResourceDetail: %v", err)
+	}
+	if gotCookie != "monkeycode_ai_session=sess-123" {
+		t.Errorf("Cookie=%q", gotCookie)
+	}
+	if remain != 55 {
+		t.Errorf("remain=%d want 55（54487 毫积分 ceil）", remain)
+	}
+	if len(items) != 2 {
+		t.Fatalf("items=%d want 2", len(items))
+	}
+	if items[0].Name != "积分余额" || items[0].Remain != 55 || items[0].InfoOnly {
+		t.Errorf("积分行异常：%+v", items[0])
+	}
+	tok := items[1]
+	if tok.Name != "每日 Token 额度" || tok.Remain != 0 || tok.Total != 10000000 || !tok.InfoOnly {
+		t.Errorf("Token 行异常：%+v", tok)
+	}
+	// 合计口径：Token 行不入算术（否则 1000 万会淹没积分池）。
+	if u, un := provider.Summarize(items); u != 55 || un != 0 {
+		t.Errorf("Summarize=%d/%d want 55/0", u, un)
+	}
+}
+
+// TestUserResourceDetailNoCookie 无控制台 Cookie 时明确报错，不静默返回 0。
+func TestUserResourceDetailNoCookie(t *testing.T) {
+	c := New()
+	if _, err := c.UserResource(&auth.Auth{AccessToken: "oma_k"}); err == nil {
+		t.Fatal("无 Cookie 应报错")
+	}
+	if _, _, err := c.UserResourceDetail(nil); err == nil {
+		t.Fatal("nil 账号应报错")
+	}
+}
+
+// TestUserResourceDetailErrors 上游 5xx / 业务 code≠0 都应报错而非返回 0 余额。
+func TestUserResourceDetailErrors(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{"HTTP500", http.StatusInternalServerError, `{}`},
+		{"business", http.StatusOK, `{"code":1001,"message":"unauthorized"}`},
+		{"badjson", http.StatusOK, `not-json`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+				io.WriteString(w, tc.body)
+			}))
+			defer srv.Close()
+			c := New()
+			c.Console = srv.URL
+			if _, err := c.UserResource(&auth.Auth{ConsoleCookie: "s"}); err == nil {
+				t.Fatal("应报错")
+			}
+		})
+	}
+}

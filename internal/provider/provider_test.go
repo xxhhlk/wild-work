@@ -82,3 +82,20 @@ func TestSummarizeExpiring(t *testing.T) {
 		t.Fatalf("usable=%d unusable=%d expiring=%d want 100/200/100", u, un, e)
 	}
 }
+
+// TestInfoOnlyExcluded 只展示条目（单位与积分不同，如 MonkeyCode 每日 Token）
+// 不得进入任何算术：既不算可消耗，也不算不可消耗，更不算临期。
+func TestInfoOnlyExcluded(t *testing.T) {
+	items := []ResourceItem{
+		{Name: "积分余额", Remain: 55, Usable: true},
+		{Name: "每日 Token 额度", Remain: 10000000, Usable: true, InfoOnly: true,
+			ExpireAt: timeNow().Format("2006-01-02")},
+	}
+	u, un := Summarize(items)
+	if u != 55 || un != 0 {
+		t.Fatalf("usable=%d unusable=%d want 55/0（InfoOnly 两不计）", u, un)
+	}
+	if e := ExpiringWithin(items, 24*time.Hour); e != 0 {
+		t.Fatalf("expiring=%d want 0（InfoOnly 不计临期）", e)
+	}
+}

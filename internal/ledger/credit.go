@@ -90,6 +90,8 @@ func expired(expireAt string, now time.Time) bool {
 // 与快照逐条目对比，产生 0..n 条流水并更新快照；返回事件数。
 // 只统计 Usable=true 的条目——不可消耗池（如 TraeWork ep=1）本工具动不到，
 // 其变动与路由无关，混入会污染 earn/spend 口径。
+// InfoOnly 条目同样跳过：单位不同的另一套额度（如 MonkeyCode 每日 Token），
+// 记进积分流水会让余额对不上账。
 func (l *Ledger) DiffCredits(ch, uid string, balance int64, cur []provider.ResourceItem) int {
 	now := time.Now()
 	sk := ch + "/" + uid
@@ -113,7 +115,7 @@ func (l *Ledger) DiffCredits(ch, uid string, balance int64, cur []provider.Resou
 	agg := map[string]*aggEnt{} // key → 聚合条目
 	var order []string          // 首现顺序遍历，事件输出稳定可测
 	for _, it := range cur {
-		if !it.Usable {
+		if !it.Usable || it.InfoOnly {
 			continue
 		}
 		k := itemKey(it)

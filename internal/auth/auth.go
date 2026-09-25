@@ -33,6 +33,12 @@ type Auth struct {
 	// 与 AccessToken 是两把不同的凭据：后者是共享认证凭据，前者只用于 Prompt 签名
 	// （见 internal/monkeycode/sign.go）。其它渠道不用该字段。
 	SigningSecret string
+	// ConsoleCookie 官方客户端登录控制台时留下的**会话 Cookie**（MonkeyCode 的
+	// `monkeycode_ai_session=…`）。仅用于查询**控制台侧**的接口（如积分钱包
+	// `/api/v1/users/wallet`）——该域只认 Cookie，agent 的 oma_ key 会 401。
+	// 由导入器从客户端 cookie 文件取得；**无法由本工具刷新**（无登录流程），
+	// 过期后需重新导入。其它渠道不用该字段。
+	ConsoleCookie string
 	UID           string
 	EnterpriseID  string
 	Nickname      string
@@ -123,6 +129,8 @@ func Parse(raw []byte) (*Auth, error) {
 				MachineType  string `json:"machineType"`
 				// signingSecret 只在 MonkeyCode 凭据里出现（其余渠道空）
 				SigningSecret string `json:"signingSecret"`
+				// consoleCookie 同上：MonkeyCode 控制台会话 Cookie
+				ConsoleCookie string `json:"consoleCookie"`
 			} `json:"auth"`
 			Account struct {
 				UID          string `json:"uid"`
@@ -145,6 +153,8 @@ func Parse(raw []byte) (*Auth, error) {
 			MachineType:  n.Auth.MachineType,
 			// SigningSecret 仅在 MonkeyCode 凭据里出现
 			SigningSecret: n.Auth.SigningSecret,
+			// ConsoleCookie 同上（控制台会话 Cookie）
+			ConsoleCookie: n.Auth.ConsoleCookie,
 			UID:           n.Account.UID,
 			EnterpriseID:  n.Account.EnterpriseID,
 			Nickname:      n.Account.Nickname,
@@ -162,6 +172,8 @@ func Parse(raw []byte) (*Auth, error) {
 			MachineType  string `json:"machineType"`
 			// signingSecret 只在 MonkeyCode 凭据里出现（其余渠道空）
 			SigningSecret string `json:"signingSecret"`
+			// consoleCookie 同上：MonkeyCode 控制台会话 Cookie
+			ConsoleCookie string `json:"consoleCookie"`
 			UID           string `json:"uid"`
 			EnterpriseID  string `json:"enterpriseId"`
 			Nickname      string `json:"nickname"`
@@ -181,6 +193,7 @@ func Parse(raw []byte) (*Auth, error) {
 			MachineType:  f.MachineType,
 			// SigningSecret 仅在 MonkeyCode 凭据里出现
 			SigningSecret: f.SigningSecret,
+			ConsoleCookie: f.ConsoleCookie,
 			UID:           f.UID,
 			EnterpriseID:  f.EnterpriseID,
 			Nickname:      f.Nickname,
@@ -219,6 +232,8 @@ func (a *Auth) saveAtomicLocked() error {
 			"machineType":  a.MachineType,
 			// signingSecret 只在 MonkeyCode 凭据里非空；其余渠道写空串无副作用
 			"signingSecret": a.SigningSecret,
+			// consoleCookie 同上：仅 MonkeyCode 用（控制台会话 Cookie）
+			"consoleCookie": a.ConsoleCookie,
 		},
 		"account": map[string]any{
 			"uid":          a.UID,
