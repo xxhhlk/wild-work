@@ -126,7 +126,10 @@ func (c *Client) doJSON(req *http.Request) (json.RawMessage, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	// 上限 8MB：本函数同时服务模型目录（get_detail_param）。实测 solo_agent 的
+	// 目录响应 **1.28MB**，1MB 上限会把 JSON 截成半截、解析失败后静默回退静态兜底表
+	// （面板只显示 16 个模型，而上游有 64 个）。上游 issue #41。
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if resp.StatusCode >= 400 {
 		kind := Classify(resp.StatusCode, string(raw))
 		return nil, &provider.Error{Kind: kind, Status: resp.StatusCode, Msg: truncate(string(raw), 200)}
