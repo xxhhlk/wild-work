@@ -289,18 +289,29 @@ func (a *App) importMonkeyCode() (*ImportLocalResult, error) {
 	}
 	a.reloadAccounts()
 	a.afterAccountAdded(provider.MonkeyCode)
-	note := "凭据来自本机 MonkeyCode 客户端（api_key + signing_secret）。" +
-		"agent 凭据无刷新接口，客户端重新登录后需再次导入；控制台会话（积分）可由百智云会话自动续期。"
-	if consoleWhy != "" {
-		note += " 未取得控制台 Cookie（" + consoleWhy + "），面板不显示积分（不影响对话）。"
-	}
-	if baizhiWhy != "" {
-		note += " 未取得百智云 Cookie（" + baizhiWhy + "），控制台会话过期后无法自动续期。"
-	}
+	// 提示只在有降级时出现（见 monkeyCodeImportNote）。
+	note := monkeyCodeImportNote(consoleWhy, baizhiWhy)
 	return &ImportLocalResult{
 		Channel: "monkeycode", UID: uid, File: filepath.Base(file),
 		Note: note,
 	}, nil
+}
+
+// monkeyCodeImportNote 拼导入提示：**只在有降级时非空**。
+//
+// 正常导入不必复述凭据来源（面板 toast 已说"已导入 <渠道> 账号 xxx"），
+// 而这句会原样进 toast（单行条、默认 3s），所以每句都要短且可行动。
+// agent 凭据无刷新端点、控制台会话可由百智云会话续期这些背景，
+// 见 internal/monkeycode 的注释与本地 docs/MonkeyCode渠道接入评估.md。
+func monkeyCodeImportNote(consoleWhy, baizhiWhy string) string {
+	note := ""
+	if consoleWhy != "" {
+		note += "未取到控制台会话（" + consoleWhy + "），积分暂不可用（不影响对话）。"
+	}
+	if baizhiWhy != "" {
+		note += "未取到百智云会话（" + baizhiWhy + "），控制台会话过期后需重新导入。"
+	}
+	return note
 }
 
 // monkeyCodeCookie 从客户端 cookie 文件里取指定名字的 Cookie 值（尽力而为）。

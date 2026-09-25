@@ -113,3 +113,32 @@ func TestMonkeyCodeCookieMissingFile(t *testing.T) {
 		t.Fatalf("cookie=%q why=%q want 空值/文件缺失", got, why)
 	}
 }
+
+// TestMonkeyCodeImportNote 导入提示只在有降级时非空 —— 正常导入必须静默，
+// 否则面板 toast（单行条）会被一段废话占满，真出问题时用户反而分不清。
+func TestMonkeyCodeImportNote(t *testing.T) {
+	if got := monkeyCodeImportNote("", ""); got != "" {
+		t.Errorf("两支都取到时应为空，得到 %q", got)
+	}
+	both := monkeyCodeImportNote("已过期", "文件缺失")
+	for _, want := range []string{"控制台会话", "已过期", "百智云会话", "文件缺失"} {
+		if !strings.Contains(both, want) {
+			t.Errorf("提示缺少 %q：%s", want, both)
+		}
+	}
+	onlyBaizhi := monkeyCodeImportNote("", "文件缺失")
+	if strings.Contains(onlyBaizhi, "未取到控制台会话") {
+		t.Errorf("控制台会话没缺，不该报它缺失：%s", onlyBaizhi)
+	}
+	if !strings.Contains(onlyBaizhi, "未取到百智云会话") {
+		t.Errorf("应报百智云会话缺失：%s", onlyBaizhi)
+	}
+
+	onlyConsole := monkeyCodeImportNote("已过期", "")
+	if strings.Contains(onlyConsole, "百智云") {
+		t.Errorf("百智云会话没缺，不该提它：%s", onlyConsole)
+	}
+	if !strings.Contains(onlyConsole, "未取到控制台会话") {
+		t.Errorf("应报控制台会话缺失：%s", onlyConsole)
+	}
+}

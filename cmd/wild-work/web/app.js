@@ -78,12 +78,13 @@ function esc(s) {
 }
 
 let toastTimer = null;
-function toast(msg) {
+// toast 默认 3s；带降级说明的提示可传更长时长（内容更长，要留出阅读时间）。
+function toast(msg, ms = 3000) {
   const t = $("toast");
   t.textContent = msg;
   t.classList.remove("hidden");
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.add("hidden"), 3000);
+  toastTimer = setTimeout(() => t.classList.add("hidden"), ms);
 }
 
 function shortUid(uid) {
@@ -695,11 +696,15 @@ function confirmLogin() {
   else startLogin(pendingChannel);
 }
 
-// importLocal 从本机已登录的官方客户端导入凭据（小浣熊 / Loomy）。
+// importLocal 从本机已登录的官方客户端导入凭据（小浣熊 / Loomy / MonkeyCode）。
+// note 只在有降级时非空（如某个凭据文件没读到）—— 必须显示出来，
+// 否则用户只看到"已导入成功"，等积分不显示时才发现。
 async function importLocal(channel) {
   try {
     const r = await api("/api/account/import_local", { channel });
-    toast(`已导入 ${chLabel(channel)} 账号 ${r.uid || ""}`);
+    const head = `已导入 ${chLabel(channel)} 账号 ${r.uid || ""}`;
+    if (r.note) toast(`${head}。${r.note}`, 8000);
+    else toast(head);
     await loadState();
   } catch (e) {
     toast(e.message);
