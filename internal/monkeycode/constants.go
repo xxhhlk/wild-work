@@ -21,10 +21,23 @@ const (
 	// 钱包等控制台接口只在 console 域上，且只认登录 Cookie（agent 的 oma_ key 401）。
 	consoleBase = "https://monkeycode-ai.com"
 
+	// baizhiBase 百智云站点。MonkeyCode 的**身份提供方**：控制台会话不是自己登录出来的，
+	// 而是用百智云会话经 OAuth 派生（见 deriveConsoleSession）。
+	baizhiBase = "https://baizhi.cloud"
+
 	// epWallet 控制台钱包接口（GET，Cookie 认证）：
 	// `{code,message,data:{balance, daily_token_balance, daily_token_limit}}`。
 	// balance 单位是**毫积分**（console 前端 `balance/1e3`），daily_token_* 是 token 数。
 	epWallet = "/api/v1/users/wallet"
+
+	// epOAuthAuthorize 百智云 OAuth 授权端点（GET，需 baizhi 会话）。
+	// 带上它即等于用户在前端点了一次「同意授权」：302 到 redirect_uri 并附 `code`。
+	// 参数取值与官方前端跳转的 URL 完全一致（client_id / scope / response_type）。
+	epOAuthAuthorize = "/api/v1/oauth/authorize"
+	oauthClientID    = "monkeycode-ai"
+	oauthScope       = "user phone"
+	// oauthCallbackPath 挂在**控制台域**上（即 {consoleBase} + 它），负责把 code 换成会话。
+	oauthCallbackPath = "/api/v1/users/baizhi/callback"
 
 	// anthropicVersion 与官方客户端一致（抓包实测）。
 	anthropicVersion = "2023-06-01"
@@ -39,6 +52,15 @@ const (
 
 	// requestTimeout 单次请求上限。上游是流式长响应，给足 10 分钟。
 	requestTimeout = 10 * time.Minute
+)
+
+// 两侧会话 Cookie 的名字。导出是因为导入器（internal/app）要按名字从客户端
+// cookie 文件里取值，客户端与服务端两处写法必须一致。
+const (
+	// CookieNameConsole 控制台会话（由百智云会话派生而来、短寿）
+	CookieNameConsole = "monkeycode_ai_session"
+	// CookieNameBaizhi 百智云会话（上游身份凭据、长寿）
+	CookieNameBaizhi = "baizhi_session"
 )
 
 // signatureSystemPrompt 是**参与签名的第一条 system**（system[0].text）。

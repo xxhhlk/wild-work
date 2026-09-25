@@ -39,10 +39,17 @@ type Auth struct {
 	// 由导入器从客户端 cookie 文件取得；**无法由本工具刷新**（无登录流程），
 	// 过期后需重新导入。其它渠道不用该字段。
 	ConsoleCookie string
-	UID           string
-	EnterpriseID  string
-	Nickname      string
-	FilePath      string // 来源文件；refresh 后原子写回此处
+	// BaizhiCookie 是**上游身份凭据**：长亭百智云（baizhi.cloud）的会话 Cookie
+	// `baizhi_session=…`。MonkeyCode 的控制台会话就是由它经 OAuth 派生出来的
+	// （`/api/v1/oauth/authorize` → 回调换 `monkeycode_ai_session`），
+	// 因此它比 ConsoleCookie 长寿（实测前者 ≈29 天、后者 ≈6 天）。
+	// 导入器从客户端同一 bundle 目录的 baizhi-cookies.json 取得。
+	// 仅 MonkeyCode 用；其它渠道不用该字段。
+	BaizhiCookie string
+	UID          string
+	EnterpriseID string
+	Nickname     string
+	FilePath     string // 来源文件；refresh 后原子写回此处
 }
 
 // Lock 供同进程内其他包（upstream.RefreshToken）在改写 Auth 字段期间加锁。
@@ -131,6 +138,8 @@ func Parse(raw []byte) (*Auth, error) {
 				SigningSecret string `json:"signingSecret"`
 				// consoleCookie 同上：MonkeyCode 控制台会话 Cookie
 				ConsoleCookie string `json:"consoleCookie"`
+				// baizhiCookie 同上：百智云会话 Cookie（控制台会话的上游来源）
+				BaizhiCookie string `json:"baizhiCookie"`
 			} `json:"auth"`
 			Account struct {
 				UID          string `json:"uid"`
@@ -155,9 +164,11 @@ func Parse(raw []byte) (*Auth, error) {
 			SigningSecret: n.Auth.SigningSecret,
 			// ConsoleCookie 同上（控制台会话 Cookie）
 			ConsoleCookie: n.Auth.ConsoleCookie,
-			UID:           n.Account.UID,
-			EnterpriseID:  n.Account.EnterpriseID,
-			Nickname:      n.Account.Nickname,
+			// BaizhiCookie 同上（控制台会话的上游来源）
+			BaizhiCookie: n.Auth.BaizhiCookie,
+			UID:          n.Account.UID,
+			EnterpriseID: n.Account.EnterpriseID,
+			Nickname:     n.Account.Nickname,
 		}
 	} else {
 		var f struct {
@@ -174,9 +185,11 @@ func Parse(raw []byte) (*Auth, error) {
 			SigningSecret string `json:"signingSecret"`
 			// consoleCookie 同上：MonkeyCode 控制台会话 Cookie
 			ConsoleCookie string `json:"consoleCookie"`
-			UID           string `json:"uid"`
-			EnterpriseID  string `json:"enterpriseId"`
-			Nickname      string `json:"nickname"`
+			// baizhiCookie 同上：百智云会话 Cookie（控制台会话的上游来源）
+			BaizhiCookie string `json:"baizhiCookie"`
+			UID          string `json:"uid"`
+			EnterpriseID string `json:"enterpriseId"`
+			Nickname     string `json:"nickname"`
 		}
 		if err := json.Unmarshal(raw, &f); err != nil {
 			return nil, fmt.Errorf("storage_parse_error: %w", err)
@@ -194,6 +207,7 @@ func Parse(raw []byte) (*Auth, error) {
 			// SigningSecret 仅在 MonkeyCode 凭据里出现
 			SigningSecret: f.SigningSecret,
 			ConsoleCookie: f.ConsoleCookie,
+			BaizhiCookie:  f.BaizhiCookie,
 			UID:           f.UID,
 			EnterpriseID:  f.EnterpriseID,
 			Nickname:      f.Nickname,
@@ -234,6 +248,8 @@ func (a *Auth) saveAtomicLocked() error {
 			"signingSecret": a.SigningSecret,
 			// consoleCookie 同上：仅 MonkeyCode 用（控制台会话 Cookie）
 			"consoleCookie": a.ConsoleCookie,
+			// baizhiCookie 同上：仅 MonkeyCode 用（百智云会话 Cookie）
+			"baizhiCookie": a.BaizhiCookie,
 		},
 		"account": map[string]any{
 			"uid":          a.UID,

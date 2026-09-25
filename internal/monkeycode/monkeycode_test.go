@@ -5,7 +5,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"wild-work/internal/auth"
@@ -928,4 +931,208 @@ func TestUserResourceDetailErrors(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ---------------------------------------------------------------------------
+// 控制台会话派生（百智云 OAuth）
+// ---------------------------------------------------------------------------
+
+// fakeConsole 造一对假上游：baizhiSrv 出授权、consoleSrv 收回调并放会话。
+//
+//	baizhiHits / consoleHits 用于断言「哪些请求真的发生了」（如 500 时不该去派生）。
+func fakeConsole(t *testing.T, staleCookie, freshCookie string) (c *Client, consoleHits, baizhiHits *int32, stop func()) {
+	t.Helper()
+	var ch, bh int32
+	console := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&ch, 1)
+		switch r.URL.Path {
+		case oauthCallbackPath:
+			q := r.URL.Query()
+			if q.Get("code") != "GOODCODE" || q.Get("state") == "" {
+				w.WriteHeader(http.StatusFound)
+				http.Redirect(w, r, "/login?error=invalid_token", http.StatusFound)
+				return
+			}
+			http.SetCookie(w, &http.Cookie{Name: CookieNameConsole, Value: freshCookie, Path: "/"})
+			w.WriteHeader(http.StatusFound)
+		case epWallet:
+			ck := r.Header.Get("Cookie")
+			// staleCookie 为空表示「账号本来就没会话」，此时只有 fresh 能过
+			if staleCookie != "" && strings.Contains(ck, CookieNameConsole+"="+staleCookie) {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			if !strings.Contains(ck, CookieNameConsole+"="+freshCookie) {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			io.WriteString(w, `{"code":0,"message":"success","data":{"id":"x",`+
+				`"balance":54487,"daily_token_balance":0,"daily_token_limit":10000000}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	baizhi := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&bh, 1)
+		if r.URL.Path != epOAuthAuthorize {
+			http.NotFound(w, r)
+			return
+		}
+		q := r.URL.Query()
+		if q.Get("client_id") != oauthClientID || q.Get("response_type") != "code" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if !strings.Contains(r.Header.Get("Cookie"), CookieNameBaizhi+"=") {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		loc := q.Get("redirect_uri") + "?code=GOODCODE&state=" + q.Get("state")
+		w.Header().Set("Location", loc)
+		w.WriteHeader(http.StatusFound)
+	}))
+	c = New()
+	c.Console = console.URL
+	c.Baizhi = baizhi.URL
+	return c, &ch, &bh, func() { console.Close(); baizhi.Close() }
+}
+
+// TestWalletDerivesConsoleSession 存量控制台会话失效（401）时，自动用百智云会话
+// 现派生一份再重试，并把新会话说回账号（含落盘）。
+func TestWalletDerivesConsoleSession(t *testing.T) {
+	c, ch, bh, stop := fakeConsole(t, "stale-sess", "fresh-sess")
+	defer stop()
+
+	fp := filepath.Join(t.TempDir(), "monkeycode-mc_1.json")
+	a := &auth.Auth{AccessToken: "oma_k", SigningSecret: "omas_s",
+		ConsoleCookie: "stale-sess", BaizhiCookie: "baizhi-ok", UID: "mc_1", FilePath: fp}
+
+	remain, items, err := c.UserResourceDetail(a)
+	if err != nil {
+		t.Fatalf("UserResourceDetail: %v", err)
+	}
+	if remain != 55 || len(items) != 2 {
+		t.Fatalf("remain=%d items=%d want 55/2", remain, len(items))
+	}
+	if *ch != 3 { // 401 的钱包 + 回调 + 重试的钱包
+		t.Errorf("console 命中 %d 次 want 3", *ch)
+	}
+	if *bh != 1 {
+		t.Errorf("baizhi 命中 %d 次 want 1", *bh)
+	}
+	if a.ConsoleCookie != "fresh-sess" {
+		t.Errorf("内存会话未更新：%q", a.ConsoleCookie)
+	}
+	raw, err := os.ReadFile(fp)
+	if err != nil {
+		t.Fatalf("读回凭据：%v", err)
+	}
+	if !strings.Contains(string(raw), "fresh-sess") {
+		t.Errorf("派生出的会话未落盘：%s", raw)
+	}
+}
+
+// TestWalletDerivesWhenCookieMissing 首次导入后客户端会话可能已没了（字段为空），
+// 也应走派生而不是直接报「缺少控制台 Cookie」。
+func TestWalletDerivesWhenCookieMissing(t *testing.T) {
+	c, ch, bh, stop := fakeConsole(t, "", "fresh-sess")
+	defer stop()
+
+	a := &auth.Auth{AccessToken: "oma_k", BaizhiCookie: "baizhi-ok"}
+	remain, _, err := c.UserResourceDetail(a)
+	if err != nil {
+		t.Fatalf("UserResourceDetail: %v", err)
+	}
+	if remain != 55 {
+		t.Errorf("remain=%d want 55", remain)
+	}
+	if *ch != 2 || *bh != 1 { // 没打第一次钱包，直接派生 + 重试
+		t.Errorf("console=%d baizhi=%d want 2/1", *ch, *bh)
+	}
+}
+
+// TestWalletNoDeriveOnServerError 上游 5xx 不是会话问题，不该白跑一次派生。
+func TestWalletNoDeriveOnServerError(t *testing.T) {
+	var ch, bh int32
+	console := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&ch, 1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer console.Close()
+	baizhi := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&bh, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer baizhi.Close()
+
+	c := New()
+	c.Console, c.Baizhi = console.URL, baizhi.URL
+	a := &auth.Auth{ConsoleCookie: "s", BaizhiCookie: "b"}
+	if _, _, err := c.UserResourceDetail(a); err == nil {
+		t.Fatal("5xx 应报错")
+	}
+	if bh != 0 {
+		t.Errorf("5xx 时不该去派生，baizhi 命中 %d 次", bh)
+	}
+}
+
+// TestDeriveConsoleSessionFailures 派生自身的失败路径。
+func TestDeriveConsoleSessionFailures(t *testing.T) {
+	t.Run("无百智云会话", func(t *testing.T) {
+		c, _, bh, stop := fakeConsole(t, "s", "f")
+		defer stop()
+		if _, err := c.deriveConsoleSession(&auth.Auth{ConsoleCookie: "s"}); err == nil {
+			t.Fatal("缺百智云 Cookie 应报错")
+		}
+		if *bh != 0 {
+			t.Error("缺 Cookie 时不该发请求")
+		}
+	})
+
+	t.Run("百智云会话失效", func(t *testing.T) {
+		baizhi := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusUnauthorized)
+		}))
+		defer baizhi.Close()
+		c := New()
+		c.Baizhi = baizhi.URL
+		_, err := c.deriveConsoleSession(&auth.Auth{BaizhiCookie: "expired"})
+		if err == nil || !strings.Contains(err.Error(), "百智云会话已失效") {
+			t.Fatalf("err=%v want 含「百智云会话已失效」", err)
+		}
+	})
+
+	t.Run("state 不匹配", func(t *testing.T) {
+		baizhi := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// 故意回一个与请求不同的 state（模拟回调被替换）
+			w.Header().Set("Location", "https://x/cb?code=C&state=tampered")
+			w.WriteHeader(http.StatusFound)
+		}))
+		defer baizhi.Close()
+		c := New()
+		c.Baizhi = baizhi.URL
+		_, err := c.deriveConsoleSession(&auth.Auth{BaizhiCookie: "ok"})
+		if err == nil || !strings.Contains(err.Error(), "state 不匹配") {
+			t.Fatalf("err=%v want 含「state 不匹配」", err)
+		}
+	})
+
+	t.Run("回调没下发会话", func(t *testing.T) {
+		var baizhi *httptest.Server
+		console := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK) // 200 但不带 Set-Cookie
+		}))
+		defer console.Close()
+		baizhi = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Location", console.URL+oauthCallbackPath+"?code=C&state="+r.URL.Query().Get("state"))
+			w.WriteHeader(http.StatusFound)
+		}))
+		defer baizhi.Close()
+		c := New()
+		c.Console, c.Baizhi = console.URL, baizhi.URL
+		_, err := c.deriveConsoleSession(&auth.Auth{BaizhiCookie: "ok"})
+		if err == nil || !strings.Contains(err.Error(), "未下发控制台会话") {
+			t.Fatalf("err=%v want 含「未下发控制台会话」", err)
+		}
+	})
 }

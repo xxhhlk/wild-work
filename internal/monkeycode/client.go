@@ -12,13 +12,17 @@ package monkeycode
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -33,6 +37,8 @@ type Client struct {
 	Base string
 	// Console 控制台站点（钱包等 Cookie 认证接口）；空则用 consoleBase。
 	Console string
+	// Baizhi 百智云站点（派生控制台会话的授权端点）；空则用 baizhiBase。
+	Baizhi string
 }
 
 // New 生产默认客户端。
@@ -63,6 +69,14 @@ func (c *Client) console() string {
 		return strings.TrimRight(c.Console, "/")
 	}
 	return consoleBase
+}
+
+// baizhi 返回百智云站点基址（测试可覆盖）。
+func (c *Client) baizhi() string {
+	if c.Baizhi != "" {
+		return strings.TrimRight(c.Baizhi, "/")
+	}
+	return baizhiBase
 }
 
 // base 返回该账号的上游基址（账号自带 ApiHost+Domain 优先，否则回默认）。
@@ -279,34 +293,25 @@ type walletResponse struct {
 }
 
 // wallet 单次请求同时产出总额与明细条目。
+//
+// 控制台会话（monkeycode_ai_session）只活约 6 天，而它的**上游**百智云会话约 29 天：
+// 因此会话失效时（401，或压根没导入过）先尝试用百智云会话现派生一份再重试，
+// 免得用户每 6 天就要重导一次凭据。派生失败才把原错误抛出去。
 func (c *Client) wallet(a *auth.Auth) (int64, []provider.ResourceItem, error) {
 	cookie := consoleCookieOf(a)
-	if cookie == "" {
-		return 0, nil, errors.New("monkeycode：账号缺少控制台 Cookie，无法查询积分（客户端重新登录后再次导入即可）")
+	w, err := c.fetchWallet(cookie)
+	if err != nil && (errors.Is(err, errConsoleUnauthorized) || cookie == "") {
+		fresh, derr := c.deriveConsoleSession(a)
+		if derr != nil {
+			// 派生不可用（账号没带百智云 Cookie / 百智云会话也过期了）：
+			// 两边的信息都带上，用户才知道下一步该做什么。
+			return 0, nil, fmt.Errorf("%w；自动续期失败：%v", err, derr)
+		}
+		adoptConsoleCookie(a, fresh)
+		w, err = c.fetchWallet(fresh)
 	}
-	req, err := http.NewRequest(http.MethodGet, c.console()+epWallet, nil)
 	if err != nil {
 		return 0, nil, err
-	}
-	req.Header.Set("Cookie", "monkeycode_ai_session="+cookie)
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", userAgent)
-
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return 0, nil, err
-	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode >= 400 {
-		return 0, nil, fmt.Errorf("monkeycode：钱包接口 HTTP %d", resp.StatusCode)
-	}
-	var w walletResponse
-	if err := json.Unmarshal(raw, &w); err != nil {
-		return 0, nil, fmt.Errorf("monkeycode：钱包响应解析失败：%w", err)
-	}
-	if w.Code != 0 {
-		return 0, nil, fmt.Errorf("monkeycode：钱包接口 code=%d message=%s", w.Code, w.Message)
 	}
 
 	credits := milliCredits(w.Data.Balance)
@@ -330,6 +335,175 @@ func (c *Client) wallet(a *auth.Auth) (int64, []provider.ResourceItem, error) {
 		})
 	}
 	return credits, items, nil
+}
+
+// errConsoleUnauthorized 控制台会话失效（上游 401）。触发一次派生重试。
+var errConsoleUnauthorized = errors.New("monkeycode：控制台会话已失效")
+
+// fetchWallet 用给定会话打钱包接口。
+func (c *Client) fetchWallet(cookie string) (*walletResponse, error) {
+	if cookie == "" {
+		return nil, errors.New("monkeycode：账号缺少控制台 Cookie，无法查询积分（客户端重新登录后再次导入即可）")
+	}
+	req, err := http.NewRequest(http.MethodGet, c.console()+epWallet, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Cookie", CookieNameConsole+"="+cookie)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", userAgent)
+
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, errConsoleUnauthorized
+	}
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("monkeycode：钱包接口 HTTP %d", resp.StatusCode)
+	}
+	var w walletResponse
+	if err := json.Unmarshal(raw, &w); err != nil {
+		return nil, fmt.Errorf("monkeycode：钱包响应解析失败：%w", err)
+	}
+	if w.Code != 0 {
+		return nil, fmt.Errorf("monkeycode：钱包接口 code=%d message=%s", w.Code, w.Message)
+	}
+	return &w, nil
+}
+
+// deriveConsoleSession 用百智云会话现换一份控制台会话，返回 `monkeycode_ai_session` 的值。
+//
+// 链路（与官方前端「同意授权」按钮跳转的完全同形，纯 HTTP 两步）：
+//
+//	GET  {baizhiBase}/api/v1/oauth/authorize?client_id=monkeycode-ai
+//	       &redirect_uri=<回调>&scope=user phone&state=<随机>&response_type=code
+//	     Cookie: baizhi_session=…
+//	  → 302 Location: {consoleBase}/api/v1/users/baizhi/callback?code=…&state=…
+//	GET  <Location>（不带 Cookie）
+//	  → 302 + Set-Cookie: monkeycode_ai_session=…
+//
+// redirect_uri 由 c.console() 拼出，故测试里把 Console 指到假上游即可整条闭环。
+// 注意**不能自动跟随重定向**：回调那步的 302 里才带 Set-Cookie，跟随会把会话
+// 落到 CookieJar 里而非拿到手里（本客户端没有 Jar）。
+func (c *Client) deriveConsoleSession(a *auth.Auth) (string, error) {
+	baizhi := baizhiCookieOf(a)
+	if baizhi == "" {
+		return "", errors.New("monkeycode：账号没有百智云会话 Cookie，无法续期控制台会话")
+	}
+	state, err := randomState()
+	if err != nil {
+		return "", err
+	}
+	q := url.Values{}
+	q.Set("client_id", oauthClientID)
+	q.Set("redirect_uri", c.console()+oauthCallbackPath)
+	q.Set("scope", oauthScope)
+	q.Set("state", state)
+	q.Set("response_type", "code")
+
+	req, err := http.NewRequest(http.MethodGet, c.baizhi()+epOAuthAuthorize+"?"+q.Encode(), nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Cookie", CookieNameBaizhi+"="+baizhi)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", userAgent)
+
+	noRedirect := *c.HTTP
+	noRedirect.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+
+	resp, err := noRedirect.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+	if resp.StatusCode == http.StatusUnauthorized {
+		return "", errors.New("monkeycode：百智云会话已失效（需在客户端重新登录后再次导入）")
+	}
+	if loc := resp.Header.Get("Location"); loc != "" {
+		u, perr := url.Parse(loc)
+		if perr != nil {
+			return "", fmt.Errorf("monkeycode：授权回调地址无法解析：%w", perr)
+		}
+		if got := u.Query().Get("state"); got != state {
+			return "", errors.New("monkeycode：授权回调 state 不匹配（疑似被劫持），已放弃")
+		}
+		if ec := u.Query().Get("error"); ec != "" {
+			return "", fmt.Errorf("monkeycode：授权失败 %s %s", ec, u.Query().Get("error_description"))
+		}
+		if code := u.Query().Get("code"); code != "" {
+			return c.exchangeCallback(loc)
+		}
+	}
+	return "", fmt.Errorf("monkeycode：授权未返回 code（HTTP %d，%s）", resp.StatusCode, snippet(raw))
+}
+
+// exchangeCallback 走回调端点把 code 换成控制台会话。
+func (c *Client) exchangeCallback(callbackURL string) (string, error) {
+	req, err := http.NewRequest(http.MethodGet, callbackURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", userAgent)
+
+	noRedirect := *c.HTTP
+	noRedirect.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+
+	resp, err := noRedirect.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+	for _, ck := range resp.Cookies() {
+		if ck.Name == CookieNameConsole && ck.Value != "" {
+			return ck.Value, nil
+		}
+	}
+	return "", fmt.Errorf("monkeycode：回调未下发控制台会话（HTTP %d，%s）", resp.StatusCode, snippet(raw))
+}
+
+// adoptConsoleCookie 把派生出的控制台会话写回账号：内存立即生效 + 尝试落盘。
+//
+// 落盘的意义是**下次启动不必再派生一次** —— 每次派生都会在上游新建一个会话。
+// 落盘失败只影响下次启动（会再派生一次），故只记日志不影响本次查询。
+func adoptConsoleCookie(a *auth.Auth, cookie string) {
+	if a == nil {
+		return
+	}
+	a.Lock()
+	a.ConsoleCookie = cookie
+	a.Unlock()
+	if err := a.SaveAtomic(); err != nil {
+		log.Printf("monkeycode：控制台会话落盘失败（仅影响下次启动）：%v", err)
+	}
+}
+
+// randomState 生成 OAuth state（防回调被替换）。
+func randomState() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b[:]), nil
+}
+
+// snippet 截一段响应体用于错误信息（不含凭据，只是排障线索）。
+func snippet(raw []byte) string {
+	s := strings.TrimSpace(string(raw))
+	if len(s) > 120 {
+		s = s[:120]
+	}
+	if s == "" {
+		return "空响应"
+	}
+	return s
 }
 
 // milliCredits 毫积分 → 积分。取整方式与 console 前端一致（`Math.ceil(balance/1e3)`），
@@ -432,4 +606,12 @@ func consoleCookieOf(a *auth.Auth) string {
 		return ""
 	}
 	return strings.TrimSpace(a.ConsoleCookie)
+}
+
+// baizhiCookieOf 取账号的百智云会话 Cookie（控制台会话的上游来源）。
+func baizhiCookieOf(a *auth.Auth) string {
+	if a == nil {
+		return ""
+	}
+	return strings.TrimSpace(a.BaizhiCookie)
 }

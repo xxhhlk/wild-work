@@ -67,6 +67,8 @@ type authSection struct {
 	SigningSecret string `json:"signingSecret"`
 	// ConsoleCookie 只在 MonkeyCode 凭据里非空（控制台会话 Cookie，见 internal/auth）
 	ConsoleCookie string `json:"consoleCookie"`
+	// BaizhiCookie 只在 MonkeyCode 凭据里非空（百智云会话 Cookie，控制台会话的上游来源）
+	BaizhiCookie string `json:"baizhiCookie"`
 }
 
 type accountSection struct {
@@ -259,8 +261,10 @@ func (a *App) importMonkeyCode() (*ImportLocalResult, error) {
 		return nil, fmt.Errorf("客户端配置里的托管条目没有 api_key（%s）", path)
 	}
 	host, path0 := splitBaseURL(strings.TrimSpace(entry.BaseURL))
-	// 控制台会话 Cookie（积分查询用）是**尽力而为**：拿不到也不影响导入。
-	consoleCookie, cookieNote := monkeyCodeConsoleCookie()
+	// 两侧会话 Cookie 都是**尽力而为**：拿不到不影响导入本身。
+	// 控制台会话短寿（≈6 天）但可由百智云会话（≈29 天）自动续期，故两支都取。
+	consoleCookie, consoleWhy := monkeyCodeCookie("monkeycode-cookies.json", monkeycode.CookieNameConsole)
+	baizhiCookie, baizhiWhy := monkeyCodeCookie("baizhi-cookies.json", monkeycode.CookieNameBaizhi)
 	// 上游无 uid：用 api_key 派生稳定标识，避免同一账号重复导入生成多个凭据文件。
 	sum := sha256.Sum256([]byte(key))
 	uid := "mc_" + hex.EncodeToString(sum[:5])
@@ -275,6 +279,7 @@ func (a *App) importMonkeyCode() (*ImportLocalResult, error) {
 			ApiHost:       host,
 			SigningSecret: secret,
 			ConsoleCookie: consoleCookie,
+			BaizhiCookie:  baizhiCookie,
 		},
 		Account: accountSection{UID: uid, Nickname: "MonkeyCode " + strings.TrimPrefix(uid, "mc_")},
 	}
@@ -284,9 +289,13 @@ func (a *App) importMonkeyCode() (*ImportLocalResult, error) {
 	}
 	a.reloadAccounts()
 	a.afterAccountAdded(provider.MonkeyCode)
-	note := "凭据来自本机 MonkeyCode 客户端（api_key + signing_secret）。上游无刷新接口，客户端重新登录后需再次导入。"
-	if cookieNote != "" {
-		note += " " + cookieNote + "。"
+	note := "凭据来自本机 MonkeyCode 客户端（api_key + signing_secret）。" +
+		"agent 凭据无刷新接口，客户端重新登录后需再次导入；控制台会话（积分）可由百智云会话自动续期。"
+	if consoleWhy != "" {
+		note += " 未取得控制台 Cookie（" + consoleWhy + "），面板不显示积分（不影响对话）。"
+	}
+	if baizhiWhy != "" {
+		note += " 未取得百智云 Cookie（" + baizhiWhy + "），控制台会话过期后无法自动续期。"
 	}
 	return &ImportLocalResult{
 		Channel: "monkeycode", UID: uid, File: filepath.Base(file),
@@ -294,22 +303,21 @@ func (a *App) importMonkeyCode() (*ImportLocalResult, error) {
 	}, nil
 }
 
-// monkeyCodeConsoleCookieName 是控制台会话 Cookie 的名字（积分等控制台接口只认它）。
-const monkeyCodeConsoleCookieName = "monkeycode_ai_session"
-
-// monkeyCodeConsoleCookie 读取客户端登录控制台时落下的会话 Cookie。
+// monkeyCodeCookie 从客户端 cookie 文件里取指定名字的 Cookie 值（尽力而为）。
 //
 // 与 api_key/signing_secret 不同，控制台接口（积分钱包等）只认 Cookie，而本工具
-// 没有登录流程、无法刷新它 —— 因此这里**尽力而为**：文件缺失、解析失败或已过期
-// 都只返回空串与一句说明，不影响凭据导入本身（只是面板拿不到积分）。
-func monkeyCodeConsoleCookie() (string, string) {
-	path, err := monkeyCodeCookiePath()
+// 没有登录流程 —— 因此文件缺失、读取失败或已过期都只返回空串 + 一句**原因**，
+// 由调用方决定怎么向用户表述（都不影响凭据导入本身）。
+//
+// 返回的第二个值是简短原因（"文件缺失"/"已过期"…），空串表示取到了值。
+func monkeyCodeCookie(file, name string) (string, string) {
+	path, err := monkeyCodeCookiePath(file)
 	if err != nil {
-		return "", "未找到控制台 Cookie 文件，面板不显示积分（不影响对话）"
+		return "", "文件缺失"
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return "", "读取控制台 Cookie 失败，面板不显示积分（不影响对话）"
+		return "", "读取失败"
 	}
 	// 客户端落盘格式（2026-09-24 实测）：
 	//   [{"name":"monkeycode_ai_session","value":"…","expires":"2026-10-01T10:17:37Z"}, …]
@@ -319,37 +327,38 @@ func monkeyCodeConsoleCookie() (string, string) {
 		Expires string `json:"expires"`
 	}
 	if err := json.Unmarshal(raw, &items); err != nil {
-		return "", "解析控制台 Cookie 失败，面板不显示积分（不影响对话）"
+		return "", "解析失败"
 	}
 	for _, it := range items {
-		if it.Name != monkeyCodeConsoleCookieName {
+		if it.Name != name {
 			continue
 		}
 		if exp, perr := time.Parse(time.RFC3339, it.Expires); perr == nil && !exp.IsZero() && time.Now().After(exp) {
-			return "", "控制台 Cookie 已过期，面板不显示积分（客户端重新登录后再次导入即可）"
+			return "", "已过期"
 		}
 		if v := strings.TrimSpace(it.Value); v != "" {
 			return v, ""
 		}
 	}
-	return "", "控制台 Cookie 里没有 " + monkeyCodeConsoleCookieName + "，面板不显示积分（不影响对话）"
+	return "", "文件里没有 " + name
 }
 
-// monkeyCodeCookiePath 定位客户端保存控制台 Cookie 的文件。
+// monkeyCodeCookiePath 定位客户端保存 Cookie 的文件。
 //
-// 该文件与 settings.json **不同级**：settings.json 在 ohmyagent 子目录，
-// cookie 直接落在 bundle 根目录（%APPDATA%\com.chaitin.baizhi.monkeycode\）。
-func monkeyCodeCookiePath() (string, error) {
+// 这些文件与 settings.json **不同级**：settings.json 在 ohmyagent 子目录，
+// cookie 直接落在 bundle 根目录（%APPDATA%\com.chaitin.baizhi.monkeycode\），
+// 且按来源分两个文件（monkeycode-cookies.json / baizhi-cookies.json）。
+func monkeyCodeCookiePath(file string) (string, error) {
 	var cands []string
 	if dir := strings.TrimSpace(os.Getenv("MONKEYCODE_CONFIG_DIR")); dir != "" {
-		cands = append(cands, filepath.Join(dir, "monkeycode-cookies.json"))
+		cands = append(cands, filepath.Join(dir, file))
 	}
 	if appData := strings.TrimSpace(os.Getenv("APPDATA")); appData != "" {
-		cands = append(cands, filepath.Join(appData, "com.chaitin.baizhi.monkeycode", "monkeycode-cookies.json"))
+		cands = append(cands, filepath.Join(appData, "com.chaitin.baizhi.monkeycode", file))
 	}
 	if local := strings.TrimSpace(os.Getenv("LOCALAPPDATA")); local != "" {
-		cands = append(cands, filepath.Join(local, "com.chaitin.baizhi.monkeycode", "monkeycode-cookies.json"))
-		cands = append(cands, filepath.Join(local, "MonkeyCode", "monkeycode-cookies.json"))
+		cands = append(cands, filepath.Join(local, "com.chaitin.baizhi.monkeycode", file))
+		cands = append(cands, filepath.Join(local, "MonkeyCode", file))
 	}
 	for _, p := range cands {
 		if fileExists(p) {
@@ -360,7 +369,7 @@ func monkeyCodeCookiePath() (string, error) {
 	if len(cands) > 0 {
 		last = cands[len(cands)-1]
 	}
-	return "", fmt.Errorf("未找到 MonkeyCode 控制台 Cookie（已尝试 %d 个路径，最后一个是 %s）", len(cands), last)
+	return "", fmt.Errorf("未找到 MonkeyCode Cookie 文件 %s（已尝试 %d 个路径，最后一个是 %s）", file, len(cands), last)
 }
 
 // splitBaseURL 把客户端 base_url 拆成 (host, path)。
