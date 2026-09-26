@@ -45,9 +45,14 @@ func msgBox(title, msg string, flags uintptr) uintptr {
 	proc := user32.NewProc("MessageBoxW")
 	caption, _ := syscall.UTF16PtrFromString(title)
 	text, _ := syscall.UTF16PtrFromString(msg)
-	// MB_TOPMOST(0x40000) + MB_SETFOREGROUND(0x10000) + MB_DEFAULT_DESKTOP_ONLY(0x20000)
-	// 强制主显示器前台显示，避免双显示器下弹窗位置飘忽
-	res, _, _ := proc.Call(0, uintptr(unsafe.Pointer(text)), uintptr(unsafe.Pointer(caption)), flags|0x40000|0x10000|0x20000)
+	// MB_TOPMOST(0x40000) + MB_SETFOREGROUND(0x10000)：置顶并抢前台。
+	//
+	// ⚠️ 不要加 MB_DEFAULT_DESKTOP_ONLY(0x20000)：它是「在缺省桌面的窗口站上代建」
+	// 的服务端语义，不是「强制主显示器」的定位开关。实测（同参数 A/B）带上它时
+	// 窗口属主会变成 csrss.exe、落在屏幕右下角且半屏在屏外、不随本进程退出而消失；
+	// 且按 MSDN，当前输入桌面不是缺省桌面时（锁屏 / RDP 断开重连 / UAC 安全桌面）
+	// MessageBox 会一直不返回 —— 本函数跑在托盘消息循环线程上，会卡死托盘与退出菜单。
+	res, _, _ := proc.Call(0, uintptr(unsafe.Pointer(text)), uintptr(unsafe.Pointer(caption)), flags|0x40000|0x10000)
 	return res
 }
 
