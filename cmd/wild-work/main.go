@@ -408,12 +408,6 @@ func main() {
 	// 否则刚启动时费率缓存为空，面板下方全是 unknown（需手动点刷新才正常）。
 	appInst.StartPricingAutoRefresh(sctx, app.PricingRefreshInterval)
 
-	// 启动提示（非 --autostart）：系统通知
-	if !autostart && !noTray {
-		platform.Notify("wild-work 已启动",
-			fmt.Sprintf("OpenAI 兼容 API 地址：\nhttp://%s:%d\n\n点击右下角托盘图标或菜单打开主界面。", displayHost(cfg), cfg.Listen.Port))
-	}
-
 	if noTray {
 		// 无头模式：打印信息，阻塞等待信号
 		addr := cfg.Listen.Addr()
@@ -464,6 +458,18 @@ func main() {
 					appInst.Stop()
 					os.Exit(0)
 				}
+			},
+			// 启动提示（非 --autostart）：托盘就绪后再弹。
+			//
+			// 必须晚于托盘创建，且必须在独立 goroutine 里（Ready 即如此）：这是
+			// 个**模态**对话框，放在托盘之前会把托盘创建整个卡住 —— 双击 exe 后
+			// 托盘图标迟迟不出现，表现为「点了没反应」。
+			Ready: func() {
+				if autostart {
+					return
+				}
+				platform.Notify("wild-work 已启动",
+					fmt.Sprintf("OpenAI 兼容 API 地址：\nhttp://%s:%d\n\n点击右下角托盘图标或菜单打开主界面。", displayHost(cfg), cfg.Listen.Port))
 			},
 		})
 	}()
