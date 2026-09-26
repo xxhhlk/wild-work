@@ -641,13 +641,60 @@ func stripChannel(model string) string {
 	return model
 }
 
+// rewriteModel 改写发往上游的请求体：修补工具轮的空 content（见
+// normalizeToolTurnContent），并把 model 覆盖为路由后的真实模型名。
 func rewriteModel(body []byte, model string) ([]byte, error) {
 	var obj map[string]any
 	if err := json.Unmarshal(body, &obj); err != nil {
 		return nil, err
 	}
+	normalizeToolTurnContent(obj)
 	obj["model"] = model
 	return json.Marshal(obj)
+}
+
+// normalizeToolTurnContent 把「content 为 null 或缺失」的工具轮消息补成空串。
+//
+// 上游（实测 qoder/deepseek-flash，2026-09-24）要求带 tool_calls 的 assistant
+// 消息必须携带**字符串** content，null 或字段缺失会让它整请求拒答，并且报一个
+// 完全误导的错：
+//
+//	Messages with role 'tool' must be a response to a preceding message with 'tool_calls'
+//
+// 实测矩阵（同一份客户端真实请求，只改这一处）：
+//
+//	assistant.content = null  → 200 + provider_error 帧（空流）
+//	assistant.content = ""    → 正常出流
+//	content 字段缺失          → 200 + provider_error 帧（空流）
+//
+// 危害在于**中毒进历史**：客户端在「模型只回工具调用、没输出正文」时会把该
+// assistant 消息的 content 落成 null，之后这一轮永远留在 messages 里，于是该
+// 会话的每一发请求都被上游拒（重启客户端也不恢复，只能新建会话）。
+//
+// 放宽到 tool 角色一并处理：工具返回空内容时客户端同样可能给 null，上游对工具
+// 轮是同一套校验。
+func normalizeToolTurnContent(obj map[string]any) {
+	msgs, _ := obj["messages"].([]any)
+	for _, raw := range msgs {
+		m, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		role, _ := m["role"].(string)
+		switch role {
+		case "assistant":
+			// 只在真的带 tool_calls 时补：普通 assistant 消息 content=null 无证据会出问题。
+			if tc, ok := m["tool_calls"].([]any); !ok || len(tc) == 0 {
+				continue
+			}
+		case "tool":
+		default:
+			continue
+		}
+		if c, exists := m["content"]; !exists || c == nil {
+			m["content"] = ""
+		}
+	}
 }
 
 // ChannelModels 返回每个渠道当前生效的模型列表，与 /v1/models 同源
