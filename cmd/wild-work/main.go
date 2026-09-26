@@ -509,7 +509,7 @@ func main() {
 	if err := appInst.StartServer(); err != nil {
 		log.Printf("listen %s failed: %v（面板中将提示）", cfg.Listen.Addr(), err)
 	} else {
-		// 地址必须落日志：气泡可能被系统静音，托盘提示要悬停才看得到。
+		// 地址必须落日志：启动弹窗可能被忽略或关掉，日志里始终留一份。
 		log.Printf("已启动：OpenAI 兼容 API http://%s:%d/v1（Web UI http://%s:%d/）",
 			displayHost(cfg), cfg.Listen.Port, displayHost(cfg), cfg.Listen.Port)
 	}
@@ -579,7 +579,7 @@ func main() {
 				os.Exit(1)
 			}
 		}()
-		// 托盘提示带上监听地址：气泡可能被系统静音/失败，悬停也能看到地址。
+		// 托盘提示带上监听地址：启动弹窗可能被忽略或关掉，悬停也能看到地址。
 		trayTip := fmt.Sprintf("wild-work — 渠道聚合代理\nhttp://%s:%d", displayHost(cfg), cfg.Listen.Port)
 		systray.Run(trayIconICO, trayTip, systray.Actions{
 			OpenUI: func() {
@@ -598,21 +598,18 @@ func main() {
 					systray.Quit(3 * time.Second)
 				}
 			},
-			// 启动提示（非 --autostart）：托盘就绪后弹气泡。
-			// 必须晚于托盘：气泡要挂在已注册的托盘图标上；而改用模态弹窗
-			// （MessageBox）会阻塞调用线程，托盘图标就迟迟不出现。
+			// 启动提示（非 --autostart）：托盘就绪后再弹。
+			//
+			// 必须晚于托盘创建，且必须跑在独立 goroutine 里（Ready 即如此）：
+			// 这是个**模态**框（Windows 上 platform.Notify 就是 MessageBox），
+			// 放在托盘之前会把托盘创建整个卡住，双击 exe 表现为「点了没反应」。
 			Ready: func() {
 				if autostart {
 					return
 				}
-				if !systray.Notify("wild-work 已启动",
+				platform.Notify("wild-work 已启动",
 					fmt.Sprintf("OpenAI 兼容 API 地址：http://%s:%d\n点击托盘图标或菜单打开主界面。",
-						displayHost(cfg), cfg.Listen.Port)) {
-					// 气泡不可用（系统关掉通知 / 库改了窗口类名）：降级写日志，
-					// **不要**退回模态弹窗 —— 那正是这个 bug 的成因。
-					log.Printf("启动提示：托盘气泡不可用，API 地址 http://%s:%d（悬停托盘图标同样可见）",
-						displayHost(cfg), cfg.Listen.Port)
-				}
+						displayHost(cfg), cfg.Listen.Port))
 			},
 		})
 	}()

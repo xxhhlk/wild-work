@@ -35,8 +35,9 @@ func InfoBox(title, msg string) {
 
 // Notify 弹信息提示框。
 //
-// ⚠ Windows 上是**模态**对话框：会阻塞调用线程直到用户点掉。启动阶段调用它会卡在
-// 托盘创建之前（图标迟迟不出现）。需要非阻塞通知请用 systray.Notify（托盘气泡）。
+// ⚠ Windows 上是**模态**对话框：会阻塞调用线程直到用户点掉。调用方必须把它放在
+// 独立 goroutine 里、且晚于托盘创建（见 systray.Actions.Ready），否则会卡在托盘
+// 创建之前，双击 exe 表现为「点了没反应」。
 // 这里保留是为了给平台 API 一个统一入口（macOS/其它平台本身就是非阻塞的）。
 func Notify(title, msg string) { InfoBox(title, msg) }
 

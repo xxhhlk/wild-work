@@ -40,15 +40,6 @@ type Actions struct {
 	Ready func()
 }
 
-// Notify 弹一条系统通知。
-//
-// Windows：在托盘图标上弹气泡（非阻塞），返回是否送达；托盘未就绪或气泡不可用时
-// 返回 false。其它平台：走系统通知，恒返回 false（没有气泡这条路径）。
-//
-// **必须在托盘就绪后调用**（见 Actions.Ready）。启动阶段改用 MessageBox 这类模态
-// 对话框会阻塞托盘创建，图标迟迟不出现。
-func Notify(title, msg string) bool { return notify(title, msg) }
-
 // menuIcon 生成 16x16 菜单项图标：白边纯色方块，包成单条目 ICO。
 //
 // 必须包成 ICO：Windows 侧 MenuItem.SetIcon 走 LoadImage(IMAGE_ICON, LR_LOADFROMFILE)，
