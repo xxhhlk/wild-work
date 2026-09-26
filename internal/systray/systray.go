@@ -23,6 +23,9 @@ type Actions struct {
 	OpenLog func()
 	// Quit 退出程序。
 	Quit func()
+	// Ready 托盘就绪后回调：图标与菜单都已注册、消息循环即将开始。
+	// 在独立 goroutine 里执行，阻塞式操作（如模态对话框）不会卡住托盘。
+	Ready func()
 }
 
 // miniPNG 生成 16x16 纯色 PNG（RGBA）。
@@ -175,6 +178,11 @@ func Run(icon []byte, tooltip string, act Actions) {
 		mOpen.Click(func() { go act.OpenUI() })
 		mLog.Click(func() { go act.OpenLog() })
 		mQuit.Click(func() { go act.Quit() })
+
+		// 就绪回调放最后：此时图标、菜单都已注册。
+		if act.Ready != nil {
+			go act.Ready()
+		}
 	}, func() {
 		log.Printf("托盘已退出")
 	})
