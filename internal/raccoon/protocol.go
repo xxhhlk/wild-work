@@ -38,6 +38,9 @@ const (
 	ProtocolHost = "auth"
 	ProtocolPath = "/callback"
 
+	// ProtocolKeyPath 协议注册表键（HKCU 下）。官方客户端安装时写入，启动时可能重新注册。
+	ProtocolKeyPath = `Software\Classes\office-raccoon`
+
 	// CallbackFileName 协议处理器子进程把深链参数落盘的文件名（位于 data/ 下）。
 	CallbackFileName = "raccoon-callback.json"
 	// BackupFileName 注册表备份文件名（位于 data/ 下）。

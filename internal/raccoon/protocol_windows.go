@@ -35,9 +35,6 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
-// ProtocolKeyPath 协议注册表键（HKCU 下）。官方客户端安装时写入，启动时可能重新注册。
-const ProtocolKeyPath = `Software\Classes\office-raccoon`
-
 // callbackFlag 内部别名（常量定义在 protocol.go，跨平台可见，入口层用它识别参数）。
 const callbackFlag = CallbackFlag
 
