@@ -48,6 +48,30 @@ func (l Listen) Addr() string {
 	return net.JoinHostPort(host, strconv.Itoa(port))
 }
 
+// SameAddr 判断两个 net.Listen 地址串是否指向同一个监听地址。
+//
+// 空 host、0.0.0.0、:: 在 net.Listen 语义下都是「全部接口」，但字符串形式不同：
+// 旧版配置写 ":7863"（或 WILDWORK_LISTEN=":7777"）时 Host 为空，面板会把监听主机
+// 回显成 0.0.0.0，保存时回传 "0.0.0.0:7863"——字符串不等会被误判成「改了监听地址」，
+// 于是在同一端口上重新 net.Listen，Windows 下撞自身报「端口已被占用」。
+func SameAddr(a, b string) bool {
+	ah, ap, errA := net.SplitHostPort(a)
+	bh, bp, errB := net.SplitHostPort(b)
+	if errA != nil || errB != nil {
+		return a == b // 解析失败（裸端口等）退化为字符串比较
+	}
+	return ap == bp && normalizeListenHost(ah) == normalizeListenHost(bh)
+}
+
+// normalizeListenHost 把「全部接口」的各种写法归一化，其余 host 原样返回。
+func normalizeListenHost(host string) string {
+	switch strings.TrimSpace(host) {
+	case "", "0.0.0.0", "::", "[::]", "*":
+		return ""
+	}
+	return host
+}
+
 // UnmarshalJSON 兼容旧版字符串形式（":7863" / "127.0.0.1:9999" / "9999"）。
 func (l *Listen) UnmarshalJSON(data []byte) error {
 	data = bytes.TrimSpace(data)
