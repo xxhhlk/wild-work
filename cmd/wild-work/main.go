@@ -460,13 +460,17 @@ func main() {
 			},
 			Quit: func() {
 				if platform.AskYesNo("wild-work", "确定退出 wild-work 吗？") {
-					stop()
-					appInst.Stop()
-					os.Exit(0)
+					// 先摘托盘图标：NIM_DELETE 由托盘消息循环执行，返回即已回收。
+					// 直接 os.Exit 会跳过这一步，Windows 任务栏留下幽灵图标。
+					systray.Quit(3 * time.Second)
 				}
 			},
 		})
 	}()
+
+	// Run 返回 = 托盘图标已回收，停机清理后进程自然退出。
+	stop()
+	appInst.Stop()
 }
 
 // workDir 解析数据目录（config.json / auths/ / data/ 的落点）。

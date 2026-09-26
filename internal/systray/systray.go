@@ -11,8 +11,18 @@ import (
 	"encoding/binary"
 	"hash/crc32"
 	"log"
+	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/energye/systray"
+)
+
+// 图标回收信号：doneCh 在托盘消息循环里执行完 Shell_NotifyIcon(NIM_DELETE) 后关闭。
+var (
+	trayStarted atomic.Bool
+	doneOnce    sync.Once
+	doneCh      = make(chan struct{})
 )
 
 // Actions 托盘动作回调（由 daemon 注入）。
@@ -135,7 +145,7 @@ func adler32Update(a uint32, data []byte) uint32 {
 	return s2<<16 | s1
 }
 
-// Run 启动托盘（阻塞，直到 Quit）。icon 为 ico/png 字节。
+// Run 启动托盘（阻塞，直到 Quit 或托盘消息循环结束）。icon 为 ico/png 字节。
 func Run(icon []byte, tooltip string, act Actions) {
 	if act.OpenUI == nil {
 		act.OpenUI = func() {}
@@ -152,6 +162,7 @@ func Run(icon []byte, tooltip string, act Actions) {
 	iconLog := miniPNGWithBorder(140, 145, 159) // 灰色 - 日志
 	iconQuit := miniPNGWithBorder(220, 38, 38)  // 红色 - 退出
 
+	trayStarted.Store(true)
 	systray.Run(func() {
 		systray.SetIcon(icon)
 		systray.SetTooltip(tooltip)
@@ -177,5 +188,29 @@ func Run(icon []byte, tooltip string, act Actions) {
 		mQuit.Click(func() { go act.Quit() })
 	}, func() {
 		log.Printf("托盘已退出")
+		doneOnce.Do(func() { close(doneCh) })
 	})
+	// 消息循环因其它原因结束时同样视为已回收（Quit 不必再等）。
+	doneOnce.Do(func() { close(doneCh) })
+}
+
+// Quit 摘除托盘图标并等待通知区域回收完成，返回是否确认回收。
+//
+// 退出进程前必须走这里。托盘图标由 Shell_NotifyIcon(NIM_DELETE) 摘除，而该调用
+// 发生在托盘消息循环里；直接 os.Exit 会连同消息循环一起跳过，Windows 任务栏会
+// 残留「幽灵图标」，直到鼠标划过该区域才被系统清掉。
+//
+// 未启动托盘（--no-tray 或初始化失败）时立即返回 true。
+func Quit(timeout time.Duration) bool {
+	if !trayStarted.Load() {
+		return true
+	}
+	systray.Quit()
+	select {
+	case <-doneCh:
+		return true
+	case <-time.After(timeout):
+		log.Printf("托盘图标回收超时（%v），继续退出", timeout)
+		return false
+	}
 }
