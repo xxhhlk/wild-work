@@ -1990,15 +1990,27 @@ type AccountView struct {
 	CreditsStale bool `json:"credits_stale,omitempty"`
 	// CreditsNA 积分概念不适用（如 OpenCodeZen 匿名通道），UI 显示「不适用」
 	// 而非 0，并隐藏刷新积分与明细入口。
-	CreditsNA      bool   `json:"credits_na,omitempty"`
-	Cooling        bool   `json:"cooling"`
-	Until          string `json:"until"`
-	Reason         string `json:"reason"`
-	Disabled       bool   `json:"disabled"`
-	ErrCount       int    `json:"err_count"`
-	LastCheckinOK  bool   `json:"last_checkin_ok"`
-	LastCheckinAt  string `json:"last_checkin_at"`
-	LastCheckinMsg string `json:"last_checkin_msg"`
+	CreditsNA bool   `json:"credits_na,omitempty"`
+	Cooling   bool   `json:"cooling"`
+	Until     string `json:"until"`
+	Reason    string `json:"reason"`
+	// ModelCooling 该账号上处于冷却的模型（上游按模型独立限流）。
+	// 与 Cooling/Reason 分开：非空不代表账号整体不可用，其他模型仍可路由，
+	// 合并展示会让用户误以为整个账号被限流。
+	ModelCooling   []ModelCoolView `json:"model_cooling,omitempty"`
+	Disabled       bool            `json:"disabled"`
+	ErrCount       int             `json:"err_count"`
+	LastCheckinOK  bool            `json:"last_checkin_ok"`
+	LastCheckinAt  string          `json:"last_checkin_at"`
+	LastCheckinMsg string          `json:"last_checkin_msg"`
+}
+
+// ModelCoolView 面板展示的单条模型级冷却。时间与 Until 一样格式化为字符串，
+// 前端不必再解析 RFC3339。
+type ModelCoolView struct {
+	Model  string `json:"model"`
+	Until  string `json:"until"`
+	Reason string `json:"reason,omitempty"`
 }
 
 // State Web UI 初始数据。
@@ -2129,6 +2141,7 @@ func (a *App) accountViews() []AccountView {
 			Cooling:        s.Cooling,
 			Until:          fmtTime(s.Until),
 			Reason:         s.Reason,
+			ModelCooling:   modelCoolViews(s.ModelCooling),
 			Disabled:       s.Disabled,
 			ErrCount:       s.ErrCount,
 			LastCheckinOK:  s.LastCheckinOK,
@@ -2138,6 +2151,19 @@ func (a *App) accountViews() []AccountView {
 	}
 	// 面板固定渠道序展示：OpenCodeZen → WorkBuddyCN → WorkBuddyAI → QoderCN → QoderCOM → TraeWork → 千问办公
 	sortChannelsByOrder(out, func(v AccountView) provider.Kind { return provider.Kind(v.Group) })
+	return out
+}
+
+// modelCoolViews 把 pool 的模型级冷却转成面板视图（时间格式化，与 Until 一致）。
+// 空入参返回 nil，让 omitempty 生效 —— 前端据「字段缺失」判断该账号无模型级冷却。
+func modelCoolViews(in []pool.ModelCoolStatus) []ModelCoolView {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]ModelCoolView, 0, len(in))
+	for _, m := range in {
+		out = append(out, ModelCoolView{Model: m.Model, Until: fmtTime(m.Until), Reason: m.Reason})
+	}
 	return out
 }
 
