@@ -156,6 +156,7 @@ body {
 .tag.bad { background: #fee2e2; color: var(--danger); }
 .tag.ok { background: #dcfce7; color: var(--ok); }
 .tag.neutral { background: #f0f2f5; color: var(--muted); }
+.tag.warn { background: #fef3c7; color: #b45309; }
 
 /* 图标操作按钮 */
 .icon-op {

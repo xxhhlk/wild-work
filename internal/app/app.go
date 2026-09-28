@@ -1266,7 +1266,7 @@ func (a *App) CheckinAll() []scheduler.CheckinResult {
 // CreditRefreshInterval 积分自动刷新间隔。
 // 无签到活动的渠道（如 WorkBuddy 国际版）积分不随签到更新，
 // 若不定期刷新：面板长期显示旧值（新账号则一直为 0），
-// 且 Pool.Pick() 按积分排序会因此长期选错账号。
+// 且 Pool.Pick(model) 按积分排序会因此长期选错账号。
 const CreditRefreshInterval = 30 * time.Minute
 
 // refreshIfSessionDead 上游报「登录态失效」时刷新一次 token 并写回，返回是否已刷新。
@@ -2840,7 +2840,8 @@ func (a *App) RefreshPricing() {
 		if rt == nil || rt.Pool == nil || rt.Upstream == nil || rt.Kind == provider.Qoder || len(rt.Pool.List()) == 0 {
 			continue
 		}
-		acct := rt.Pool.Pick()
+		// 拉费率与具体模型无关，故不排除任何模型级冷却（model 传空）。
+		acct := rt.Pool.Pick("")
 		if acct == nil {
 			continue
 		}

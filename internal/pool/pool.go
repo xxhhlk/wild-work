@@ -1,5 +1,7 @@
 // Package pool 账号池：内存索引 + 冷却/禁用状态机 + state.json 持久化。
-// 挑选策略：healthy 账号中剩余积分最多者。
+// 挑选策略：healthy 账号中临期积分多者优先，同组内按剩余积分降序。
+// 冷却分两层：账号级（entry.until，token/session/余额等与模型无关的惩罚）与
+// 模型级（entry.modelUntil，上游按模型独立限流，见 CooldownModel）。
 package pool
 
 import (
@@ -37,6 +39,15 @@ func (k CoolKind) String() string {
 	return "unknown"
 }
 
+// ModelCoolStatus 单条模型级冷却（面板展示用）。
+// 上游对模型独立计费与限流（WorkBuddy 系 6004 频率限流原文即明说「可换其他模型继续用」），
+// 故冷却按 (账号, 模型) 记录：该账号在 Model 上暂不可选，其他模型不受影响。
+type ModelCoolStatus struct {
+	Model  string    `json:"model"`
+	Until  time.Time `json:"until"`
+	Reason string    `json:"reason,omitempty"`
+}
+
 // Status 单个账号对外暴露的状态（脱敏）。
 type Status struct {
 	UID      string `json:"uid"`
@@ -53,15 +64,26 @@ type Status struct {
 	// CreditsStale 标记余额口径不可信：state 文件是旧版本格式（无 unusable 字段）
 	// 或尚未完成首次成功刷新。UI 应显示「待刷新」而非把旧值/0 当真值。
 	// 自动刷新循环首次成功写入后即清除。
-	CreditsStale   bool      `json:"credits_stale,omitempty"`
-	Cooling        bool      `json:"cooling"`
-	Until          time.Time `json:"until,omitempty"`
-	Reason         string    `json:"reason,omitempty"`
-	Disabled       bool      `json:"disabled"`
-	ErrCount       int       `json:"err_count,omitempty"`
-	LastCheckinOK  bool      `json:"last_checkin_ok,omitempty"`
-	LastCheckinAt  time.Time `json:"last_checkin_at,omitempty"`
-	LastCheckinMsg string    `json:"last_checkin_msg,omitempty"`
+	CreditsStale bool      `json:"credits_stale,omitempty"`
+	Cooling      bool      `json:"cooling"`
+	Until        time.Time `json:"until,omitempty"`
+	Reason       string    `json:"reason,omitempty"`
+	// ModelCooling 该账号上处于冷却的模型（上游按模型独立限流）。
+	// 与 Cooling/Reason 分开：非空不代表账号整体不可用，其他模型仍可路由，
+	// 合并展示会让用户误以为整个账号被限流。
+	ModelCooling   []ModelCoolStatus `json:"model_cooling,omitempty"`
+	Disabled       bool              `json:"disabled"`
+	ErrCount       int               `json:"err_count,omitempty"`
+	LastCheckinOK  bool              `json:"last_checkin_ok,omitempty"`
+	LastCheckinAt  time.Time         `json:"last_checkin_at,omitempty"`
+	LastCheckinMsg string            `json:"last_checkin_msg,omitempty"`
+}
+
+// modelCool 模型级冷却记录：该账号在单个模型上的限流/不可用。
+type modelCool struct {
+	Until  time.Time `json:"until"`
+	Reason string    `json:"reason,omitempty"`
+	Kind   CoolKind  `json:"kind,omitempty"`
 }
 
 type entry struct {
@@ -76,18 +98,29 @@ type entry struct {
 	reason       string
 	until        time.Time
 	errCount     int
+	// modelUntil 模型级冷却：模型名（去渠道前缀后、与出站 body 的 model 同值）→ 该模型上的冷却。
+	// 与 until 的分工见 CooldownModel；nil 表示当前无任何模型级冷却。
+	modelUntil map[string]modelCool
 
 	lastCheckinOK  bool
 	lastCheckinAt  time.Time
 	lastCheckinMsg string
 }
 
-func (e *entry) healthy(now time.Time) bool {
+// healthy 判定账号在给定模型下当前是否可用。
+// model == "" 表示只判账号级状态（拉模型目录、查余额等与具体模型无关的调用）。
+func (e *entry) healthy(now time.Time, model string) bool {
 	if e.disabled {
 		return false
 	}
 	if !e.until.IsZero() && now.Before(e.until) {
 		return false
+	}
+	if model != "" {
+		// 读 nil map 安全：无模型级冷却时直接返回零值。
+		if mc, ok := e.modelUntil[model]; ok && now.Before(mc.Until) {
+			return false
+		}
 	}
 	return true
 }
@@ -101,19 +134,26 @@ type stateFile struct {
 	Accounts map[string]accountState `json:"accounts"`
 }
 
-// stateVersion 当前状态文件格式版本。v2: unusable（可用/不可用拆分）；v3: expiring（临期额度）。
-const stateVersion = 3
+// stateVersion 当前状态文件格式版本。
+// v2: unusable（可用/不可用拆分）；v3: expiring（临期额度）；v4: model_until（模型级冷却）。
+const stateVersion = 4
+
+// creditsLayoutVersion 余额口径版本：v3 起含 expiring（临期）字段，口径与更早版本不同。
+// 只有低于此版本的文件才置 creditsStale —— v4 仅新增 model_until（模型级冷却），
+// 不改变余额口径，旧文件读入后余额仍可信，不该白触发一次「待刷新」。
+const creditsLayoutVersion = 3
 
 type accountState struct {
-	Credits        int64     `json:"credits"`
-	Expiring       int64     `json:"expiring,omitempty"`
-	Unusable       int64     `json:"unusable,omitempty"`
-	Disabled       bool      `json:"disabled"`
-	Reason         string    `json:"reason,omitempty"`
-	Until          time.Time `json:"until,omitempty"`
-	LastCheckinOK  bool      `json:"last_checkin_ok,omitempty"`
-	LastCheckinAt  time.Time `json:"last_checkin_at,omitempty"`
-	LastCheckinMsg string    `json:"last_checkin_msg,omitempty"`
+	Credits        int64                `json:"credits"`
+	Expiring       int64                `json:"expiring,omitempty"`
+	Unusable       int64                `json:"unusable,omitempty"`
+	ModelUntil     map[string]modelCool `json:"model_until,omitempty"`
+	Disabled       bool                 `json:"disabled"`
+	Reason         string               `json:"reason,omitempty"`
+	Until          time.Time            `json:"until,omitempty"`
+	LastCheckinOK  bool                 `json:"last_checkin_ok,omitempty"`
+	LastCheckinAt  time.Time            `json:"last_checkin_at,omitempty"`
+	LastCheckinMsg string               `json:"last_checkin_msg,omitempty"`
 }
 
 // Pool 账号池。
@@ -164,17 +204,19 @@ func (p *Pool) SyncToDir(auths []*auth.Auth) {
 }
 
 // Pick 返回 healthy 中积分最高的账号；无可用返回 nil。
+// model 非空时同时排除在该模型上处于冷却的账号（模型级冷却）；传 "" 表示只按
+// 账号级状态挑选（拉模型目录、查余额等与具体模型无关的调用）。
 // 排序两级：先按临期额度（消耗快过期的），同组内再按总可用余额。
 // 临期与总可用均为 0 视为无额度，排序仍正确。
-func (p *Pool) Pick() *auth.Auth {
-	return p.PickExcluding(nil)
+func (p *Pool) Pick(model string) *auth.Auth {
+	return p.PickExcluding(nil, model)
 }
 
 // PickExcluding 同上，但跳过 tried 中的 uid（请求级轮换）。
 // 比较键：expiring 降序 → credits 降序。临期>0 的账号恒排在临期=0 之前，
 // 即使后者总余额更高——目的是优先烧掉快过期的积分，避免浪费。
 // expiring 仅统计可消耗额度，且 expiring ≤ credits，不会出现虚高。
-func (p *Pool) PickExcluding(tried map[string]bool) *auth.Auth {
+func (p *Pool) PickExcluding(tried map[string]bool, model string) *auth.Auth {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	now := time.Now()
@@ -183,7 +225,7 @@ func (p *Pool) PickExcluding(tried map[string]bool) *auth.Auth {
 		if tried != nil && tried[uid] {
 			continue
 		}
-		if !e.healthy(now) {
+		if !e.healthy(now, model) {
 			continue
 		}
 		if best == nil || entryBetter(e, best) {
@@ -219,7 +261,8 @@ func (p *Pool) SetCreditDetail(uid string, usable, expiring, unusable int64) {
 	p.saveLocked()
 }
 
-// Cooldown 冷却账号至 now+d。
+// Cooldown 账号级冷却至 now+d：与具体模型无关的惩罚（token/session 故障、
+// 余额耗尽、WAF 拦截、账号级风控等）。会让账号在所有模型上不可选。
 func (p *Pool) Cooldown(uid string, kind CoolKind, d time.Duration, reason string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -231,6 +274,35 @@ func (p *Pool) Cooldown(uid string, kind CoolKind, d time.Duration, reason strin
 	p.saveLocked()
 }
 
+// CooldownModel 模型级冷却：只让该账号在 model 上不可选，同账号的其他模型不受影响。
+// 用于上游按模型独立限流的场景（WorkBuddy 系 429/6004 原文即声明「可换其他模型继续用」），
+// 避免一个模型撞到上限把账号上仍可用的模型一起连坐。
+//
+// 刻意不写 e.reason：面板上「账号被限流」会让人误以为整个账号不可用；模型级冷却
+// 单独经 Status.ModelCooling 暴露。model 为空时退化为账号级冷却。
+// 写入时顺带清理已过期条目，避免 map 随请求过的模型数无限增长。
+func (p *Pool) CooldownModel(uid, model string, kind CoolKind, d time.Duration, reason string) {
+	if model == "" {
+		p.Cooldown(uid, kind, d, reason)
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if e, ok := p.byUID[uid]; ok {
+		if e.modelUntil == nil {
+			e.modelUntil = map[string]modelCool{}
+		}
+		now := time.Now()
+		for m, mc := range e.modelUntil {
+			if !now.Before(mc.Until) {
+				delete(e.modelUntil, m)
+			}
+		}
+		e.modelUntil[model] = modelCool{Until: now.Add(d), Reason: reason, Kind: kind}
+	}
+	p.saveLocked()
+}
+
 // ClearPenalty 清除账号的冷却与错误计数（不动 disabled，停用由用户控制）。
 // 用途：单账号渠道（oczen）在启动时自愈历史脏数据——旧版本会把唯一账号
 // 因网络抖动/429 冷却，而该渠道无号可轮换，冷却即等于整条渠道下线。
@@ -238,11 +310,12 @@ func (p *Pool) ClearPenalty(uid string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if e, ok := p.byUID[uid]; ok {
-		if e.until.IsZero() && e.errCount == 0 {
+		if e.until.IsZero() && e.errCount == 0 && len(e.modelUntil) == 0 {
 			return // 无惩罚可清：不触发无意义的落盘
 		}
 		e.until = time.Time{}
 		e.errCount = 0
+		e.modelUntil = nil
 		if !e.disabled {
 			e.reason = ""
 		}
@@ -287,9 +360,12 @@ func (p *Pool) ReenableIfCredits(uid string, remain, expiring, unusable int64) {
 		e.unusable = unusable
 		e.creditsStale = false
 		if remain > 0 && !e.disabled {
+			// 签到解冻：账号级与模型级冷却一并清除。模型级冷却若残留，该账号会
+			// 在特定模型上继续不可选，而签到成功已证明账号整体可用。
 			e.until = time.Time{}
 			e.reason = ""
 			e.errCount = 0
+			e.modelUntil = nil
 		}
 	}
 	p.saveLocked()
@@ -388,12 +464,28 @@ func (p *Pool) statusOf(uid string, e *entry) Status {
 		Cooling:         !e.until.IsZero() && now.Before(e.until),
 		Until:           e.until,
 		Reason:          e.reason,
+		ModelCooling:    modelCoolingOf(e, now),
 		Disabled:        e.disabled,
 		ErrCount:        e.errCount,
 		LastCheckinOK:   e.lastCheckinOK,
 		LastCheckinAt:   e.lastCheckinAt,
 		LastCheckinMsg:  e.lastCheckinMsg,
 	}
+}
+
+// modelCoolingOf 汇总该账号当前仍生效的模型级冷却（按模型名排序，输出稳定）。
+func modelCoolingOf(e *entry, now time.Time) []ModelCoolStatus {
+	if len(e.modelUntil) == 0 {
+		return nil
+	}
+	out := make([]ModelCoolStatus, 0, len(e.modelUntil))
+	for m, mc := range e.modelUntil {
+		if now.Before(mc.Until) {
+			out = append(out, ModelCoolStatus{Model: m, Until: mc.Until, Reason: mc.Reason})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Model < out[j].Model })
+	return out
 }
 
 // ---------------------------------------------------------------------------
@@ -411,8 +503,8 @@ func (p *Pool) load() {
 	}
 	// 旧格式（v2.2.0 及之前无 unusable；v2 无 expiring）：余额口径与新版不一致（可用/不可用/临期拆分），
 	// 读入后置 creditsStale，待自动刷新循环首刷时重算并清除。
-	// 新文件带 version>=stateVersion，且带 unusable 字段才视为可信。
-	stale := sf.Version < stateVersion
+	// 判据是 creditsLayoutVersion 而非 stateVersion：v4 只加了 model_until，余额口径没变。
+	stale := sf.Version < creditsLayoutVersion
 	for uid, s := range sf.Accounts {
 		p.byUID[uid] = &entry{
 			a:              &auth.Auth{UID: uid}, // placeholder，Add 时会换成完整凭证
@@ -423,6 +515,7 @@ func (p *Pool) load() {
 			disabled:       s.Disabled,
 			reason:         s.Reason,
 			until:          s.Until,
+			modelUntil:     s.ModelUntil,
 			lastCheckinOK:  s.LastCheckinOK,
 			lastCheckinAt:  s.LastCheckinAt,
 			lastCheckinMsg: s.LastCheckinMsg,
@@ -440,6 +533,7 @@ func (p *Pool) saveLocked() {
 			Credits:        e.credits,
 			Expiring:       e.expiring,
 			Unusable:       e.unusable,
+			ModelUntil:     e.modelUntil,
 			Disabled:       e.disabled,
 			Reason:         e.reason,
 			Until:          e.until,

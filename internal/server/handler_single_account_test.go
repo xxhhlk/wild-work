@@ -184,7 +184,7 @@ func TestClearPenaltyHealsLegacyState(t *testing.T) {
 			st.Cooling, st.ErrCount, st.Reason)
 	}
 	// 必须真的能挑出账号（否则渠道仍然下线）
-	if p.Pick() == nil {
+	if p.Pick("") == nil {
 		t.Fatal("ClearPenalty 后仍挑不出账号——渠道依旧不可用")
 	}
 }

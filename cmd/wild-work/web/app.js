@@ -350,6 +350,15 @@ function creditsText(a) {
   return html;
 }
 
+// modelCoolingTag 模型级冷却标签：上游按模型独立限流时，只有被限流的模型不可选，
+// 账号上其他模型仍可路由——故不能并进账号级冷却展示（那会让人误以为整个账号不可用）。
+function modelCoolingTag(a) {
+  const list = (a.model_cooling || []).map((m) => m.model);
+  if (!list.length) return "";
+  const text = list.join(" / ");
+  return `<span class="tag warn" title="该账号在以下模型上被上游限流，其他模型仍可用：${esc(text)}">限流 ${esc(text)}</span>`;
+}
+
 function renderAccounts() {
   const grid = $("acctList");
   const empty = $("acctEmpty");
@@ -414,7 +423,7 @@ function renderAccounts() {
       <div class="acct-uid">UID: ${esc(shortUid(a.uid))}</div>
       <div class="acct-mid">
         <div class="acct-credits"${noCredits ? "" : ` onmouseenter="showCreditDetail(event,'${a.uid}')" onmouseleave="hideCreditDetail()"`}>${creditsText(a)}</div>
-        <div class="acct-checkin">${checkinTag}</div>
+        <div class="acct-checkin">${checkinTag}${modelCoolingTag(a)}</div>
       </div>
     </div>`;
   }).join("");

@@ -89,7 +89,13 @@ type stickyEntry struct {
 	uid      string
 	reqCount int
 	maxReqs  int
+	lastUsed time.Time // 最近一次命中/成功时间，供粘性表容量淘汰使用
 }
+
+// maxStickyEntries 粘性记录条数上限。
+// key 含模型后条目数 = 渠道数 × 客户端请求过的模型数，不再有天然上界（此前最多 = 渠道数），
+// 故设上限并在超出时淘汰最久未用者，避免长期运行下 map 无界增长。
+const maxStickyEntries = 256
 
 // Handler 主路由。
 type Handler struct {
@@ -153,24 +159,31 @@ func NewHandler(cfg Config) *Handler {
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) { h.mux.ServeHTTP(w, r) }
 
-// stickyKey 粘性路由 key（按渠道独立）
-func (h *Handler) stickyKey(kind provider.Kind) string { return kind.String() }
+// stickyKey 粘性路由 key：按渠道 + 模型独立。
+// 必须含模型：上游按模型独立限流/计费，若只按渠道粘性，A 账号在 flash 上被限流后
+// 粘性会整体切到 B，A 上仍可用的 luna 也被一起粘走（A 每次轮换只得到一次请求机会）。
+// model 用 runtimeForModel 解析出的「去渠道前缀后的模型名」，它同时也是出站 body 的
+// model 字段值（prepareChatBody 覆盖写入），因此同一客户端对同一模型写法稳定。
+func (h *Handler) stickyKey(kind provider.Kind, model string) string {
+	return kind.String() + "\x00" + model
+}
 
 // pickWithSticky 粘性路由选择账号。
 // 优先使用上次成功路由的账号，直到：
-//   - 账号进入冷却/禁用状态
+//   - 账号进入冷却/禁用状态（含本次请求模型上的模型级冷却）
 //   - 连续成功请求达到 maxReqs 次（默认 50），自动轮换
 //
-// 任一条件触发则降级为 Pick() 选新账号并重置粘性记录。
-func (h *Handler) pickWithSticky(rt *Runtime) *auth.Auth {
+// 任一条件触发则降级为 Pick(model) 选新账号并重置粘性记录。
+func (h *Handler) pickWithSticky(rt *Runtime, model string) *auth.Auth {
 	const defaultMaxReqs = 50
+	key := h.stickyKey(rt.Kind, model)
 
 	// 粘性记录在锁内取值后即释放：reqCount 会被 stickySuccess 并发递增，
 	// 锁外读字段会与写并发（指针本身稳定，字段不稳定）。
 	h.stickyMu.RLock()
 	var stickyUID string
 	var stickyCount, stickyMaxReqs int
-	if sticky := h.sticky[h.stickyKey(rt.Kind)]; sticky != nil {
+	if sticky := h.sticky[key]; sticky != nil {
 		stickyUID, stickyCount, stickyMaxReqs = sticky.uid, sticky.reqCount, sticky.maxReqs
 	}
 	h.stickyMu.RUnlock()
@@ -180,43 +193,78 @@ func (h *Handler) pickWithSticky(rt *Runtime) *auth.Auth {
 		acct := rt.Pool.AuthByUID(stickyUID)
 		if acct != nil {
 			status, ok := rt.Pool.Status(stickyUID)
-			if ok && !status.Cooling && !status.Disabled {
-				log.Printf("sticky route platform=%s uid=%s count=%d/%d",
-					rt.Kind, stickyUID, stickyCount, stickyMaxReqs)
+			// 模型级冷却同样参与判定：A 在 flash 上被限流时，flash 的粘性记录必须失效，
+			// 否则会一直粘着打不通的账号；luna 的粘性记录独立，不受影响。
+			if ok && !status.Cooling && !status.Disabled && !modelCooling(status, model) {
+				log.Printf("sticky route platform=%s model=%s uid=%s count=%d/%d",
+					rt.Kind, model, stickyUID, stickyCount, stickyMaxReqs)
 				return acct
 			}
 		}
 	}
 
-	// 降级：选择余额最高的 healthy 账号
-	acct := rt.Pool.Pick()
+	// 降级：按临期优先 → 余额降序选号（同时排除在该模型上冷却的账号）
+	acct := rt.Pool.Pick(model)
 	if acct == nil {
 		return nil
 	}
 
 	// 新建粘性记录
 	h.stickyMu.Lock()
-	h.sticky[h.stickyKey(rt.Kind)] = &stickyEntry{uid: acct.UID, maxReqs: defaultMaxReqs}
+	h.sticky[key] = &stickyEntry{uid: acct.UID, maxReqs: defaultMaxReqs, lastUsed: time.Now()}
+	h.evictStickyLocked()
 	h.stickyMu.Unlock()
-	log.Printf("new sticky route platform=%s uid=%s maxReqs=%d", rt.Kind, acct.UID, defaultMaxReqs)
+	log.Printf("new sticky route platform=%s model=%s uid=%s maxReqs=%d", rt.Kind, model, acct.UID, defaultMaxReqs)
 	return acct
 }
 
-// stickySuccess 粘性路由成功：递增请求计数。
-func (h *Handler) stickySuccess(rt *Runtime) {
-	h.stickyMu.Lock()
-	defer h.stickyMu.Unlock()
-	key := h.stickyKey(rt.Kind)
-	if e := h.sticky[key]; e != nil {
-		e.reqCount++
+// modelCooling 该账号当前是否在 model 上处于模型级冷却。
+func modelCooling(st pool.Status, model string) bool {
+	for _, mc := range st.ModelCooling {
+		if mc.Model == model {
+			return true
+		}
+	}
+	return false
+}
+
+// evictStickyLocked 粘性表容量控制（调用方须持写锁）：淘汰最久未用者，使条数回到上限内。
+// 命中条目的 lastUsed 由 stickySuccess 刷新；只被失败清掉的条目不会留下。
+func (h *Handler) evictStickyLocked() {
+	if len(h.sticky) <= maxStickyEntries {
+		return
+	}
+	type kv struct {
+		key string
+		at  time.Time
+	}
+	all := make([]kv, 0, len(h.sticky))
+	for k, e := range h.sticky {
+		all = append(all, kv{k, e.lastUsed})
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].at.Before(all[j].at) })
+	for i := 0; i < len(all)-maxStickyEntries; i++ {
+		delete(h.sticky, all[i].key)
 	}
 }
 
-// stickyClear 粘性路由失败（错误/冷却）：清除粘性记录，下次请求强制重新选号。
-func (h *Handler) stickyClear(rt *Runtime) {
+// stickySuccess 粘性路由成功：递增请求计数并刷新最近使用时间。
+func (h *Handler) stickySuccess(rt *Runtime, model string) {
 	h.stickyMu.Lock()
 	defer h.stickyMu.Unlock()
-	delete(h.sticky, h.stickyKey(rt.Kind))
+	key := h.stickyKey(rt.Kind, model)
+	if e := h.sticky[key]; e != nil {
+		e.reqCount++
+		e.lastUsed = time.Now()
+	}
+}
+
+// stickyClear 粘性路由失败（错误/冷却）：清除该 (渠道,模型) 的粘性记录，下次请求强制重新选号。
+// 只清当前模型：其他模型的粘性记录各自独立，不应被本次失败牵连。
+func (h *Handler) stickyClear(rt *Runtime, model string) {
+	h.stickyMu.Lock()
+	defer h.stickyMu.Unlock()
+	delete(h.sticky, h.stickyKey(rt.Kind, model))
 }
 
 func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
@@ -426,7 +474,8 @@ func (h *Handler) fetchRuntimeModels(rt *Runtime) []provider.ModelInfo {
 		return nil
 	}
 	rt.mu.RUnlock()
-	acct := rt.Pool.Pick()
+	// 拉模型目录与具体模型无关，故不排除任何模型级冷却（model 传空）。
+	acct := rt.Pool.Pick("")
 	if acct == nil {
 		return nil
 	}
@@ -537,14 +586,14 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	tried := map[string]bool{}
 	var lastErr error
 	for i := 0; i < h.cfg.MaxRotate; i++ {
-		acct := h.pickWithSticky(rt)
+		acct := h.pickWithSticky(rt, model)
 		if acct == nil {
 			break
 		}
 		if tried[acct.UID] {
 			// 粘性路由选回已尝试的账号，清除粘性记录后重试
-			h.stickyClear(rt)
-			acct = rt.Pool.PickExcluding(tried)
+			h.stickyClear(rt, model)
+			acct = rt.Pool.PickExcluding(tried, model)
 			if acct == nil {
 				break
 			}
@@ -569,7 +618,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			}); err != nil {
 				log.Printf("refresh failed platform=%s uid=%s err=%v", rt.Kind, acct.UID, err)
 				lastErr = err
-				h.stickyClear(rt)
+				h.stickyClear(rt, model)
 				var ue *provider.Error
 				if errors.As(err, &ue) && ue.Kind == provider.ErrSessionDead {
 					rt.Pool.Disable(acct.UID, "refresh session dead")
@@ -583,7 +632,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		rc, status, respBody, terr := rt.Upstream.ChatStream(acct, body)
 		if terr != nil {
 			lastErr = terr
-			h.stickyClear(rt)
+			h.stickyClear(rt, model)
 			if rt.SingleAccount {
 				// 单账号渠道：不累计 errCount。网络抖动重试三次就冷却唯一账号，
 				// 会让整条渠道下线（且无号可轮换）。直接透传错误，重试交给客户端。
@@ -596,7 +645,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if status >= 400 {
-			h.stickyClear(rt)
+			h.stickyClear(rt, model)
 			kind := rt.Upstream.Classify(status, string(respBody))
 			log.Printf("client request platform=%s model=%s status=%d ua=%q params=%s",
 				rt.Kind, clientModel, status, clientUA, clientParams)
@@ -611,9 +660,18 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			}
 			switch kind {
 			case provider.ErrHardCredit:
+				// 积分耗尽（429+14018 / 402）必须账号级冷却：若误按模型级，
+				// 同一账号的 N 个模型会各撞一次长硬冷却，白扔号更久。
 				rt.Pool.Cooldown(acct.UID, pool.CoolHard, h.cfg.HardCooldown, "余额/权益不足")
 			case provider.ErrSoftRate:
-				rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "429 rate limit")
+				// 上游按模型独立限流时（WorkBuddy 系 6004 原文声明「可换其他模型继续用」）
+				// 只冷却该模型，账号上其他模型仍可路由；否则按账号级冷却（保守选择，
+				// 理由见 provider.IsModelScopedSoftRate 注释）。
+				if provider.IsModelScopedSoftRate(string(respBody)) {
+					rt.Pool.CooldownModel(acct.UID, model, pool.CoolSoft, h.cfg.SoftCooldown, "429 rate limit")
+				} else {
+					rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "429 rate limit")
+				}
 			case provider.ErrSessionDead:
 				rt.Pool.Disable(acct.UID, "session dead")
 			case provider.ErrNotFound:
@@ -626,8 +684,14 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				// 轮转白费时间，NoteError 还会把健康账号喂到冷却。
 				transparentError(w, status, respBody)
 				return
-			case provider.ErrWafBlock, provider.ErrAccountFault, provider.ErrModelBlocked:
-				// 账号级风控/故障/模型不存在：软冷却，不累计错误计数。
+			case provider.ErrModelBlocked:
+				// 11102 该后端无此模型：兑现 ErrKind 注释承诺的「(账号,模型) 负缓存避让」。
+				// 此前落到账号级软冷却 —— 一个模型不存在就把账号整体下线，与该语义不符。
+				rt.Pool.CooldownModel(acct.UID, model, pool.CoolSoft, h.cfg.SoftCooldown, kind.String())
+				transparentError(w, status, respBody)
+				return
+			case provider.ErrWafBlock, provider.ErrAccountFault:
+				// 账号级风控/授权故障：软冷却，不累计错误计数。
 				rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, kind.String())
 				transparentError(w, status, respBody)
 				return
@@ -651,7 +715,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		defer rc.Close()
 		rt.Pool.NoteSuccess(acct.UID)
-		h.stickySuccess(rt)
+		h.stickySuccess(rt, model)
 		if peek.Stream {
 			usage, serr := rt.Upstream.Stream(w, rc, clientModel)
 			// 记 token 流水（成功请求口径；usage 缺失记 0 token 仅计请求数）。

@@ -99,3 +99,29 @@ func TestInfoOnlyExcluded(t *testing.T) {
 		t.Fatalf("expiring=%d want 0（InfoOnly 不计临期）", e)
 	}
 }
+
+// TestIsModelScopedSoftRate 判定软限流是否只作用于当前模型。
+// 特征串取自上游 6004 频率限流原文；未命中时返回 false（账号级）是刻意的保守选择——
+// 账号级最坏多冷却一个账号（有号可轮换），误判成模型级会让 N 个模型各白撞一次。
+func TestIsModelScopedSoftRate(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{
+			"6004 频率限流（原文声明可换其他模型）",
+			`{"code":6004,"msg":"usage exceeds frequency limit, but don't worry, your usage will reset at 2026-09-28 22:37:01 UTC+8, alternatively, you can switch to the other models to continue using it.","requestId":"r1"}`,
+			true,
+		},
+		{"大小写不敏感", `{"msg":"You Can Switch To The Other Models"}`, true},
+		{"账号级限流（无特征串）", `{"code":9999,"msg":"too many requests"}`, false},
+		{"14018 积分耗尽（账号级）", `{"code":14018,"msg":"quota exceeded"}`, false},
+		{"空 body", ``, false},
+	}
+	for _, c := range cases {
+		if got := IsModelScopedSoftRate(c.body); got != c.want {
+			t.Errorf("%s: got=%v want=%v", c.name, got, c.want)
+		}
+	}
+}

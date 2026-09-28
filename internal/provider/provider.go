@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"wild-work/internal/auth"
@@ -94,6 +95,35 @@ func (k ErrKind) String() string {
 	default:
 		return "none"
 	}
+}
+
+// modelScopedSoftRateMarkers 表明「软限流只作用于当前模型」的上游文案特征串。
+// WorkBuddy 系上游的 6004 频率限流原文：
+//
+//	usage exceeds frequency limit, but don't worry, your usage will reset at
+//	<time>, alternatively, you can switch to the other models to continue using it.
+//
+// 上游自己声明「换其他模型可以继续用」→ 该限流按模型独立计算，冷却也应按模型粒度。
+// 否则一个模型撞到每日上限会把账号上其他仍可用的模型一起连坐（实测：A 账号的
+// deepseek-v4.1-flash 于 02:57 起被限流，而其 gpt-5.6-luna 在 21:07 仍能成功）。
+var modelScopedSoftRateMarkers = []string{
+	"switch to the other models",
+}
+
+// IsModelScopedSoftRate 判定软限流（ErrSoftRate）是否只作用于当前模型。
+// 命中特征串 → 模型级冷却（pool.CooldownModel）；否则 → 账号级（pool.Cooldown）。
+//
+// 默认取账号级是刻意的保守选择：账号级最坏是多冷却一个本来还能用的账号——有号可轮换，
+// 代价只是提前换号；而把账号级限流误判成模型级，会让同一账号的 N 个模型各撞一次限流，
+// 且要等客户端逐个重试才暴露，总损失更大。
+func IsModelScopedSoftRate(body string) bool {
+	lower := strings.ToLower(body)
+	for _, m := range modelScopedSoftRateMarkers {
+		if strings.Contains(lower, strings.ToLower(m)) {
+			return true
+		}
+	}
+	return false
 }
 
 // Error 带分类的上游错误。
