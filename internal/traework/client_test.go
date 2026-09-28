@@ -218,10 +218,9 @@ func (r *errAfterReader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
-// TestFetchModelsHandlesLargeCatalog 上游目录响应会超过 1MB —— 实测 solo_agent
-// 的 get_detail_param 返回 1.28MB，旧上限（io.LimitReader 1<<20）把 JSON 截成
-// 半截、解析失败后静默回退静态兜底表，面板只显示 16 个模型而上游有 64 个
-// （upstream issue #41）。
+// TestFetchModelsHandlesLargeCatalog 目录接口响应可能超过 1MB —— 实测 solo_agent
+// 的 get_detail_param 返回 1.28MB，旧上限（1<<20）会把 JSON 截成半截，解析失败后
+// 静默回退静态兜底表（面板只显示 16 个模型，issue #41）。
 //
 // 本用例用一个 >1MB 的合法响应断言完整解析：若上限被改回 1MB，这里会因
 // "models parse" 失败而红。
@@ -230,22 +229,22 @@ func TestFetchModelsHandlesLargeCatalog(t *testing.T) {
 	const filler = 4096
 	names := make([]string, 0, 300)
 	for i := 0; len(names) < 300; i++ {
-		b := strings.Repeat("x", filler)
-		names = append(names, fmt.Sprintf(`{"config_name":"model-%03d-%s","display_config":{"display_name":"M%03d"}}`, i, b, i))
+		fill := strings.Repeat("x", filler)
+		names = append(names, fmt.Sprintf(`{"config_name":"model-%03d-%s","display_config":{"display_name":"M%03d"}}`, i, fill, i))
 	}
 	body := `{"config_info_list":[` + strings.Join(names, ",") + `]}`
 	if len(body) <= 1<<20 {
 		t.Fatalf("测试数据没超过 1MB（%d），用例失去意义", len(body))
 	}
 
-	var gotReq int32
+	var gotReq atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != EpModels {
 			http.NotFound(w, r)
 			return
 		}
-		atomic.AddInt32(&gotReq, 1)
-		_, _ = io.WriteString(w, body)
+		gotReq.Add(1)
+		_, _ = w.Write([]byte(body))
 	}))
 	defer srv.Close()
 
@@ -260,7 +259,38 @@ func TestFetchModelsHandlesLargeCatalog(t *testing.T) {
 	if len(out) != 300 {
 		t.Fatalf("模型数=%d want 300（响应 %d 字节）", len(out), len(body))
 	}
-	if gotReq != 1 {
-		t.Fatalf("upstream 请求数=%d want 1", gotReq)
+	if gotReq.Load() != 1 {
+		t.Fatalf("upstream 请求数=%d want 1", gotReq.Load())
+	}
+}
+
+// TestFetchModelsRejectsOversizedResponse 超过 maxJSONBody 的响应必须显式报错，
+// 而不是被截成半截后由 json.Unmarshal 抛语法错误 —— 后者会把「我们自己截断了」
+// 伪装成「上游发了坏 JSON」，正是 issue #41 长期没被发现的原因。
+func TestFetchModelsRejectsOversizedResponse(t *testing.T) {
+	// 合法但超限的 JSON（用空白填充，避免构造出非法 JSON 干扰判断）。
+	body := `{"config_info_list":[` + strings.Repeat(" ", maxJSONBody+1024) + `]}`
+	if len(body) <= maxJSONBody {
+		t.Fatalf("测试数据没超过上限（%d）", len(body))
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	c := New()
+	c.HTTP = srv.Client()
+	c.AgentHost = srv.URL
+
+	_, err := c.FetchModels(&auth.Auth{AccessToken: "at"})
+	if err == nil {
+		t.Fatal("超限响应应报错")
+	}
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("应为显式超限错误，实际：%v", err)
+	}
+	if strings.Contains(err.Error(), "models parse") {
+		t.Fatalf("不应退化成 JSON 解析错误：%v", err)
 	}
 }

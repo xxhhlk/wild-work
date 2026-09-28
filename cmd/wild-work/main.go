@@ -26,6 +26,7 @@ import (
 	"wild-work/internal/auth"
 	"wild-work/internal/config"
 	"wild-work/internal/gateway"
+	"wild-work/internal/glm"
 	"wild-work/internal/ledger"
 	"wild-work/internal/loomy"
 	"wild-work/internal/monkeycode"
@@ -179,11 +180,16 @@ func main() {
 	if err != nil {
 		fatal("读取 MonkeyCode 账号目录失败：%v", err)
 	}
+	// 智谱清言：凭据是浏览器 Cookie 里的 chatglm_refresh_token（glm-*.json）。
+	glmAuths, err := auth.LoadGLMDir(cfg.AuthDir)
+	if err != nil {
+		fatal("读取智谱清言账号目录失败：%v", err)
+	}
 	// OpenCodeZen 匿名通道无凭证文件：全程只有一个虚拟账号，
 	// 不经目录扫描、不参与 reload（见 app.reloadAccounts 的说明）。
 	ocAuths := []*auth.Auth{oczen.AnonymousAuth()}
-	log.Printf("loaded accounts: workbuddy=%d %s, traework=%d, qoder=%d, qodercn=%d, qodercom=%d, workbuddyai=%d, qwenwork=%d, raccoon=%d, loomy=%d, monkeycode=%d, oczen=%d(匿名) from %s",
-		len(wbAuths), cfg.Region, len(trAuths), len(qdAuths), len(qcnAuths), len(qcmAuths), len(wbaAuths), len(qwAuths), len(rcAuths), len(lmAuths), len(mcAuths), len(ocAuths), cfg.AuthDir)
+	log.Printf("loaded accounts: workbuddy=%d %s, traework=%d, qoder=%d, qodercn=%d, qodercom=%d, workbuddyai=%d, qwenwork=%d, glm=%d, raccoon=%d, loomy=%d, monkeycode=%d, oczen=%d(匿名) from %s",
+		len(wbAuths), cfg.Region, len(trAuths), len(qdAuths), len(qcnAuths), len(qcmAuths), len(wbaAuths), len(qwAuths), len(glmAuths), len(rcAuths), len(lmAuths), len(mcAuths), len(ocAuths), cfg.AuthDir)
 
 	wbPool := pool.New(filepath.Join(stateDir, "state-workbuddy.json"))
 	for _, a := range wbAuths {
@@ -227,6 +233,13 @@ func main() {
 	mcPool := pool.New(filepath.Join(stateDir, "state-monkeycode.json"))
 	for _, a := range mcAuths {
 		mcPool.Add(a)
+	}
+	// 智谱清言：与其它渠道同为多账号池（可加多个 refresh_token），
+	// 但每个账号不可人工恢复（refresh_token 轮换后旧值即失效），
+	// 故 Runtime 置 SingleAccount —— 见 runtimes 装配处的说明。
+	glmPool := pool.New(filepath.Join(stateDir, "state-glm.json"))
+	for _, a := range glmAuths {
+		glmPool.Add(a)
 	}
 	// oczen：整池只有一个匿名虚拟账号，state 仅用于记冷却（无积分、无签到）
 	ocPool := pool.New(filepath.Join(stateDir, "state-oczen.json"))
@@ -275,13 +288,19 @@ func main() {
 	mcUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
 	mcUp.IdleTimeout = cfg.StreamIdleDur
 	ocUp := oczen.New()
-	ocUp.IdleTimeout = cfg.StreamIdleDur
+	glmUp := glm.New()
+	// ⚠️ 只改 HTTP（非流式）的 Timeout。
+	// **不要**给 glmUp.StreamHTTP 设 Timeout —— 流式请求一旦有整体超时，
+	// 长回答会在超时点被掐断且无终止帧（实测 2026-09-27 触发 5 次）。
+	glmUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
 
 	// 单渠道上游代理：config.proxies 按 kind 套到各渠道 HTTP client 上（未配置 = 直连）。
 	// StreamHTTP 与主 client 出厂共用 Transport，先切独立再套代理，
-	// 否则热更新代理时会把非流式 client 的 Transport 一起替换。
+	// 否则热更新代理时会把非流式 client 的 Transport 一起替换
+	// （且 SetTransportProxy 会新建 Transport，只套一个会导致另一个漏掉代理）。
 	trUp.StreamHTTP.Transport = trUp.HTTP.Transport
 	trCodeUp.StreamHTTP.Transport = trCodeUp.HTTP.Transport
+	glmUp.StreamHTTP.Transport = glmUp.HTTP.Transport
 	// 代理目标清单（启动与面板热更新共用同一份，避免两处漂移 —— 热更新名单曾漏掉
 	// raccoon/loomy/monkeycode/traecode，表现为「改代理不生效，重启才行」）。
 	proxyTargets := func() map[string][]*http.Client {
@@ -297,6 +316,7 @@ func main() {
 			provider.Raccoon.String():     {rcUp.HTTP, rcUp.StreamHTTP},
 			provider.Loomy.String():       {lmUp.HTTP, lmUp.StreamHTTP},
 			provider.MonkeyCode.String():  {mcUp.HTTP, mcUp.StreamHTTP},
+			provider.GLM.String():         {glmUp.HTTP, glmUp.StreamHTTP},
 			provider.Oczen.String():       {ocUp.HTTP, ocUp.StreamHTTP},
 		}
 	}
@@ -366,6 +386,13 @@ func main() {
 	// CheckinMinutes/KeepaliveHours 均为 nil → 调度器不发生任何上游调用。
 	ocSch := scheduler.New(scheduler.Config{Pool: ocPool, Upstream: ocUp, Name: "oczen",
 		CheckinMinutes: nil, KeepaliveHours: nil})
+	// 智谱清言：签到与对话联动（当日需先对话才能领打卡进度），故保活与签到
+	// 合成一个流程（glm.Client.Keepalive 先发最小对话再签到）。
+	// 用 DailyCheckin 通道驱动：CheckinMinutes 用全局签到时间，
+	// KeepaliveHours 也用同一时段（保活=签到，不必额外一次）。
+	glmSch := scheduler.New(scheduler.Config{Pool: glmPool, Upstream: glmUp, Name: "glm",
+		CheckinMinutes: checkinMinutes, KeepaliveHours: cfg.Schedule.KeepaliveHours,
+		ExpiringThreshold: expiringThreshold, Ledger: lg})
 
 	runtimes := map[provider.Kind]*server.Runtime{
 		provider.WorkBuddy: {Kind: provider.WorkBuddy, Pool: wbPool, Upstream: wbUp, StaticModels: server.WorkBuddyStaticModels()},
@@ -383,6 +410,15 @@ func main() {
 		provider.Raccoon:    {Kind: provider.Raccoon, Pool: rcPool, Upstream: rcUp, StaticModels: raccoon.StaticModels()},
 		provider.Loomy:      {Kind: provider.Loomy, Pool: lmPool, Upstream: lmUp, StaticModels: loomy.StaticModels()},
 		provider.MonkeyCode: {Kind: provider.MonkeyCode, Pool: mcPool, Upstream: mcUp, StaticModels: monkeycode.StaticModels()},
+		provider.GLM:        {Kind: provider.GLM, Pool: glmPool, Upstream: glmUp, StaticModels: glm.StaticModels()},
+		// 注意：GLM **不**置 SingleAccount。
+		//
+		// 早期误判：以为「凭据轮换后不可人工恢复」就该按单账号处理。但
+		// ① 现在可用 CDP 自动登录随时补账号；② 单账号语义会**跳过所有账号级惩罚**，
+		// 导致账号 A 失效/限流时不会切到账号 B —— 多账号完全失效（实测确认）。
+		// 故按正常多账号渠道处理：错误分类惩罚 + 池内轮换。
+		//
+		// 唯一真实约束是「refresh_token 轮换必须落盘」，已由 glm.RefreshToken 保证。
 		// oczen：整池只有一个匿名虚拟账号且不可重登——任何账号级惩罚（冷却/计数/禁用）
 		// 都等于整条渠道下线。SingleAccount 声明该约束，handler 对所有错误一律原文透传；
 		// NoCooldownOnServerError 保留（语义已被 SingleAccount 涵盖，留着不依赖顺序）。
@@ -401,6 +437,7 @@ func main() {
 		provider.Raccoon:     {Kind: provider.Raccoon, Pool: rcPool, Upstream: rcUp, Scheduler: rcSch},
 		provider.Loomy:       {Kind: provider.Loomy, Pool: lmPool, Upstream: lmUp, Scheduler: lmSch},
 		provider.MonkeyCode:  {Kind: provider.MonkeyCode, Pool: mcPool, Upstream: mcUp, Scheduler: mcSch},
+		provider.GLM:         {Kind: provider.GLM, Pool: glmPool, Upstream: glmUp, Scheduler: glmSch},
 		provider.Oczen:       {Kind: provider.Oczen, Pool: ocPool, Upstream: ocUp, Scheduler: ocSch},
 	}
 
@@ -425,6 +462,8 @@ func main() {
 	wbaSch.SetCheckinObserver(func(r scheduler.CheckinResult) { appInst.NotifyCheckin("workbuddyai", r) })
 	wbaSch.SetRefreshObserver(func(uid string, ok bool, msg string) { appInst.NotifyRefresh("workbuddyai", uid, ok, msg) })
 	qwSch.SetRefreshObserver(func(uid string, ok bool, msg string) { appInst.NotifyRefresh("qwenwork", uid, ok, msg) })
+	glmSch.SetCheckinObserver(func(r scheduler.CheckinResult) { appInst.NotifyCheckin("glm", r) })
+	glmSch.SetRefreshObserver(func(uid string, ok bool, msg string) { appInst.NotifyRefresh("glm", uid, ok, msg) })
 
 	// HTTP handler：OpenAI 端点 + Web UI + 管理 API
 	sub, err := fs.Sub(webFS, "web")
@@ -526,7 +565,12 @@ func main() {
 	go qcmSch.Run(sctx)
 	go rcSch.Run(sctx)
 	go lmSch.Run(sctx)
+	go mcSch.Run(sctx)
 	go ocSch.Run(sctx)
+	// ⚠️ 新增渠道时必须在这里补 Run()。
+	// 漏了**不会报错**——只表现为「该渠道的自动签到/保活从不运行」，
+	// 而手工触发（面板按钮 / RunCheckinNow）仍然可用，极难发现。
+	go glmSch.Run(sctx)
 
 	// 积分自动刷新覆盖全部渠道：
 	// - workbuddyai / qoder 无签到活动，不自动刷就会一直显示旧值或 0；
@@ -535,9 +579,11 @@ func main() {
 	//   启动即出真实拆分数字，并靠 401 自愈（refreshIfSessionDead）及时恢复。
 	// oczen 不在其中：匿名通道无积分可刷（面板显示「不适用」），
 	// 其 FetchModelPricing 已在费率刷新路径单独覆盖。
+	// glm 纳入：其凭据本体是 refresh_token（accessToken 可为空），
+	// 积分靠 member_info 拉取，不刷就永远是 0。
 	appInst.StartCreditAutoRefresh(sctx, []provider.Kind{
 		// 旧 Qoder 渠道已下线：不自动刷积分/token（避免周期性 token refresh failed 噪音）
-		provider.WorkBuddy, provider.WorkBuddyAI, provider.TraeWork, provider.QoderCN, provider.QoderCOM, provider.QwenWork,
+		provider.WorkBuddy, provider.WorkBuddyAI, provider.TraeWork, provider.QoderCN, provider.QoderCOM, provider.QwenWork, provider.GLM,
 		provider.Raccoon, provider.Loomy, provider.MonkeyCode,
 	}, app.CreditRefreshInterval)
 

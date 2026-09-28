@@ -134,15 +134,16 @@ func aesCBCEncrypt(plain, tempKey []byte) ([]byte, error) {
 	return out, nil
 }
 
+// nowUnix 便于测试注入（签名时间戳与 cosy-date 头必须同源）。
+var nowUnix = func() int64 { return time.Now().Unix() }
+
 // AuthHeader 计算单次请求的 Authorization 头，并返回签名所用的时间戳。
 //
-// 返回的 date 必须原样用于 cosy-date 头：上游拿 cosy-date 重算签名。
-// 签名串里含整个 body，长会话（数 MB 上下文）时 md5 + 字符串拼接要耗掉
-// 毫秒级时间；若签名与头各自取一次 time.Now()，两次取值就可能跨秒，
-// 使签名内的时间戳与头里的不一致 → 上游回 {"code":"101","message":
-// "Signature invalid"}（表现为长会话里偶发，且 body 越大越频繁）。
+// 返回的 date 必须原样用于 cosy-date 头：上游拿 cosy-date 重算签名。签名串里含
+// 整个 body，长会话（数 MB 上下文）时 md5 + 字符串拼接要耗掉毫秒级时间；若签名与
+// 头各自取一次时间，两次取值可能跨秒，使签名内的时间戳与头里的不一致 → 上游回
+// {"code":"101","message":"Signature invalid"}（长会话里偶发，body 越大越频繁）。
 func (s *CosySession) AuthHeader(body, rawURL, uid string) (auth, date string, err error) {
-	date = fmt.Sprintf("%d", time.Now().Unix())
 	payload := map[string]string{
 		"cosyVersion": clientVersion,
 		"ideVersion":  "",
@@ -157,6 +158,7 @@ func (s *CosySession) AuthHeader(body, rawURL, uid string) (auth, date string, e
 		return "", "", perr
 	}
 	pathSig := strings.TrimPrefix(u.Path, "/algo")
+	date = fmt.Sprintf("%d", nowUnix())
 	sigInput := payloadB64 + "\n" + s.CosyKey + "\n" + date + "\n" + body + "\n" + pathSig
 	sum := md5.Sum([]byte(sigInput))
 	sig := hex.EncodeToString(sum[:])

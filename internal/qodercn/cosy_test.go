@@ -1,4 +1,4 @@
-package qoder
+package qodercn
 
 import (
 	"crypto/md5"
@@ -39,7 +39,7 @@ func TestCosyDateMatchesSignature(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ApplyHeaders(req, body, rawURL, "uid", false, ""); err != nil {
+	if err := s.ApplyHeaders(req, body, rawURL, "uid", "text/event-stream", false, ""); err != nil {
 		t.Fatal(err)
 	}
 	// 注入时钟的第一次取值。修复前签名与头各自取 time.Now()，注入时钟根本不被使用，
@@ -59,20 +59,5 @@ func TestCosyDateMatchesSignature(t *testing.T) {
 	sum := md5.Sum([]byte(parts[1] + "\n" + s.CosyKey + "\n" + date + "\n" + body + "\n" + wantPath))
 	if got := hex.EncodeToString(sum[:]); got != parts[2] {
 		t.Fatalf("cosy-date 与签名不同源（上游会回 101 Signature invalid）：用 cosy-date=%s 复算得 %s，authorization 里是 %s", date, got, parts[2])
-	}
-}
-
-// BenchmarkAuthHeaderLargeBody 量化 AuthHeader 在长会话下的耗时（body 含在签名串里，
-// 需 md5 + 一次字符串拼接）。修复前，签名 date 与 cosy-date 头之间的间隔就是这个
-// 量级，跨秒概率 ≈ 耗时/1s —— 这解释了为什么 Signature invalid 只在长会话里偶发。
-func BenchmarkAuthHeaderLargeBody(b *testing.B) {
-	s := &CosySession{CosyKey: "k", Info: "i"}
-	body := strings.Repeat("x", 3<<20) // 3 MiB，接近长 agent 会话的请求体
-	b.SetBytes(int64(len(body)))
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if _, _, err := s.AuthHeader(body, "https://gateway.qoder.com.cn/algo/api/v2/service/pro/sse/agent_chat_generation", "u"); err != nil {
-			b.Fatal(err)
-		}
 	}
 }

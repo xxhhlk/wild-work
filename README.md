@@ -77,6 +77,8 @@
 |------|------|
 | [HUIdada1/AgentHub](https://github.com/HUIdada1/AgentHub) | 动态模型目录（上游拉取 → 落盘缓存 → 别名表并集）、模型元数据与规则文件热加载（MIT） |
 | [1416277987/proxy-hub](https://github.com/1416277987/proxy-hub) | 多平台反代统一网关；渠道适配器与模型常量表结构对比 |
+| [ttales430/glm2api](https://github.com/ttales430/glm2api) | 智谱清言（chatglm.cn）网页版私有接口协议逆向，glm 渠道协议依据 |
+| [ttales430/wild-work PR #46](https://github.com/rockswang/wild-work/pull/46) | 智谱清言渠道实现（含 CDP 登录编排） |
 
 > 若上述项目作者认为本项目的引用方式不当，请提 issue 联系，我们会立即调整或移除相关内容。
 

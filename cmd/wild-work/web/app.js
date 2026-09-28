@@ -284,8 +284,8 @@ function renderTopbar() {
 }
 
 // 渠道显示名与 CSS 短类名（后端 group / 费率 channel 均为 provider.Kind）。
-const CH_LABEL = { workbuddy: "WorkBuddyCN", workbuddyai: "WorkBuddyAI", traework: "TraeWork", traecode: "TraeCode", qoder: "Qoder", qodercn: "QoderCN", qodercom: "QoderCOM", qwenwork: "千问办公", raccoon: "商汤小浣熊", loomy: "Loomy", monkeycode: "MonkeyCode", oczen: "OpenCodeZen" };
-const CH_CLASS = { workbuddy: "wb", workbuddyai: "wbai", traework: "trae", traecode: "traecode", qoder: "qoder", qodercn: "qodercn", qodercom: "qodercom", qwenwork: "qwenwork", raccoon: "raccoon", loomy: "loomy", monkeycode: "monkeycode", oczen: "oczen" };
+const CH_LABEL = { workbuddy: "WorkBuddyCN", workbuddyai: "WorkBuddyAI", traework: "TraeWork", traecode: "TraeCode", qoder: "Qoder", qodercn: "QoderCN", qodercom: "QoderCOM", qwenwork: "千问办公", glm: "智谱清言", raccoon: "商汤小浣熊", loomy: "Loomy", monkeycode: "MonkeyCode", oczen: "OpenCodeZen" };
+const CH_CLASS = { workbuddy: "wb", workbuddyai: "wbai", traework: "trae", traecode: "traecode", qoder: "qoder", qodercn: "qodercn", qodercom: "qodercom", qwenwork: "qwenwork", glm: "glm", raccoon: "raccoon", loomy: "loomy", monkeycode: "monkeycode", oczen: "oczen" };
 const chLabel = (k) => CH_LABEL[k] || "WorkBuddy";
 const chClass = (k) => CH_CLASS[k] || "wb";
 // chNameOf 数据驱动的渠道名（用量面板 / 流水 / 图表）：命中显示名则用显示名，
@@ -441,8 +441,6 @@ function renderFees(fees) {
   if (fees.cached_at) html += `<div class="note">费率上次更新：${esc(fees.cached_at)}</div>`;
   if (fees.error) html += `<div class="note" style="color:var(--danger)">${esc(fees.error)}</div>`;
 
-  html += `<table><thead><tr><th>模型</th><th>倍率</th><th>模型</th><th>倍率</th></tr></thead><tbody>`;
-
   const UNKNOWN_TIP = "上游未返回，请在客户端自行确认";
 
   // 能力图标：模型 ID 后的小标记，title 属性提供文字描述。
@@ -528,12 +526,30 @@ function renderFees(fees) {
     return ` <span class="rate-note"${style}>${esc(m.note)}</span>`;
   };
 
+  // 渠道多标签：每个渠道一个 tab，panel 内双列模型布局不变（issue：费率表太长）。
+  // 记住上次选中的渠道，重渲染后自动恢复（后台刷新不打断用户浏览）。
+  if (!renderFees.lastCh) renderFees.lastCh = channels[0].channel;
+  // 选中的渠道若已不在列表里（渠道被移除），回退到第一个
+  if (!channels.some((c) => c.channel === renderFees.lastCh)) {
+    renderFees.lastCh = channels[0].channel;
+  }
+  const active = renderFees.lastCh;
+
+  html += `<div class="fees-tabs">`;
   for (const ch of channels) {
-    const chName = chLabel(ch.channel);
+    const n = (ch.models || []).length;
+    const on = ch.channel === active ? " active" : "";
+    html += `<button class="fees-tab${on}" data-feech="${esc(ch.channel)}"
+      title="${esc(chLabel(ch.channel))}">${esc(chLabel(ch.channel))}<span class="fees-tab-n">${n}</span></button>`;
+  }
+  html += `</div>`;
+
+  for (const ch of channels) {
     const chCls = chClass(ch.channel);
     const models = ch.models || [];
-    html += `<tr class="ch-header ${chCls}"><td colspan="4">${esc(chName)}${chPrefixChip(ch.channel)}</td></tr>`;
-    // 每行两个模型
+    const hidden = ch.channel !== active ? ' class="hidden"' : '';
+    html += `<div class="fees-panel${hidden ? ' hidden' : ''}" data-feepanel="${esc(ch.channel)}">`;
+    html += `<table><thead><tr><th>模型</th><th>倍率</th><th>模型</th><th>倍率</th></tr></thead><tbody>`;
     for (let i = 0; i < models.length; i += 2) {
       const m1 = models[i];
       const m2 = models[i + 1];
@@ -541,9 +557,9 @@ function renderFees(fees) {
       const id2 = m2 ? `<code title="${esc(modelTip(ch.channel, m2))}">${esc(m2.model)}</code>${ctxTag(m2)}${capIcons(m2)}${noteCell(m2)}${ctxPicker(ch.channel, m2)}` : "";
       html += `<tr><td>${id1}</td><td>${rateCell(m1)}</td><td>${id2}</td><td>${rateCell(m2)}</td></tr>`;
     }
+    html += `</tbody></table></div>`;
   }
 
-  html += `</tbody></table>`;
   html += `<div class="note" style="margin-top:8px">${esc(fees.disclaimer || "")}</div>`;
   box.innerHTML = html;
 
@@ -555,6 +571,23 @@ function renderFees(fees) {
       } catch (e) { toast(e.message); }
       loadFees();
     };
+  });
+}
+
+// bindFeesTabs 费率渠道标签点击切换（事件委托，绑定一次）。
+// 渲染只改 active 类与面板可见性，不重建 DOM，避免滚动位置跳动。
+function bindFeesTabs() {
+  const box = $("feesBox");
+  box.addEventListener("click", (e) => {
+    const btn = e.target.closest(".fees-tab");
+    if (!btn) return;
+    const ch = btn.dataset.feech;
+    renderFees.lastCh = ch;
+    box.querySelectorAll(".fees-tab").forEach((x) => x.classList.toggle("active", x === btn));
+          box.querySelectorAll(".fees-panel").forEach(function (p) {
+        if (p.dataset.feepanel === ch) { p.classList.remove("hidden"); }
+        else { p.classList.add("hidden"); }
+      });
   });
 }
 
@@ -648,6 +681,7 @@ const NO_CHECKIN_LOGIN_HINT = {
   raccoon: "（凭据来自本机已登录的小浣熊客户端；access_token 约 2 小时，本工具会自动续期）",
   loomy: "（凭据来自本机已登录的 Loomy 客户端；上游无续期接口，约 14 天后需重新登录并再次导入）",
   monkeycode: "（凭据来自本机已登录的 MonkeyCode 客户端；上游无续期接口，客户端重新登录后需再次导入）",
+  glm: "（登录后请按下方指引复制 refresh_token 粘贴回来）",
 };
 function promptLogin(channel) {
   pendingChannel = channel;
@@ -766,6 +800,84 @@ function stopLoginPoll() {
   if (loginPoll) { clearInterval(loginPoll); loginPoll = null; }
 }
 
+// ---------- 智谱清言登录（自动捕获 Cookie，手工粘贴为兜底） ----------
+// 自动路径：wild-work 拉起独立 profile 的浏览器 → 用户正常登录 → CDP 捕获 Cookie。
+// 独立 profile 天然隔离，多账号逐个添加互不干扰（无需手动开无痕）。
+let glmPoll = null;
+
+function startGLMLogin() {
+  $("glmErr").textContent = "";
+  $("glmStatus").textContent = "正在启动浏览器…";
+  $("glmManual").classList.add("hidden");
+  $("glmAuto").classList.remove("hidden");
+  $("glmOverlay").classList.remove("hidden");
+  api("/api/login/glm_auto", {})
+    .then(() => {
+      $("glmStatus").textContent = "浏览器已打开，请在其中登录智谱清言…";
+      startGLMPoll();
+    })
+    .catch((e) => {
+      $("glmStatus").textContent = "";
+      $("glmErr").textContent = (e.message || "启动失败") + "（可展开下方手工方式）";
+      $("glmManual").classList.remove("hidden");
+    });
+}
+
+function startGLMPoll() {
+  stopGLMPoll();
+  glmPoll = setInterval(async () => {
+    try {
+      const st = await api("/api/login/glm_auto_status");
+      if (st.status === "success") {
+        stopGLMPoll();
+        $("glmStatus").textContent = `✅ 已添加账号：${st.nickname || st.uid}`;
+        toast("智谱清言账号已添加");
+        await loadState();
+        refreshFees();
+        setTimeout(() => $("glmOverlay").classList.add("hidden"), 1200);
+      } else if (st.status === "failed") {
+        stopGLMPoll();
+        $("glmStatus").textContent = "";
+        $("glmErr").textContent = (st.error || "登录失败") + "（可展开下方手工方式）";
+        $("glmManual").classList.remove("hidden");
+      } else if (st.status === "cancelled" || st.status === "idle") {
+        stopGLMPoll();
+      }
+    } catch (e) { /* 忽略瞬时错误 */ }
+  }, 2000);
+}
+
+function stopGLMPoll() {
+  if (glmPoll) { clearInterval(glmPoll); glmPoll = null; }
+}
+
+function cancelGLMLogin() {
+  stopGLMPoll();
+  api("/api/login/glm_auto_cancel", {}).catch(() => {});
+  $("glmOverlay").classList.add("hidden");
+}
+
+// 手工兜底：粘贴 refresh_token
+async function submitGLMToken() {
+  const token = ($("glmTokenInput").value || "").trim();
+  if (!token) { $("glmErr").textContent = "请粘贴 refresh_token"; return; }
+  const btn = $("btnGLMSubmit");
+  btn.disabled = true;
+  $("glmErr").textContent = "验证中…";
+  try {
+    await api("/api/login/glm_token", { refresh_token: token });
+    stopGLMPoll();
+    $("glmOverlay").classList.add("hidden");
+    toast("智谱清言账号已添加");
+    await loadState();
+    refreshFees();
+  } catch (e) {
+    $("glmErr").textContent = e.message || "验证失败";
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 // ---------- 签到时间（设置弹层内编辑；单次变更立即保存） ----------
 function delTime(t) {
   const times = (state.checkin_times || []).filter((x) => x !== t);
@@ -801,7 +913,7 @@ async function toggleAutostart() {
 // ⚠️ 必须覆盖全部已接渠道：SetProxies 是**整份替换** cfg.Proxies，此处漏掉的渠道
 // 在面板保存时会被静默清空（手改 config.json 配的代理会丢）。raccoon/loomy/monkeycode/
 // traecode 曾因漏登记而丢失代理配置（2026-09-24 补）。
-const PROXY_CHANNELS = ["oczen", "workbuddy", "workbuddyai", "qodercn", "qodercom", "traework", "traecode", "qwenwork", "raccoon", "loomy", "monkeycode"];
+const PROXY_CHANNELS = ["oczen", "workbuddy", "workbuddyai", "qodercn", "qodercom", "traework", "traecode", "qwenwork", "glm", "raccoon", "loomy", "monkeycode"];
 // 代理行的渠道名同样复用 chLabel（原 PROXY_HINT 是第三份副本，已删除）。
 
 // renderProxyList 按当前 state.proxies 渲染每渠道一个输入行。
@@ -1056,6 +1168,7 @@ const CHANNEL_PRESETS = {
   qodercn:     { label: "→ qodercn",                 items: ["gpt-* = qodercn/glm-5.3"] },
   qodercom:    { label: "→ qodercom",                items: ["gpt-* = qodercom/glm-5.3"] },
   qwenwork:    { label: "→ qwenwork",                items: ["gpt-* = qwenwork/flash", "claude-* = qwenwork/pro"] },
+  glm:         { label: "→ glm (智谱清言)",           items: ["gpt-* = glm/chatglm", "claude-* = glm/chatglm-think"] },
   oczen:       { label: "→ oczen (匿名免费)",        items: ["claude-* = oczen/mimo-v2.6-flash-free", "gpt-* = oczen/big-pickle"] },
 };
 
@@ -1171,6 +1284,10 @@ function bind() {
   $("btnAddRaccoon").onclick = () => promptLogin("raccoon");
   $("btnAddLoomy").onclick = () => promptLogin("loomy");
   $("btnAddMonkeyCode").onclick = () => promptLogin("monkeycode");
+  $("btnAddGLM").onclick = () => startGLMLogin();
+  $("btnGLMSubmit").onclick = submitGLMToken;
+  $("btnGLMCancel").onclick = cancelGLMLogin;
+  $("btnGLMToggleManual").onclick = () => $("glmManual").classList.toggle("hidden");
   $("btnCheckinAll").onclick = checkinAll;
   $("btnRefreshAll").onclick = refreshAll;
   $("btnAddTime").onclick = addTime;
@@ -1437,6 +1554,8 @@ function bindMainTabs() {
       }
     };
   });
+
+  bindFeesTabs(); // 费率面板渠道标签切换（事件委托一次绑定）
 }
 
 // 面板 tab / 范围切换事件（bind 末尾调用）
