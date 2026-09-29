@@ -8,16 +8,16 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// 流式收尾：截断时必须补 error 帧 + [DONE]
+// 流式收尾：截断时必须补一帧 error，且不得补 [DONE]
 // ---------------------------------------------------------------------------
 //
 // 为什么这是硬要求：SSE 响应头一旦发出（200 + text/event-stream），后续任何故障
-// 都无法再用 HTTP 状态码表达。此时若直接 return 而不写收尾帧，客户端收到的是
-// 一条**没有 [DONE] 的截断流**——表现为「突然无响应」（实测 loomy 空闲超时即此形态）。
+// 都无法再用 HTTP 状态码表达，只能用流内帧表达。
 //
-// 补一帧 error 让客户端拿到明确原因（可据此重试），再补 [DONE] 保证流正常收尾。
-// 两者缺一不可：只补 [DONE] 会把故障伪装成正常结束，只补 error 则部分客户端
-// 会一直等 [DONE] 而挂住。
+// 补一帧 error 让客户端拿到明确原因（可据此重试），但**不能**再补 [DONE]（R36 /
+// issue #42）：[DONE] 是「正常结束」的标记，与 error 帧同时发出等于把截断伪装成
+// 成功收尾——客户端会拿着半截 tool_call arguments 去解析并报
+// "tool input was not fully received"，而网关日志里看不到任何错误。
 
 // TruncationErrorCode 把流中断错误归一成客户端可见的错误码。
 // 空闲超时单独给码：它是「上游卡死」，与普通读错误（连接被切断等）运维含义不同。
@@ -28,7 +28,7 @@ func TruncationErrorCode(err error) string {
 	return "upstream_stream_error"
 }
 
-// WriteTruncationFrames 在流中断处补写 error 帧 + [DONE]，并 flush。
+// WriteTruncationFrames 在流中断处补写一帧 error（**不补 [DONE]**），并 flush。
 //
 // 调用方应在「已开始写流、随后读上游出错」的分支里调用，然后再返回原始错误
 // （错误仍需上抛给 handler 记日志；本函数只负责让客户端能收尾）。
@@ -50,7 +50,7 @@ func WriteTruncationFrames(w io.Writer, err error) {
 		// 序列化失败理论上不可能（纯字符串 map）；退化成固定帧，仍保证收尾。
 		frame = []byte(`{"error":{"message":"upstream stream interrupted","type":"upstream_error","code":"upstream_stream_error"}}`)
 	}
-	_, _ = w.Write(append(append([]byte("data: "), frame...), []byte("\n\ndata: [DONE]\n\n")...))
+	_, _ = w.Write(append(append([]byte("data: "), frame...), []byte("\n\n")...))
 	if fl, ok := w.(interface{ Flush() }); ok {
 		fl.Flush()
 	}

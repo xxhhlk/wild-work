@@ -51,13 +51,9 @@ func msgBox(title, msg string, flags uintptr) uintptr {
 	caption, _ := syscall.UTF16PtrFromString(title)
 	text, _ := syscall.UTF16PtrFromString(msg)
 	// MB_TOPMOST(0x40000) + MB_SETFOREGROUND(0x10000)：置顶并抢前台。
-	//
-	// ⚠️ 不要加 MB_DEFAULT_DESKTOP_ONLY(0x20000)：它是**服务端**语义（在缺省桌面上代建），
-	// 不是「强制主显示器」的定位开关。2026-09-25 实测（同参数 A/B，1368×879 屏）：
-	// 带上它 → 窗口属主变成 csrss.exe、落在屏幕右下角且右侧超出 133px/底部超出 80px
-	// （半屏在屏外）、不随本进程退出而消失；去掉后 → 属主是自己、居中显示。
-	// 且按 MSDN，输入桌面不是缺省桌面时（锁屏 / RDP 断开重连 / UAC 安全桌面）
-	// MessageBox 会一直不返回 —— 本函数跑在托盘消息循环线程上，会卡死托盘与退出菜单。
+	// ⚠️ 不要加 MB_DEFAULT_DESKTOP_ONLY(0x20000)：那是「在缺省桌面窗口站上代建」的服务端语义，
+	// 不是定位开关 —— 实测弹窗会落到屏幕右下角、半屏在屏外，且在非缺省桌面下（锁屏 / RDP / UAC）
+	// 永不返回，调用它的那个 goroutine 会被永久阻塞（退出无反应 / 启动提示挡住托盘创建）。
 	res, _, _ := proc.Call(0, uintptr(unsafe.Pointer(text)), uintptr(unsafe.Pointer(caption)), flags|0x40000|0x10000)
 	return res
 }

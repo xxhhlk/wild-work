@@ -434,9 +434,11 @@ func TestIdleTimeoutDefaults(t *testing.T) {
 	}
 }
 
-// TestStreamTruncationEmitsFrames 守门：流中断必须补 error 帧 + [DONE]。
+// TestStreamTruncationEmitsFrames 守门：流中断必须补一帧 error，且不得补 [DONE]。
 //
-// 此前读错误直接 return，客户端收到没有 [DONE] 的截断流，只能一直等（或判定会话损坏）。
+// 此前读错误直接 return，客户端收到一条无收尾的截断流，只能一直等。
+// 但补 [DONE] 同样不对（R36 / issue #42）：[DONE] 表示正常结束，与 error 帧一起发出
+// 等于把截断伪装成成功收尾，客户端会拿着半截 tool_call arguments 去解析。
 func TestStreamTruncationEmitsFrames(t *testing.T) {
 	in := "data: " + `{"body":"{\"id\":\"1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}","statusCodeValue":200}` + "\n\n" +
 		"data: " + `{"body":"{\"choices\":[{\"index\":0,\"delta\":{\"content\":\"there\"}}]}","statusCodeValue":200}` + "\n\n"
@@ -451,8 +453,8 @@ func TestStreamTruncationEmitsFrames(t *testing.T) {
 	if !strings.Contains(body, `"code":"upstream_timeout"`) {
 		t.Fatalf("缺少 upstream_timeout 错误帧: %s", body)
 	}
-	if !strings.Contains(body, "data: [DONE]") {
-		t.Fatalf("缺少 [DONE] 收尾，客户端会一直等: %s", body)
+	if strings.Contains(body, "[DONE]") {
+		t.Fatalf("截断不得补 [DONE]: %s", body)
 	}
 	if !strings.Contains(body, "hi") || !strings.Contains(body, "there") {
 		t.Fatalf("已透传内容丢失: %s", body)

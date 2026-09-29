@@ -457,6 +457,10 @@ func Classify(status int, body string) provider.ErrKind {
 	}
 	// 429 优先于 hardRule：限流 body 高频带 "quota exceeded"。
 	if status == http.StatusTooManyRequests {
+		// 上游按**模型**限流（6004 / "switch to the other models"）时仍返回 ErrSoftRate，
+		// 由 handler 按 provider.IsModelScopedSoftRate(body) 分流成 (账号, 模型) 粒度冷却：
+		// 只让该账号在这个模型上不可选，账号上其它模型照常路由，且下一次请求能自动换号
+		// （见 R45）。若改判 ErrPassthrough 则完全不冷却，同一账号会被反复选中、反复撞 429。
 		return provider.ErrSoftRate
 	}
 	for _, m := range hardMarkers {

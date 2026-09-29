@@ -42,10 +42,10 @@ type Actions struct {
 
 // menuIcon 生成 16x16 菜单项图标：白边纯色方块，包成单条目 ICO。
 //
-// 必须包成 ICO：Windows 侧 MenuItem.SetIcon 走 LoadImage(IMAGE_ICON, LR_LOADFROMFILE)，
-// 只认 .ico/.bmp 容器，直接喂裸 PNG 一定失败（日志 "unable to load icon from temp
-// file"），菜单项图标就永远不显示。条目内用 PNG 压缩（Vista+ 支持），与
-// build/trayicon.ico 同一种形式（见 cmd/genicon）。
+// 为什么必须包成 ICO：Windows 侧 MenuItem.SetIcon 走 LoadImage(IMAGE_ICON,
+// LR_LOADFROMFILE)，只认 .ico/.bmp 容器，直接喂裸 PNG 一定失败（日志
+// "unable to load icon from temp file"），菜单项图标就永远不显示。条目内用 PNG
+// 压缩（Vista+ 支持），与 build/trayicon.ico 同一种形式（见 cmd/genicon）。
 func menuIcon(r, g, b uint8) []byte {
 	const size = 16
 	img := image.NewRGBA(image.Rect(0, 0, size, size))
@@ -149,10 +149,20 @@ func Quit(timeout time.Duration) bool {
 		return true
 	}
 	systray.Quit()
+	return waitTrayDone(doneCh, timeout)
+}
+
+// waitTrayDone 等图标回收信号（done 关闭），超时返回 false。
+//
+// 拆成独立函数是为了让单测能传局部 channel —— 否则测「已回收」这条路径就得关闭
+// 包级 doneCh，用例之间会产生顺序依赖。
+func waitTrayDone(done <-chan struct{}, timeout time.Duration) bool {
+	t := time.NewTimer(timeout)
+	defer t.Stop()
 	select {
-	case <-doneCh:
+	case <-done:
 		return true
-	case <-time.After(timeout):
+	case <-t.C:
 		log.Printf("托盘图标回收超时（%v），继续退出", timeout)
 		return false
 	}

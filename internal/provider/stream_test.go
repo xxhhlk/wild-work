@@ -134,9 +134,11 @@ func TestIdleReaderCloseIdempotent(t *testing.T) {
 	}
 }
 
-// TestWriteTruncationFrames 守门：流中断必须补 error 帧 + [DONE]。
+// TestWriteTruncationFrames 守门：流中断必须补一帧 error，且**不得**补 [DONE]。
 //
-// 不补帧 = 客户端收到无收尾的截断流 =「突然无响应」（2026-09-24 loomy 实测形态）。
+// 只补 error 而不补 [DONE] 是刻意的（R36 / issue #42）：[DONE] 表示正常结束，
+// 与 error 帧一起发出会把截断伪装成成功收尾，客户端于是拿着半截 tool_call
+// arguments 去解析，报 "tool input was not fully received"。
 func TestWriteTruncationFrames(t *testing.T) {
 	t.Run("空闲超时用 upstream_timeout", func(t *testing.T) {
 		rec := httptest.NewRecorder()
@@ -145,8 +147,8 @@ func TestWriteTruncationFrames(t *testing.T) {
 		if !strings.Contains(body, `"code":"upstream_timeout"`) {
 			t.Fatalf("缺少 upstream_timeout 码: %s", body)
 		}
-		if !strings.Contains(body, "data: [DONE]") {
-			t.Fatalf("缺少 [DONE] 收尾: %s", body)
+		if strings.Contains(body, "[DONE]") {
+			t.Fatalf("截断不得补 [DONE]: %s", body)
 		}
 		if !strings.Contains(body, `"type":"upstream_error"`) {
 			t.Fatalf("缺少 upstream_error 类型: %s", body)
@@ -159,15 +161,19 @@ func TestWriteTruncationFrames(t *testing.T) {
 		if !strings.Contains(body, `"code":"upstream_stream_error"`) {
 			t.Fatalf("缺少 upstream_stream_error 码: %s", body)
 		}
-		if !strings.Contains(body, "data: [DONE]") {
-			t.Fatalf("缺少 [DONE] 收尾: %s", body)
+		if strings.Contains(body, "[DONE]") {
+			t.Fatalf("截断不得补 [DONE]: %s", body)
 		}
 	})
-	t.Run("err 为 nil 时仍能收尾", func(t *testing.T) {
+	t.Run("err 为 nil 时仍写错误帧", func(t *testing.T) {
 		rec := httptest.NewRecorder()
 		WriteTruncationFrames(rec, nil)
-		if !strings.Contains(rec.Body.String(), "data: [DONE]") {
-			t.Fatalf("缺少 [DONE]: %s", rec.Body.String())
+		body := rec.Body.String()
+		if !strings.Contains(body, `"type":"upstream_error"`) {
+			t.Fatalf("缺少 error 帧: %s", body)
+		}
+		if strings.Contains(body, "[DONE]") {
+			t.Fatalf("截断不得补 [DONE]: %s", body)
 		}
 	})
 	t.Run("长错误信息被截断", func(t *testing.T) {

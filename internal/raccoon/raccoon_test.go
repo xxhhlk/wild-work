@@ -342,9 +342,11 @@ func TestIdleTimeoutDefaults(t *testing.T) {
 	}
 }
 
-// TestStreamTruncationEmitsFrames 守门：流中断必须补 error 帧 + [DONE]。
+// TestStreamTruncationEmitsFrames 守门：流中断必须补一帧 error，且不得补 [DONE]。
 //
 // 此前 sc.Err() != nil 时直接 return，客户端收到无收尾的截断流 =「突然无响应」。
+// 但补 [DONE] 同样不对（R36 / issue #42）：[DONE] 表示正常结束，与 error 帧一起
+// 发出等于把截断伪装成成功收尾，客户端会拿着半截 tool_call arguments 去解析。
 func TestStreamTruncationEmitsFrames(t *testing.T) {
 	in := sseLine(map[string]any{"id": "a", "choices": []any{map[string]any{"index": 0, "delta": map[string]any{"content": "hi"}}}})
 	rc := &errAfterReader{data: in, err: provider.ErrIdleTimeout}
@@ -358,8 +360,8 @@ func TestStreamTruncationEmitsFrames(t *testing.T) {
 	if !strings.Contains(body, `"code":"upstream_timeout"`) {
 		t.Fatalf("缺少 upstream_timeout 错误帧: %s", body)
 	}
-	if !strings.Contains(body, "data: [DONE]") {
-		t.Fatalf("缺少 [DONE] 收尾，客户端会一直等: %s", body)
+	if strings.Contains(body, "[DONE]") {
+		t.Fatalf("截断不得补 [DONE]: %s", body)
 	}
 	if !strings.Contains(body, "hi") {
 		t.Fatalf("已透传内容丢失: %s", body)

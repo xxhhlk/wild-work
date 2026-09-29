@@ -2,6 +2,8 @@ package upstream
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -420,45 +422,91 @@ func TestStreamEmptyUpstreamErrors(t *testing.T) {
 	}
 }
 
-// TestStreamReadErrorEmitsTruncationFrames 守门：读上游出错时必须补 error 帧 + [DONE]。
-//
-// 这是 WorkBuddy 系（workbuddy/workbuddyai/traework/traecode 共用本函数）的
-// 「突然无响应」成因：响应头已按 200 发出，直接 return 会让客户端收到一条
-// 没有 [DONE] 的截断流，只能一直等。与 loomy/raccoon 同源修复。
-func TestStreamReadErrorEmitsTruncationFrames(t *testing.T) {
-	head := "data: " + `{"id":"x","choices":[{"index":0,"delta":{"content":"partial"}}]}` + "\n\n"
-	rc := &readErrAfter{data: head, err: provider.ErrIdleTimeout}
+// 回归（issue #42）：通用流式路径（WorkBuddy/WorkBuddyAI/oczen 共用）在「可证实的
+// 截断」时不得补 [DONE] 伪装成成功收尾。
+//   - 传输层读错误 / 断在半个帧上（末行无换行）→ 发 error 帧、不补 [DONE]；
+//     错误码按成因细分：空闲超时 upstream_timeout，其余 upstream_stream_error。
+//   - 正常 [DONE] 收尾、EOF 但帧完整且漏发 [DONE] → 行为不变，仍补 [DONE]。
+func TestStreamTruncationNotDisguisedAsDone(t *testing.T) {
+	full := `data: {"id":"x","choices":[{"index":0,"delta":{"content":"hi"}}]}` + "\n\n" +
+		`data: {"id":"x","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"Bash","arguments":"{\"cmd\""}}]}}]}` + "\n\n"
 
-	rec := httptest.NewRecorder()
-	err := Stream(rec, rc)
+	mkStream := func(rd io.Reader) (string, error) {
+		rec := httptest.NewRecorder()
+		err := Stream(rec, rd)
+		return rec.Body.String(), err
+	}
+
+	// 1) 传输层读错误
+	body, err := mkStream(&readErrAfter{payload: full})
 	if err == nil {
-		t.Fatal("读错误必须上抛（供 handler 记日志）")
+		t.Error("read-error: want err != nil")
 	}
-	body := rec.Body.String()
-	if !strings.Contains(body, `"code":"upstream_timeout"`) {
-		t.Fatalf("缺少 upstream_timeout 错误帧: %s", body)
+	if strings.Contains(body, "[DONE]") || !strings.Contains(body, "upstream_stream_error") {
+		t.Errorf("read-error: 截断不得补 [DONE]，应发 error 帧\nbody=%s", body)
 	}
-	if !strings.Contains(body, "data: [DONE]") {
-		t.Fatalf("缺少 [DONE] 收尾: %s", body)
+
+	// 1b) 空闲超时：错误码要能区分出来（upstream_timeout）
+	body, err = mkStream(&readErrAfter{payload: full, err: provider.ErrIdleTimeout})
+	if err == nil {
+		t.Error("idle: want err != nil")
 	}
-	// 已透传的部分内容不能丢。
-	if !strings.Contains(body, "partial") {
-		t.Fatalf("已透传内容丢失: %s", body)
+	if strings.Contains(body, "[DONE]") || !strings.Contains(body, "upstream_timeout") {
+		t.Errorf("idle: 空闲超时应发 upstream_timeout 帧且不补 [DONE]\nbody=%s", body)
+	}
+
+	// 2) 断在半个帧上
+	body, err = mkStream(&cutStream{payload: full, keep: len(full) - 12})
+	if err == nil {
+		t.Error("cut: want err != nil")
+	}
+	if strings.Contains(body, "[DONE]") || !strings.Contains(body, "upstream_stream_error") {
+		t.Errorf("cut: 截断不得补 [DONE]，应发 error 帧\nbody=%s", body)
+	}
+
+	// 3) 正常 [DONE] 收尾
+	body, err = mkStream(strings.NewReader(full + "data: [DONE]\n\n"))
+	if err != nil {
+		t.Fatalf("normal: %v", err)
+	}
+	if !strings.Contains(body, "[DONE]") || strings.Contains(body, "truncated") {
+		t.Errorf("normal: 应恰好一个 [DONE] 且无 error 帧\nbody=%s", body)
+	}
+
+	// 4) EOF 但帧完整、上游漏发 [DONE]（向后兼容兜底）
+	body, err = mkStream(strings.NewReader(full))
+	if err != nil {
+		t.Fatalf("eof-no-done: %v", err)
+	}
+	if !strings.Contains(body, "[DONE]") || strings.Contains(body, "truncated") {
+		t.Errorf("eof-no-done: 仍应兜底补 [DONE]\nbody=%s", body)
 	}
 }
 
-// readErrAfter 先吐完 data，再返回指定错误（模拟「读到一半流断了」）。
 type readErrAfter struct {
-	data string
-	err  error
-	off  int
+	payload string
+	err     error
+	sent    bool
 }
 
 func (r *readErrAfter) Read(p []byte) (int, error) {
-	if r.off >= len(r.data) {
+	if !r.sent {
+		r.sent = true
+		return copy(p, r.payload), nil
+	}
+	if r.err != nil {
 		return 0, r.err
 	}
-	n := copy(p, r.data[r.off:])
+	return 0, errors.New("simulated: broken pipe")
+}
+
+type cutStream struct{ payload string; keep, off int }
+
+func (r *cutStream) Read(p []byte) (int, error) {
+	if r.off >= r.keep {
+		return 0, io.EOF
+	}
+	n := copy(p, r.payload[r.off:r.keep])
 	r.off += n
 	return n, nil
 }
