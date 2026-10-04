@@ -444,24 +444,26 @@ func LoadQwenWorkDir(dir string) ([]*Auth, error) {
 	return out, nil
 }
 
-// LoadRaccoonDir 扫描商汤小浣熊凭证（raccoon-*.json）。
-//
-// 前缀不与 LoadQoderDir 的 `qoder*.json` 冲突（后者要求以 qoder 开头）。
-// 凭据不来自本工具的登录编排，而是由面板「从本机客户端导入」生成（见 app.ImportLocalRaccoon）。
-func LoadRaccoonDir(dir string) ([]*Auth, error) {
-	return loadPrefixed(dir, "raccoon")
-}
-
-// LoadLoomyDir 扫描讯飞 Loomy 凭证（loomy-*.json）。
-func LoadLoomyDir(dir string) ([]*Auth, error) {
-	return loadPrefixed(dir, "loomy")
-}
-
 // LoadMonkeyCodeDir 扫描 MonkeyCode 平台托管模型凭证（monkeycode-*.json）。
 // 同属「导入型」渠道：凭据由面板「从本机客户端导入」从 ohmyagent 的
 // settings.json 生成（见 app.ImportLocalCredentials）。
 func LoadMonkeyCodeDir(dir string) ([]*Auth, error) {
 	return loadPrefixed(dir, "monkeycode")
+}
+
+// LoadRaccoonDir 扫描商汤小浣熊凭证（raccoon-*.json）。
+//
+// 前缀不与 LoadQoderDir 的 `qoder*.json` 冲突（后者要求以 qoder 开头）。
+// 凭据不来自本工具的登录编排，而是由面板「从本机客户端导入」生成（见 app.ImportLocalCredentials）。
+func LoadRaccoonDir(dir string) ([]*Auth, error) {
+	return loadPrefixed(dir, "raccoon")
+}
+
+// LoadLoomyDir 扫描讯飞 Loomy 凭证（loomy-*.json）。
+//
+// 凭据不来自本工具的登录编排，而是由面板「从本机客户端导入」生成（见 app.ImportLocalCredentials）。
+func LoadLoomyDir(dir string) ([]*Auth, error) {
+	return loadPrefixed(dir, "loomy")
 }
 
 // loadPrefixed 按前缀扫描并解析凭证（供无登录编排的「导入型」渠道复用）。

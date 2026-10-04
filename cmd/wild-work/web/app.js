@@ -254,6 +254,7 @@ function hideCreditDetail() {
 // ---------- 渲染 ----------
 function render() {
   renderTopbar();
+  renderSummary();
   renderAccounts();
   renderTimes();
 }
@@ -359,6 +360,66 @@ function modelCoolingTag(a) {
   return `<span class="tag warn" title="该账号在以下模型上被上游限流，其他模型仍可用：${esc(text)}">限流 ${esc(text)}</span>`;
 }
 
+// 渠道汇总固定顺序（与添加按钮布局一致；traecode 是别名池不单独出现，qoder 下线仅存量兜底）
+const CH_SUMMARY_ORDER = ["workbuddy", "workbuddyai", "traework", "qodercn", "qodercom", "qwenwork", "glm", "oczen", "qoder"];
+
+// renderSummary 渠道积分汇总条：每渠道一行「可用总积分 / 临期」，末尾合计。
+// 数据全部来自 state.accounts（pool 实时值），与账号卡片同源；
+// 口径与 R17 一致：不可用额度只作角标、不进合计；credits_na（匿名）不参与合计。
+function renderSummary() {
+  const el = $("creditSummary");
+  if (!el) return;
+  if (!state.accounts.length) { el.classList.add("hidden"); return; }
+  el.classList.remove("hidden");
+
+  const byCh = {};
+  for (const a of state.accounts) {
+    const g = a.group || "workbuddy";
+    let c = byCh[g];
+    if (!c) { c = byCh[g] = { n: 0, credits: 0, expiring: 0, unusable: 0, stale: 0, na: false }; }
+    c.n++;
+    if (a.credits_na) { c.na = true; continue; }
+    c.credits += a.credits || 0;
+    c.expiring += a.expiring_credits || 0;
+    c.unusable += a.unusable_credits || 0;
+    if (a.credits_stale) c.stale++;
+  }
+
+  const fmt = (n) => n.toLocaleString("zh-CN");
+  // 已知渠道按固定顺序，未知渠道（新增时）按字母序垫后，保证不丢行
+  const chs = CH_SUMMARY_ORDER.filter((k) => byCh[k])
+    .concat(Object.keys(byCh).filter((k) => !CH_SUMMARY_ORDER.includes(k)).sort());
+
+  let total = 0, totalExp = 0, staleChs = 0;
+  let html = `<span class="cs-title">积分汇总</span>`;
+  for (const k of chs) {
+    const c = byCh[k];
+    const allStale = c.stale === c.n;
+    // R17 口径：口径过期的数字不当真值——全渠道待刷新时不进合计
+    // （否则"待刷新"的旧值会悄悄抬高合计，用户看到的数字无从解释）。
+    if (!c.na && !allStale) { total += c.credits; totalExp += c.expiring; }
+    if (!c.na && allStale) staleChs++;
+    let body;
+    if (c.na) {
+      body = `<span class="credit-na">不适用</span>`;
+    } else if (allStale) {
+      body = `<span class="credit-stale">待刷新</span>`;
+    } else {
+      body = `<span class="cs-num">${fmt(c.credits)}</span>`
+        + (c.expiring > 0 ? `<span class="cs-exp" title="24 小时内到期">临期${fmt(c.expiring)}</span>` : "")
+        + (c.unusable > 0 ? `<span class="cs-unu" title="账号名下、本工具不可消耗的额度（不计入合计）">不可用${fmt(c.unusable)}</span>` : "")
+        + (c.stale > 0 ? `<span class="cs-stale" title="部分账号余额待刷新">${c.stale} 待刷新</span>` : "");
+    }
+    html += `<span class="cs-chip"><span class="badge ${chClass(k)}">${esc(chLabel(k))}</span>`
+      + `<span class="cs-n">${c.n}号</span>${body}</span>`;
+  }
+  html += `<span class="cs-chip cs-total" title="各渠道可用积分合计（不含「不可用」与匿名通道）">`
+    + `<span class="cs-title">合计</span><span class="cs-num">${fmt(total)}</span>`
+    + (totalExp > 0 ? `<span class="cs-exp">临期${fmt(totalExp)}</span>` : "")
+    + (staleChs > 0 ? `<span class="cs-stale" title="有渠道整体待刷新，未计入合计">${staleChs} 渠道待刷新</span>` : "")
+    + `</span>`;
+  el.innerHTML = html;
+}
 function renderAccounts() {
   const grid = $("acctList");
   const empty = $("acctEmpty");
@@ -384,6 +445,15 @@ function renderAccounts() {
     const disabledClass = a.disabled ? " disabled" : "";
     const disableIcon = a.disabled ? "▶" : "⏸";
     const disableTitle = a.disabled ? "启用" : "停用";
+
+    // 冷却标签（后端 pool.Status 已透出 cooling/until/reason，此前前端未渲染）。
+    // 为什么需要：账号被冷却时挑号会跳过它，表现为「积分明明很多却报 503/上游限流」，
+    // 而卡片上毫无提示——用户只能靠猜。这里把「冷却到几点 + 原因」直接摆出来。
+    // until 由后端 fmtTime 预格式化为 "01-02 15:04"，为空则退化为「冷却中」。
+    const coolingTag = a.cooling
+      ? `<span class="tag warn" title="${esc(a.reason || "冷却中")}">冷却至 ${esc(a.until || "-")}</span>`
+      : "";
+    const coolingClass = a.cooling ? " cooling" : "";
     const checkinBtn = noCheckin
       ? `<span class="icon-op off" title="${esc(noCheckinTitle)}" onclick="return false">✓</span>`
       : `<span class="icon-op" title="签到" onclick="checkin('${a.uid}')">✓</span>`;
@@ -410,7 +480,7 @@ function renderAccounts() {
       : `<span class="acct-name editable" title="点击修改显示名" onclick="openRename('${a.uid}','${esc(a.nickname || shortUid(a.uid)).replace(/'/g, "&#39;")}')">${esc(a.nickname || shortUid(a.uid))}</span>`;
 
     return `
-    <div class="acct-card${disabledClass}">
+    <div class="acct-card${disabledClass}${coolingClass}">
       <div class="acct-top">
         <div>
           <span class="badge ${group}">${groupName}</span>${chPrefixChip(a.group)}
@@ -423,7 +493,7 @@ function renderAccounts() {
       <div class="acct-uid">UID: ${esc(shortUid(a.uid))}</div>
       <div class="acct-mid">
         <div class="acct-credits"${noCredits ? "" : ` onmouseenter="showCreditDetail(event,'${a.uid}')" onmouseleave="hideCreditDetail()"`}>${creditsText(a)}</div>
-        <div class="acct-checkin">${checkinTag}${modelCoolingTag(a)}</div>
+        <div class="acct-checkin">${coolingTag}${checkinTag}${modelCoolingTag(a)}</div>
       </div>
     </div>`;
   }).join("");

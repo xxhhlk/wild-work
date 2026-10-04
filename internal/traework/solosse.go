@@ -28,6 +28,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -58,10 +59,26 @@ func (e *SOLOStreamError) Error() string {
 	return fmt.Sprintf("solo error code=%d msg=%s", e.Code, e.Msg)
 }
 
-// Kind 将 SSE 流内错误分类。1005 → provider.ErrHardCredit；其余归 provider.ErrClient。
+// Kind 将 SSE 流内错误分类。
+//
+//	1005 → provider.ErrHardCredit（权益/余额不足 → 长冷却）
+//	3004 / 9074 → provider.ErrSoftRate（限流 → 短冷却）
+//	其余 → provider.ErrClient
+//
+// 3004 归软限流的依据（**按 R23b：这是待强化的假设，不是既成事实**）：
+// 2026-09-29 09:00 checkin 路径的观察——同一秒、同一 IP 下 8 个 traework 账号中
+// 仅 1 个（1606848467182378）返回 3004，其余 7 个 ok。该观察**足以排除 IP/全局级**
+// 限流，但**不足以证明是账号级**：样本仅 1 例、且是 checkin 路径（非本修复作用的
+// 对话流）。要坐实需补「同号连续 N 次稳定 3004 + 换号立即成功」的配对观测。
+//
+// 之所以仍按「账号级」处置：软冷却只有 60 秒，即使判据不成立，最坏影响也只是
+// 某账号闲置一分钟（风险不对称），不会造成危害。详见 AGENTS.md R39。
 func (e *SOLOStreamError) Kind() provider.ErrKind {
-	if e.Code == 1005 {
+	switch e.Code {
+	case 1005:
 		return provider.ErrHardCredit
+	case 3004, 9074:
+		return provider.ErrSoftRate
 	}
 	return provider.ErrClient
 }
@@ -441,21 +458,47 @@ func streamOpts(w http.ResponseWriter, r io.Reader, onErr func(*SOLOStreamError)
 				}
 				sawDone = true
 			case "error":
-				// 上游 SOLO 业务错误（1005 权益/1001 模型不可用等）：
-				// 以标准 OpenAI SSE chunk 的 delta.content 返回错误描述，
-				// finish_reason 设为 error 避免客户端持续等待。
+				// 上游 SOLO 业务错误（1005 权益 / 1001 模型不可用 / 3004 限流 …）。
+				//
+				// 旧实现把它写成 delta.content 文本 + finish_reason:"stop" + 补 [DONE]，
+				// 客户端看到的是「正常结束、内容莫名其妙」，agent 会拿着半截回答继续跑；
+				// 且函数返回 nil，调用方无从得知失败。这与上游 issue #42 修的是同一类
+				// 「把失败伪装成成功收尾」问题（当时只覆盖了 qwenwork/qoder 系，漏了 traework）。
+				//
+				// 现改为（对齐 #42）：发一帧 OpenAI 规范 error，**不补 [DONE]**，
+				// 并把错误返回给调用方 —— 由 handler 据此冷却账号、打破粘性路由，
+				// 使客户端重试时能挑到别的账号（3004 是账号级限流，换号有效）。
 				se := &SOLOStreamError{Code: ev.ErrorCode, Msg: ev.ErrorMessage}
 				if onErr != nil {
 					onErr(se)
 				}
-				msg := fmt.Sprintf("solo error code=%d msg=%s", ev.ErrorCode, ev.ErrorMessage)
-				if err := writeChunk(map[string]any{"content": msg}, "stop"); err != nil {
-					return usage, err
+				// 防御分支：若 done 已发过 [DONE]，流在本客户端看来已正常终止，
+				// 此时再写 error 帧会造成「两个终止信号」（严格客户端行为未定义）。
+				// 故只记日志并把错误返回给调用方（账号照常冷却），不再写第二帧。
+				// 上游理论上不会 done→error，此处纯防御。
+				if sawDone {
+					log.Printf("traework stream error after done code=%d msg=%s（已终止，不再发 error 帧）",
+						se.Code, se.Msg)
+					return usage, se
 				}
-				if err := writeDONE(); err != nil {
-					return usage, err
+				code := "upstream_error"
+				if se.Kind() == provider.ErrSoftRate {
+					code = "upstream_rate_limited"
 				}
-				sawDone = true
+				frame := fmt.Sprintf(`{"error":{"message":%s,"type":"upstream_error","code":%s}}`,
+					jsonEscape(se.Error()), jsonEscape(code))
+				// 写入失败（客户端已断开）时**仍返回业务错误**：调用方要据此冷却账号，
+				// 若改成返回 werr 会丢掉 *SOLOStreamError，errors.As 取不到分类，
+				// 账号就不会被冷却——本次修复的目标链路恰好断在这里。
+				if _, werr := io.WriteString(w, "data: "+frame+"\n\n"); werr != nil {
+					log.Printf("traework stream error frame write failed uid-less code=%d: %v", se.Code, werr)
+				} else if fl != nil {
+					fl.Flush()
+				}
+				// 刻意不写 [DONE]：终止信号交给 error 帧，避免被当成正常收尾。
+				// （若上游在本帧之前已发过 done，则 [DONE] 已写出、此处不再补第二个——
+				// 两个终止信号会让严格客户端行为未定义。此顺序上游理论上不会发，仅防御。）
+				return usage, se
 			}
 		}
 		if err == io.EOF {

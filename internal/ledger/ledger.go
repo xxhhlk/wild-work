@@ -535,7 +535,10 @@ func (l *Ledger) Query(days int, enrich func(uid string) (name, channel string))
 		st.Token.ByModel = append(st.Token.ByModel, *models[k])
 	}
 
-	// 返回原始条目 + 昵称表（时间升序；分页/top10 折线由前端自算）
+	// 返回原始条目 + 昵称表（时间升序；分页/top10 折线由前端自算）。
+	// 显式排序而非依赖扫描顺序：months 是 map，range 顺序随机，跨月时会把当月条目
+	// 排到上月之前，前端倒序分页后表现为「最新记录排到后面几页」。
+	sort.SliceStable(entries, func(i, j int) bool { return entries[i].Ts < entries[j].Ts })
 	st.Credit.Entries = entries
 	if len(entries) != 0 && enrich != nil {
 		st.Credit.NameMap = map[string]string{}

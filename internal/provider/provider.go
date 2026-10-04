@@ -274,6 +274,17 @@ type Upstream interface {
 	Aggregate(r io.Reader, model string) (map[string]any, error)
 }
 
+// StreamErrorClassifier 由「流内业务错误可分类」的渠道实现（当前 traework 的
+// SOLOStreamError）。handler 用 errors.As 取值，据此决定账号惩罚——
+// 使 server 层不必 import 具体渠道包。
+//
+// 为什么需要它：流式请求的 HTTP 200 与响应头在读到上游错误帧**之前**就已发出，
+// 协议上无法在同一请求内换号重试。唯一可行的补救是「把中招账号冷却掉」，
+// 让客户端**下一次**重试时由挑号逻辑换到别的账号（3004 是账号级限流，换号有效）。
+type StreamErrorClassifier interface {
+	Kind() ErrKind
+}
+
 // CheckinReporter 由「签到结果可结构化上报」的渠道实现（当前 QoderCN / QoderCOM）。
 // 调度器优先使用它；未实现的渠道回退 DailyCheckin + isAlready 文本判定。
 // 之所以需要独立接口：error 通道无法区分 no_campaign 与 error——两者都不是

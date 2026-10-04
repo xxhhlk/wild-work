@@ -136,8 +136,21 @@ func (l *Ledger) DiffCredits(ch, uid string, balance int64, cur []provider.Resou
 		curMap[k] = itemSnap{Key: k, Remain: a.remain, Expire: a.expire}
 		p, ok := prevMap[k]
 		if !ok {
-			// 无快照的存量条目：不在首次差分逐条展开（会把存量余额刷屏成假 earn），
-			// 仅后续刷新中新增的条目才逐条记 earn。
+			if firstTime {
+				// 首次见此账号：存量条目由末尾的「存量额度」baseline 统一汇总，
+				// 不在此逐条展开（会把存量余额刷屏成假 earn）。
+				continue
+			}
+			// 非首次出现的新 key = 真实新增发放 → 逐条记 earn。
+			// 修复少记（2026-10-02 生产账本实证）：WorkBuddy 的伪键是「套餐名|到期日」，
+			// 月周期切换时旧键消失（已记 expire）、同余额挂在新键上——此前这里静默跳过，
+			// 导致每账号每月约 2500 的周期发放从不进入收入流水，账本只降不升。
+			// 条目抖动（上游瞬时缺失后回归）会产出 expire+earn 一对，净额不变，
+			// 优于旧行为「回归被吞、收入永久少记」。
+			if a.remain > 0 {
+				events = append(events, CreditEntry{Ch: ch, UID: uid, Kind: "earn",
+					Amount: a.remain, Balance: balance, Note: a.name})
+			}
 			continue
 		}
 		delta := a.remain - p.Remain

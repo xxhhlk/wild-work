@@ -115,6 +115,27 @@ body {
 }
 .map-editor .preset { display: inline-block; margin: 0 4px 4px 0; }
 
+/* 渠道积分汇总条（账号卡片上方，数据与卡片同源） */
+.credit-summary {
+  display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center;
+  margin-bottom: 12px; padding: 10px 12px;
+  background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
+}
+.cs-title { font-size: 12px; color: var(--muted); font-weight: 600; margin-right: 2px; }
+.cs-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 10px 3px 4px; border-radius: 999px;
+  background: var(--bg); border: 1px solid var(--border); font-size: 12px; white-space: nowrap;
+}
+.cs-chip .badge { font-size: 10px; }
+.cs-n { color: var(--muted); font-size: 11px; }
+.cs-num { font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
+.cs-exp { color: var(--danger); font-weight: 600; font-size: 11px; }
+.cs-unu { color: var(--muted); font-size: 11px; }
+.cs-stale { color: var(--warn); font-size: 11px; }
+.cs-total { background: #eef4ff; border-color: #c7d9ff; }
+.cs-total .cs-title { color: var(--primary); }
+
 /* 账号卡片网格 */
 .acct-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .acct-card {
@@ -173,6 +194,9 @@ body {
 /* 帮助图标：正常亮度可 hover，不可点击（无 onclick），tooltip 展示说明 */
 .icon-op.help { cursor: help; color: var(--muted); font-weight: 600; }
 .icon-op.help:hover { color: var(--primary); border-color: var(--primary); background: #eff6ff; }
+
+/* 冷却标签 + 冷却卡片（账号被挑号跳过时给出可见提示，避免"积分很多却报错"的困惑） */
+.acct-card.cooling { border-left: 3px solid var(--warn); }
 
 /* 智谱清言弹层顶部风险告知（体验渠道） */
 .glm-warn {

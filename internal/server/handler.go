@@ -733,6 +733,31 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			} else if serr != nil {
 				// 上游中断：已尽力透传，错误仅在日志可见
 				log.Printf("stream relay end platform=%s uid=%s err=%v", rt.Kind, acct.UID, serr)
+				// 流内业务错误（traework SOLO 的 event:error，如 3004 限流）：
+				// HTTP 200 与响应头早已发出，无法在同一请求内换号重试；唯一补救是把
+				// 中招账号冷却掉——下次请求挑号会自动换到别的账号（粘性路由见
+				// pickWithSticky 对 status.Cooling 的检查，故无需显式 stickyClear）。
+				var sec provider.StreamErrorClassifier
+				if errors.As(serr, &sec) {
+					kind := sec.Kind()
+					switch kind {
+					case provider.ErrSoftRate:
+						rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "stream business error: "+serr.Error())
+						log.Printf("stream error cooled platform=%s uid=%s kind=%s cooldown=%s",
+							rt.Kind, acct.UID, kind, h.cfg.SoftCooldown)
+					case provider.ErrHardCredit:
+						rt.Pool.Cooldown(acct.UID, pool.CoolHard, h.cfg.HardCooldown, "stream business error: "+serr.Error())
+						log.Printf("stream error cooled platform=%s uid=%s kind=%s cooldown=%s",
+							rt.Kind, acct.UID, kind, h.cfg.HardCooldown)
+					case provider.ErrSessionDead:
+						rt.Pool.Disable(acct.UID, "stream business error: session dead")
+						log.Printf("stream error disabled platform=%s uid=%s", rt.Kind, acct.UID)
+					default:
+						// 其余流内错误（如请求级拒绝）不罚账号，只记日志。
+						log.Printf("stream error ignored platform=%s uid=%s kind=%s",
+							rt.Kind, acct.UID, kind)
+					}
+				}
 			}
 			return
 		}

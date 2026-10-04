@@ -50,6 +50,8 @@
 | [jasonxu114514/opencode2api](https://github.com/jasonxu114514/opencode2api) | OpenCodeZen（oczen）匿名渠道 endpoint 特殊要求分析 |
 | [FishBottle7/opencode2dsh](https://github.com/FishBottle7/opencode2dsh) | 同上，OpenCode 相关补充参考 |
 | [codkeep/MonkeyCodeReverseEngineer](https://github.com/codkeep/MonkeyCodeReverseEngineer) | MonkeyCode 渠道协议对照参考（Apache-2.0） |
+| [xxhhlk/raccoon2api](https://github.com/xxhhlk/raccoon2api) | 商汤小浣熊渠道协议逆向（MIT），raccoon 渠道依据 |
+| [xxhhlk/loomy2api](https://github.com/xxhhlk/loomy2api) | 讯飞 Loomy 渠道协议逆向（MIT），loomy 渠道依据 |
 
 以下项目用于**思考强度（reasoning effort）**相关实现的前期调研与比对。本项目只借鉴其公开结论与算法语义，未复制代码：
 
