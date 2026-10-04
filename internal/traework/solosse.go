@@ -428,6 +428,11 @@ func streamOpts(w http.ResponseWriter, r io.Reader, onErr func(*SOLOStreamError)
 					onUsage(ev.Usage)
 				}
 			case "done":
+				// 必须先取再写：writeChunk 会消费 pendingUsage（附加进 chunk 后置
+				// nil），SOLO 协议 token_usage 先于 done 到达，先 writeChunk 再
+				// 取值会永远拿到 nil → 记账流水丢失 token（客户端不受影响，
+				// usage 已透传；仅网关自身统计为空）。
+				usage = pendingUsage
 				if err := writeChunk(map[string]any{}, ev.FinishReason); err != nil {
 					return usage, err
 				}
@@ -435,7 +440,6 @@ func streamOpts(w http.ResponseWriter, r io.Reader, onErr func(*SOLOStreamError)
 					return usage, err
 				}
 				sawDone = true
-				usage = pendingUsage
 			case "error":
 				// 上游 SOLO 业务错误（1005 权益/1001 模型不可用等）：
 				// 以标准 OpenAI SSE chunk 的 delta.content 返回错误描述，

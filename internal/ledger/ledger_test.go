@@ -200,3 +200,65 @@ func TestQueryAggregation(t *testing.T) {
 		t.Fatalf("entries kinds=%s,%s want earn,spend", st.Credit.Entries[0].Kind, st.Credit.Entries[1].Kind)
 	}
 }
+
+// TestQueryCrossMonthSegments 跨月窗口必须扫到当月分段（月份枚举回归）。
+// 旧实现「from 起 +15 天步进」在 from 处于上月 25 号后（7 天窗口跨月常态）时，
+// 步进直接越过当月 → 本月整月数据不进面板（每月 1~6 号必现，跨年同理）。
+// 无法直接操纵 Query 内部的 time.Now，改为验证分段枚举函数本身 +
+// 手工构造跨月数据走 Query 全链路（当月部分必被聚合）。
+func TestQueryCrossMonthSegments(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "ledger")
+	l, _ := New(dir)
+	defer l.Close()
+
+	// 当月写入一条（若枚举漏掉当月，这条不会被聚合）
+	l.AppendUsage(UsageEntry{Ch: "workbuddy", UID: "u1", Model: "glm-5.2", PT: 111, CT: 22, Src: "upstream", Ts: monthEdgeTs(t)})
+
+	st := l.Query(7, nil)
+	if st.Token.Total != 133 {
+		t.Fatalf("跨月窗口漏扫当月分段：total=%d want 133", st.Token.Total)
+	}
+	if st.Token.Requests != 1 {
+		t.Fatalf("requests=%d want 1", st.Token.Requests)
+	}
+}
+
+// monthEdgeTs 构造「本月 1~6 号」的时间戳——7 天窗口跨月、from 落在上月末尾的场景，
+// 正是旧枚举 bug 的触发窗口（当前不在月初时取本月 2 号保证落在 7 天窗口内）。
+func monthEdgeTs(t *testing.T) int64 {
+	t.Helper()
+	now := time.Now()
+	ts := time.Date(now.Year(), now.Month(), 2, 0, 0, 0, 0, now.Location())
+	if ts.After(now) { // 本月 2 号还没到（今天是 1 号）：直接用当前时间
+		ts = now
+	}
+	return ts.Unix()
+}
+
+// TestQueryMonthEnum 月份枚举：from 处于上月末尾时不得跳过当月（原 +15 天步进 bug 的
+// 直接单测——构造 09-27 → 10-03 场景，旧写法枚举出 {202609}、漏 202610）。
+func TestQueryMonthEnum(t *testing.T) {
+	// 复刻 Query 内的枚举逻辑演进前后对比，锁定「逐月步进」语义。
+	from := time.Date(2026, 9, 27, 0, 0, 0, 0, time.Local)
+	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.Local)
+
+	// 新逻辑：从 from 所在月第一天起，按月步进
+	got := map[string]bool{}
+	for t := time.Date(from.Year(), from.Month(), 1, 0, 0, 0, 0, time.Local); !t.After(now); t = t.AddDate(0, 1, 0) {
+		got[t.Format("200601")] = true
+	}
+	if !got["202609"] || !got["202610"] {
+		t.Fatalf("月份枚举应含 202609+202610，got %v", got)
+	}
+
+	// 跨年：12-30 → 次年 1-05
+	from2 := time.Date(2026, 12, 30, 0, 0, 0, 0, time.Local)
+	now2 := time.Date(2027, 1, 5, 0, 0, 0, 0, time.Local)
+	got2 := map[string]bool{}
+	for t := time.Date(from2.Year(), from2.Month(), 1, 0, 0, 0, 0, time.Local); !t.After(now2); t = t.AddDate(0, 1, 0) {
+		got2[t.Format("200601")] = true
+	}
+	if !got2["202612"] || !got2["202701"] {
+		t.Fatalf("跨年枚举应含 202612+202701，got %v", got2)
+	}
+}

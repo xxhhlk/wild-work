@@ -1436,7 +1436,7 @@ function renderModelTable(rows, days) {
   tb.innerHTML = top.map((r) => {
     const avg = days > 1 ? Math.round((r.pt + r.ct) / days) : (r.pt + r.ct);
     return `<tr>
-      <td>${esc(r.model)}</td><td>${esc(chNameOf(r.channel))}</td>
+      <td>${esc(r.model)}</td><td><span class="badge ${chClass(r.channel)}">${esc(chLabel(r.channel))}</span></td>
       <td class="num">${fmtCredits(r.requests)}</td><td class="num">${fmtTokensFull(r.pt + r.ct)}</td>
       <td class="num">${fmtTokensFull(avg)}</td></tr>`;
   }).join("");
@@ -1466,7 +1466,7 @@ function renderRecentPage(names) {
         <span class="rtime">${new Date(r.ts * 1000).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}</span>
         <span class="rkind">${kinds[r.kind] || r.kind}</span>
         <span class="ramount">${fmtCredits(r.amount)}</span>
-        <span class="racct">${esc((names || {})[r.uid] || shortUid(r.uid))}<span class="muted"> · ${esc(chNameOf(r.channel))}</span></span>
+        <span class="racct"><span class="badge ${chClass(r.channel)}">${esc(chLabel(r.channel))}</span> ${esc((names || {})[r.uid] || shortUid(r.uid))}</span>
         <span class="rname">${esc(r.note || "")}</span>
         <span class="rbal">余额 ${fmtCredits(r.balance)}</span></div>`).join("")
     : `<div class="muted" style="padding:8px">暂无流水</div>`;
@@ -1528,8 +1528,14 @@ function renderCreditChart(entries, names) {
     totals[e.uid] = (totals[e.uid] || 0) + -e.amount;
   }
   const top10 = Object.keys(totals).sort((a, b) => totals[b] - totals[a]).slice(0, 10);
+  // 系列名带渠道前缀（跨渠道同名昵称可区分）：取该账号消耗条目中最多的渠道
+  const mainChOf = (uid) => {
+    const cnt = {};
+    for (const e of spends) if (e.uid === uid) cnt[e.channel] = (cnt[e.channel] || 0) + 1;
+    return Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a])[0] || "";
+  };
   const series = top10.map((uid) => ({
-    name: names[uid] || shortUid(uid), type: "line", smooth: true,
+    name: `${chLabel(mainChOf(uid))} ${names[uid] || shortUid(uid)}`, type: "line", smooth: true,
     data: dates.map((d) => byAcct[uid][d] || 0),
   }));
   creditChart.setOption({

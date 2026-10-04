@@ -21,9 +21,9 @@ import (
 
 // Config 调度器依赖。
 //
-// 三个时间字段的零值语义见 New 的文档，**加新渠道时务必注意**：
-// nil = 未配置（落默认），[]int{} = 本渠道没有这类任务（保持为空）。
-// 想关掉某类任务却传 nil，会被静默补上默认时间并每天空跑。
+// 三个时间字段的零值语义见 New：nil = 未配置（落默认），
+// []int{} = 本渠道没有这类任务（保持为空）。想关掉某类任务却传 nil，
+// 会被静默补上默认时间并每天空跑。
 type Config struct {
 	Pool           *pool.Pool
 	Upstream       provider.Upstream
@@ -73,11 +73,11 @@ type Scheduler struct {
 // New 构建。
 //
 // 零值（nil）与显式空切片语义不同，不可混用：
-//   - nil        = 「未配置」→ 落默认（签到 9:00/21:00，保活 22:00）
-//   - []int{}    = 「本渠道没有这类定时任务」→ 保持为空，什么都不跑
+//   - nil     = 「未配置」→ 落默认（签到 9:00/21:00，保活 22:00）
+//   - []int{} = 「本渠道没有这类定时任务」→ 保持为空，什么都不跑
 //
-// 之前用 len(...) == 0 判定，导致想关掉定时任务的渠道（如无 refresh 端点、
-// 无签到活动的渠道）被静默补上默认时间，每天空跑并记录失败。
+// 用 len(...) == 0 判定会把后者一并兜底成默认时间，导致无签到活动、
+// 无 refresh 端点的渠道每天空跑并记录失败。
 func New(cfg Config) *Scheduler {
 	if cfg.CheckinMinutes == nil {
 		if len(cfg.CheckinHours) > 0 {
@@ -260,7 +260,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 		all := append(s.fireMinutes(ch), hoursToMinutes(kh)...)
 		next := nextFireMinutes(time.Now(), all)
 		if next.IsZero() {
-			// 无任何待触发时刻（理论上不会：KeepaliveHours 至少 [22]）。
+			// 无任何待触发时刻（列表非空但全部越界时才会走到这里）：
 			// 兜底睡一分钟，避免零值时间导致 time.NewTimer 立即返回造成忙循环。
 			next = time.Now().Add(time.Minute)
 		}

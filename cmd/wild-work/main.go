@@ -345,28 +345,28 @@ func main() {
 
 	wbSch := scheduler.New(scheduler.Config{Pool: wbPool, Upstream: wbUp, Name: "workbuddy", CheckinMinutes: checkinMinutes, KeepaliveHours: cfg.Schedule.KeepaliveHours, ExpiringThreshold: expiringThreshold, Ledger: lg})
 	trSch := scheduler.New(scheduler.Config{Pool: trPool, Upstream: trUp, Name: "traework", CheckinMinutes: checkinMinutes, KeepaliveHours: cfg.Schedule.KeepaliveHours, ExpiringThreshold: expiringThreshold, Ledger: lg})
-	// Qoder 无签到活动（qoder.DailyCheckin 直接返回错误）：调度器只做 token keepalive（每日 refresh 保活）。
-	// 签到必须传**显式空切片** []int{}：传 nil 会被 scheduler.New 当作「未配置」补成默认
-	// 9:00/21:00，导致每天两次必然失败的签到调用与失败日志（与 qwenwork/workbuddyai 同源缺陷）。
+	// Qoder 无签到活动：调度器只做 token keepalive（每日 refresh 保活）。
+	// CheckinMinutes 用显式空切片关闭（传 nil 会被 scheduler.New 补成默认 9:00/21:00）。
 	qdSch := scheduler.New(scheduler.Config{Pool: qdPool, Upstream: qdUp, Name: "qoder", CheckinMinutes: []int{}, KeepaliveHours: cfg.Schedule.KeepaliveHours, ExpiringThreshold: expiringThreshold, Ledger: lg})
 	// WorkBuddy 国际版：无显式签到（ActivitiesOnly 模式）。
 	// 定时仍对每个账号调用 DailyCheckin，其实现为「免费模型对话保活 + 签到探测」；
 	// 不记录/上报签到状态，保持对用户透明。
-	// Keepalive 关闭（token 有效期 365 天，无需每日刷新）—— 用显式空切片，
-	// 传 nil 会被 scheduler.New 补成默认 22:00。
+	// Keepalive 关闭（token 有效期 365 天，无需每日刷新），用显式空切片关闭
+	// （传 nil 会被 scheduler.New 补成默认 22:00）。
 	wbaSch := scheduler.New(scheduler.Config{Pool: wbaPool, Upstream: wbaUp, Name: "workbuddyai",
 		CheckinMinutes: checkinMinutes, KeepaliveHours: []int{}, ActivitiesOnly: true, ExpiringThreshold: expiringThreshold, Ledger: lg})
 	// 千问办公：无签到活动（每日积分服务端被动发放，无需保活/领取）；
-	// 定时任务全部关闭：必须传**显式空切片** []int{}，传 nil 会被 scheduler.New
-	// 补成默认的 9:00/21:00 签到与 22:00 保活（token 由 deviceToken/refresh 按需轮换，
-	// 定时保活反而会与千问办公 App 互踩 —— 见备忘 §7.5 风险 1）。
+	// CheckinMinutes + KeepaliveHours 均为显式空切片，本渠道没有任何定时任务
+	// （token 由 deviceToken/refresh 按需轮换，定时保活反而会与千问办公 App
+	// 互踩 —— 见备忘 §7.5 风险 1）。
 	// 余额/费率靠 StartCreditAutoRefresh 循环拉取。
 	qwSch := scheduler.New(scheduler.Config{Pool: qwPool, Upstream: qwUp, Name: "qwenwork",
 		CheckinMinutes: []int{}, KeepaliveHours: []int{}, ExpiringThreshold: expiringThreshold, Ledger: lg})
-	// QoderCN / QoderCOM：仅 campaigns 活动路径（legacy daily-check-in 已 DISABLED，
-	// 其 claim 恒返回 409 会造成「假成功」，故不再使用）。签到窗口对齐上游 qoder2api：
-	// 10:00 开放，活动可能在整点后才创建，故 10:00–12:00 之间每分钟重试，直到真正领到或超时。
+	// QoderCN：仅 campaigns 活动路径（legacy daily-check-in 已 DISABLED，其 claim 恒返回
+	// 409 会造成「假成功」，故不再使用）。签到窗口对齐上游 qoder2api：10:00 开放，
+	// 活动可能在整点后才创建，故 10:00–12:00 之间每分钟重试，直到真正领到或超时。
 	qcnSch := scheduler.New(scheduler.Config{Pool: qcnPool, Upstream: qcnUp, Name: "qodercn", CheckinMinutes: []int{qoderCheckinMinute}, CheckinRetryUntil: qoderCheckinRetryUntil, KeepaliveHours: cfg.Schedule.KeepaliveHours, ExpiringThreshold: expiringThreshold, Ledger: lg})
+	// QoderCOM：仅 campaigns 活动路径（无 daily-check-in）；其余同 QoderCN。
 	qcmSch := scheduler.New(scheduler.Config{Pool: qcmPool, Upstream: qcmUp, Name: "qodercom", CheckinMinutes: []int{qoderCheckinMinute}, CheckinRetryUntil: qoderCheckinRetryUntil, KeepaliveHours: cfg.Schedule.KeepaliveHours, ExpiringThreshold: expiringThreshold, Ledger: lg})
 	// 小浣熊：无签到（CheckinMinutes 用显式空切片，nil 会被补成 9:00/21:00）；
 	// access_token 实测仅 ≈2h，而 refresh_token ≈30 天，
@@ -383,9 +383,9 @@ func main() {
 	mcSch := scheduler.New(scheduler.Config{Pool: mcPool, Upstream: mcUp, Name: "monkeycode",
 		CheckinMinutes: []int{}, KeepaliveHours: []int{}, ExpiringThreshold: expiringThreshold, Ledger: lg})
 	// OpenCodeZen 匿名：无账号、无签到、无 token 可保活（凭证是常量 public）。
-	// CheckinMinutes/KeepaliveHours 均为 nil → 调度器不发生任何上游调用。
+	// CheckinMinutes/KeepaliveHours 均为显式空切片 → 调度器不发生任何上游调用。
 	ocSch := scheduler.New(scheduler.Config{Pool: ocPool, Upstream: ocUp, Name: "oczen",
-		CheckinMinutes: nil, KeepaliveHours: nil})
+		CheckinMinutes: []int{}, KeepaliveHours: []int{}})
 	// 智谱清言：签到与对话联动（当日需先对话才能领打卡进度），故保活与签到
 	// 合成一个流程（glm.Client.Keepalive 先发最小对话再签到）。
 	// 用 DailyCheckin 通道驱动：CheckinMinutes 用全局签到时间，

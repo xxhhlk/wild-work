@@ -397,9 +397,12 @@ func (l *Ledger) Query(days int, enrich func(uid string) (name, channel string))
 	from := now.AddDate(0, 0, -(days - 1))
 	fromTs := time.Date(from.Year(), from.Month(), from.Day(), 0, 0, 0, 0, now.Location()).Unix()
 
-	// 覆盖范围内的月份分段（最多 2 个：当月 + 上月）
+	// 覆盖范围内的月份分段（最多 2 个：当月 + 上月）。
+	// 必须按「from 所在月 → now 所在月」逐月枚举：曾用「from 起 +15 天步进」的写法，
+	// 当 from 在上月 25 号之后时（7 天窗口跨月的常态），+15 天直接越过当月导致
+	// 本月分段整月不被扫描——每月 1~6 号面板看不到本月数据（跨年同理）。
 	months := map[string]bool{}
-	for t := from; !t.After(now); t = t.AddDate(0, 0, 15) {
+	for t := time.Date(from.Year(), from.Month(), 1, 0, 0, 0, 0, now.Location()); !t.After(now); t = t.AddDate(0, 1, 0) {
 		months[t.Format("200601")] = true
 	}
 
