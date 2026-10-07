@@ -3,7 +3,7 @@
 // protocol_other.go 非 Windows 平台的退化实现。
 //
 // 协议回调接管依赖 HKCU\Software\Classes 的 URL Protocol 注册（Windows 专有机制），
-// 且两个官方客户端本身只有 Windows 版，故其余平台一律按「不支持」处理——
+// 当前仅在 Windows 实现并验证过；其他平台尚未实现，欢迎有对应设备的社区贡献者补齐——
 // 调用方拿到 ErrProtocolUnsupported 后应引导用户改用「从本机客户端导入」。
 package raccoon
 

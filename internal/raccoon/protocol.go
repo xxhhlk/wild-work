@@ -62,8 +62,9 @@ const (
 // （不能让它启动第二份服务/托盘）。
 const CallbackFlag = "--raccoon-callback"
 
-// ErrProtocolUnsupported 协议回调接管仅支持 Windows（官方客户端只有 Windows 版）。
-var ErrProtocolUnsupported = errors.New("小浣熊授权登录仅支持 Windows")
+// ErrProtocolUnsupported 协议回调接管当前仅在 Windows 实现（HKCU 协议注册）；
+// 其他平台尚未实现，欢迎有对应设备的社区贡献者补齐。
+var ErrProtocolUnsupported = errors.New("小浣熊授权登录当前仅支持 Windows")
 
 // AuthorizeURL 授权入口（desktopLogin.js 的 DESKTOP_AUTH_PATH + DESKTOP_AUTH_PARAMS）。
 // appname 走 percent-encoding，避免非 ASCII 在 URL 里出现歧义。

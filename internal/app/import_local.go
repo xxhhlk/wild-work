@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -34,7 +33,8 @@ import (
 //
 // 设计要点：
 //   - 路径**自适应探测**（多候选 + 环境变量覆盖），不做硬编码单一路径；
-//   - 只在 Windows 生效（两个客户端都只有 Windows 版）；
+//   - 定位逻辑本身跨平台，但**仅在 Windows 上验证过**；其他平台不设平台门禁，
+//     按尽力而为处理，由有对应设备的社区贡献者验证；
 //   - 写入走 tmp+rename 原子替换、0600，并与 internal/auth.Parse 的嵌套格式逐字段对齐；
 //   - **绝不打印凭据值**（日志只记文件名与 uid）。
 
@@ -77,10 +77,10 @@ type accountSection struct {
 }
 
 // ImportLocalCredentials 从本机已安装的官方客户端导入指定渠道凭据。
+//
+// 路径探测本身跨平台，但仅在 Windows 上验证过；其他平台不设平台门禁，
+// 按尽力而为处理（找不到客户端凭据时返回明确错误），由有对应设备的社区贡献者验证。
 func (a *App) ImportLocalCredentials(channel string) (*ImportLocalResult, error) {
-	if runtime.GOOS != "windows" {
-		return nil, errors.New("「从本机客户端导入」目前仅支持 Windows（两个官方客户端均只有 Windows 版）")
-	}
 	switch provider.Kind(strings.TrimSpace(channel)) {
 	case provider.Raccoon:
 		return a.importRaccoon()
