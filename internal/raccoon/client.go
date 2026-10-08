@@ -11,13 +11,14 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"wild-work/internal/auth"
 	"wild-work/internal/provider"
 )
 
-// Client 商汤小浣熊（官方托管网关 xiaohuanxiong.com）上游客户端。
+// Client 小浣熊（官方托管网关 xiaohuanxiong.com）上游客户端。
 // 登录编排不在本包：既有「从本机客户端导入」（internal/app/import_local.go），
 // 也有「浏览器授权登录」（internal/login_raccoon，复用本包 protocol*.go 的协议工具）。
 // 本包只负责上游调用与桌面协议底层能力。
@@ -33,6 +34,27 @@ type Client struct {
 	// IdleTimeout 流式空闲超时：连续该时长读不到任何字节即判上游卡死。
 	// 0 = 用 DefaultIdleTimeout。由 main 装配时注入 config.upstream.stream_idle_seconds。
 	IdleTimeout time.Duration
+
+	// liveMu 保护 liveIDs（动态目录缓存）。
+	//
+	// 为什么需要它：ChatStream 会本地校验模型名（上游对未知模型静默回落，见 KnownModel），
+	// 但**只能用静态表** ⇒ 上游目录新增的模型（如 sn-sensenova-6-8-flash）会被本地误拒，
+	// 而同一个模型正被 /v1/models 正常透出（它读的是动态目录）——"面板列出却调不动"。
+	// 故每次 fetchCatalog 成功后把目录记下来，供校验时与静态表取并集。
+	// 单调扩大：已知集合只增不减，避免目录瞬时抖动把可用模型判成未知。
+	liveMu  sync.RWMutex
+	liveIDs map[string]bool
+
+	// Base 网关基址（默认 LLMBase）；测试注入 httptest 假上游用，生产不设。
+	Base string
+}
+
+// baseURL 生效的网关基址。
+func (c *Client) baseURL() string {
+	if b := strings.TrimRight(strings.TrimSpace(c.Base), "/"); b != "" {
+		return b
+	}
+	return LLMBase
 }
 
 // DefaultIdleTimeout 流式空闲超时默认值（与 loomy 对齐，见其注释）。
@@ -210,14 +232,15 @@ func jwtExp(tok string) int64 {
 func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status int, respBody []byte, err error) {
 	// 模型名本地校验：阶段 C 实测确认上游对未知模型**静默回落到默认模型**并返回 200，
 	// 不校验会让用户以为在用 A 模型、实际消耗 B 模型的额度。
-	if m := modelOf(body); m != "" && !KnownModel(m) {
+	// 校验集合 = 静态表 ∪ 已拉取到的动态目录（后者由 FetchModels/FetchModelPricing 填充）。
+	if m := modelOf(body); m != "" && !c.knownModel(m) {
 		return nil, http.StatusBadRequest, []byte(unknownModelBody(m)), nil
 	}
 	orig := body
 	body = forceUpstreamDeepThinking(body)
 	logReasoningStrip(orig, body)
 
-	req, err := http.NewRequest(http.MethodPost, LLMBase+EpChat, bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, c.baseURL()+EpChat, bytes.NewReader(body))
 	if err != nil {
 		return nil, 0, nil, err
 	}
@@ -314,6 +337,37 @@ func modelOf(body []byte) string {
 	return strings.TrimSpace(probe.Model)
 }
 
+// knownModel 模型名是否可接受（ChatStream 的本地校验入口）。
+//
+// 判据 = KnownModel（静态表 + 默认模型 + 客户端别名） ∪ 已拉取到的动态目录。
+// 动态部分**必须**参与：/v1/models 透出的是动态目录（FetchModels 的结果），
+// 只认静态表会导致"面板列出却调不动"（2026-10-05 实测 sn-sensenova-6-8-flash：
+// 上游 200 正常服务，本地 400 未知模型）。
+func (c *Client) knownModel(id string) bool {
+	if KnownModel(id) {
+		return true
+	}
+	c.liveMu.RLock()
+	ok := c.liveIDs[id]
+	c.liveMu.RUnlock()
+	return ok
+}
+
+// rememberLiveModels 记下动态目录里的模型名（单调扩大，只增不减）。
+// 目录瞬时拉取失败/上游临时抽掉某模型时，不应把已确认可用的模型判成未知。
+func (c *Client) rememberLiveModels(ids ...string) {
+	c.liveMu.Lock()
+	defer c.liveMu.Unlock()
+	if c.liveIDs == nil {
+		c.liveIDs = make(map[string]bool, len(ids))
+	}
+	for _, id := range ids {
+		if id = strings.TrimSpace(id); id != "" {
+			c.liveIDs[id] = true
+		}
+	}
+}
+
 // unknownModelBody 未知模型时返回的 OpenAI 风格 400（不请求上游）。
 func unknownModelBody(m string) string {
 	b, _ := json.Marshal(map[string]any{"error": map[string]any{
@@ -357,7 +411,7 @@ type catalogModel struct {
 
 // fetchCatalog 拉取模型目录（模型表与费率共用同一响应）。
 func (c *Client) fetchCatalog(a *auth.Auth) (*catalogResp, []catalogModel, error) {
-	resp, raw, err := c.do(http.MethodGet, LLMBase+EpModelCatalog, a, nil)
+	resp, raw, err := c.do(http.MethodGet, c.baseURL()+EpModelCatalog, a, nil)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -374,6 +428,17 @@ func (c *Client) fetchCatalog(a *auth.Auth) (*catalogResp, []catalogModel, error
 	for _, cat := range out.Data.Categories {
 		models = append(models, cat.Models...)
 	}
+	// 记下本次目录里的模型名，供 ChatStream 的本地校验取并集
+	// （否则上游新增模型会被误拒，而 /v1/models 已把它列出来）。
+	ids := make([]string, 0, len(models))
+	for _, m := range models {
+		if id := strings.TrimSpace(m.ModelName); id != "" {
+			ids = append(ids, id)
+		} else if id := strings.TrimSpace(m.Name); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	c.rememberLiveModels(ids...)
 	return &out, models, nil
 }
 

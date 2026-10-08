@@ -293,6 +293,14 @@ type CheckinReporter interface {
 	DailyCheckinReport(a *auth.Auth) (CheckinReport, error)
 }
 
+// CheckinGranter 由「签到回执自带发放额」的渠道实现（当前 WorkBuddy，issue #67）。
+// 上游 daily-checkin 回执的 credit/today_credit 是本次发放的权威值；调度器在签到
+// 成功后用它直接记 earn（ledger.RecordCheckinEarn），不再完全依赖快照差分。
+// granted<=0 时调度器静默降级回差分口径；未实现本接口的渠道行为不变。
+type CheckinGranter interface {
+	DailyCheckinGrant(a *auth.Auth) (granted int64, err error)
+}
+
 // CheckinStatus 是签到结果状态（语义对齐上游 qoder2api 的 checkinStatus*）。
 // 决定调度器的「当日是否已完成」判定与窗口内重试策略。
 type CheckinStatus string

@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"wild-work/internal/auth"
@@ -34,6 +35,24 @@ type Client struct {
 	// IdleTimeout 流式空闲超时：连续该时长读不到任何字节即判上游卡死。
 	// 0 = 用 DefaultIdleTimeout。由 main 装配时注入 config.upstream.stream_idle_seconds。
 	IdleTimeout time.Duration
+
+	// liveMu 保护 liveIDs（动态目录缓存）——与 raccoon 同款缺陷的修复：
+	// ChatStream 本地校验模型名时若**只查静态表**，上游新增的模型会被误拒，
+	// 而它正被 /v1/models 正常透出（后者读动态目录）⇒「面板列出却调不动」。
+	// 用户需要它是因为：静态表基于 2026-09 实测，上游随时新增/下线模型。
+	liveMu  sync.RWMutex
+	liveIDs map[string]bool
+
+	// Base 网关基址（默认 GatewayBase）；测试注入 httptest 假上游用，生产不设。
+	Base string
+}
+
+// baseURL 生效的网关基址。
+func (c *Client) baseURL() string {
+	if b := strings.TrimRight(strings.TrimSpace(c.Base), "/"); b != "" {
+		return b
+	}
+	return GatewayBase
 }
 
 // DefaultIdleTimeout 流式空闲超时默认值。
@@ -163,13 +182,14 @@ func (c *Client) RefreshToken(a *auth.Auth) error {
 
 // ChatStream 实现 provider.Upstream。
 func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status int, respBody []byte, err error) {
-	if m := modelOf(body); m != "" && !KnownModel(m) {
+	// 校验集合 = 静态表 ∪ 已拉取到的动态目录（见 knownModel）。
+	if m := modelOf(body); m != "" && !c.knownModel(m) {
 		return nil, http.StatusBadRequest, []byte(unknownModelBody(m)), nil
 	}
 	projected := projectEffort(body)
 	logReasoningOnce(body, projected)
 
-	req, err := http.NewRequest(http.MethodPost, GatewayBase+EpChat, bytes.NewReader(projected))
+	req, err := http.NewRequest(http.MethodPost, c.baseURL()+EpChat, bytes.NewReader(projected))
 	if err != nil {
 		return nil, 0, nil, err
 	}
@@ -310,7 +330,7 @@ type loomyModel struct {
 
 // fetchModels 拉取上游模型目录。
 func (c *Client) fetchModels(a *auth.Auth) (*modelsResp, error) {
-	resp, raw, err := c.do(http.MethodGet, GatewayBase+EpModels, a, nil)
+	resp, raw, err := c.do(http.MethodGet, c.baseURL()+EpModels, a, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -326,7 +346,44 @@ func (c *Client) fetchModels(a *auth.Auth) (*modelsResp, error) {
 	if len(out.Data) == 0 {
 		return nil, fmt.Errorf("loomy 模型目录为空")
 	}
+	// 记下目录里的模型名，供 ChatStream 的本地校验取并集（同 raccoon）。
+	ids := make([]string, 0, len(out.Data))
+	for _, m := range out.Data {
+		if id := strings.TrimSpace(m.ID); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	c.rememberLiveModels(ids...)
 	return &out, nil
+}
+
+// knownModel 模型名是否可接受（ChatStream 的本地校验入口）。
+//
+// 判据 = KnownModel（静态表） ∪ 已拉取到的动态目录。
+// 动态部分**必须**参与：/v1/models 透出的是动态目录（FetchModels 的结果），
+// 只认静态表会导致「面板列出却调不动」。
+func (c *Client) knownModel(id string) bool {
+	if KnownModel(id) {
+		return true
+	}
+	c.liveMu.RLock()
+	ok := c.liveIDs[id]
+	c.liveMu.RUnlock()
+	return ok
+}
+
+// rememberLiveModels 记下动态目录里的模型名（单调扩大，只增不减）。
+func (c *Client) rememberLiveModels(ids ...string) {
+	c.liveMu.Lock()
+	defer c.liveMu.Unlock()
+	if c.liveIDs == nil {
+		c.liveIDs = make(map[string]bool, len(ids))
+	}
+	for _, id := range ids {
+		if id = strings.TrimSpace(id); id != "" {
+			c.liveIDs[id] = true
+		}
+	}
 }
 
 // FetchModels 实现 provider.Upstream（档位直接取上游 reasoning_efforts —— 权威值）。
@@ -427,7 +484,7 @@ func (c *Client) UserResource(a *auth.Auth) (int64, error) {
 // 2026-09-23 实测该账号 `balance=15000 / dailyBalance=4800 / availableBalance=19800`，
 // 只读 balance 会把每日积分整块漏掉（面板少显示、pool 路由口径偏低）。
 func (c *Client) UserResourceDetail(a *auth.Auth) (int64, []provider.ResourceItem, error) {
-	resp, raw, err := c.do(http.MethodGet, GatewayBase+EpPointsV1, a, nil)
+	resp, raw, err := c.do(http.MethodGet, c.baseURL()+EpPointsV1, a, nil)
 	if err != nil {
 		return 0, nil, err
 	}

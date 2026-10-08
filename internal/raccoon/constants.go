@@ -1,4 +1,4 @@
-// Package raccoon 封装商汤小浣熊（xiaohuanxiong.com）上游协议，实现 provider.Upstream。
+// Package raccoon 封装小浣熊（xiaohuanxiong.com）上游协议，实现 provider.Upstream。
 //
 // 协议要点（2026-09-22 实测，见 本地 docs/raccoon渠道接入备忘.md、本地 docs/loomy-raccoon接入记录.md）：
 //   - 推理走官方托管网关：POST https://xiaohuanxiong.com/api/web/llm/v2/chat/completions

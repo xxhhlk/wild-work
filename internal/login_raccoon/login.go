@@ -1,4 +1,4 @@
-// Package login_raccoon 实现商汤小浣熊的「浏览器授权登录」。
+// Package login_raccoon 实现小浣熊的「浏览器授权登录」。
 //
 // 官方登录链路（逆向自 desktopLogin.js 与服务端 SPA，见 本地 docs/raccoon渠道接入备忘.md §11）：
 //

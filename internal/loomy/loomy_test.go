@@ -216,6 +216,44 @@ func TestKnownModel(t *testing.T) {
 	}
 }
 
+// TestKnownModelAcceptsLiveCatalog 回归（同 raccoon，2026-10-05 发现同类缺陷）：
+//
+//	上游目录里有、静态表里没有的模型必须可调。旧实现只查静态表 ⇒
+//	/v1/models 正常列出这些模型，但调用时被本地 400 误拒（「面板列出却调不动」）。
+//	修法：fetchModels 成功后把目录记进 Client，校验时与静态表取并集。
+func TestKnownModelAcceptsLiveCatalog(t *testing.T) {
+	c := New()
+	const live = "brand-new-model-xyz" // 不在 staticModels 里
+
+	if c.knownModel(live) || KnownModel(live) {
+		t.Fatal("前提：该模型不应在静态表里")
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[
+			{"id":"brand-new-model-xyz","name":"Brand New"},
+			{"id":"spark-x","name":"Spark X2.5"}
+		]}`))
+	}))
+	defer srv.Close()
+	c.Base = srv.URL
+
+	a := &auth.Auth{AccessToken: "dummy"}
+	if _, err := c.FetchModels(a); err != nil {
+		t.Fatalf("FetchModels: %v", err)
+	}
+	if !c.knownModel(live) {
+		t.Fatalf("拉取动态目录后 %q 仍被判未知（面板列出却调不动）", live)
+	}
+	_, status, body, err := c.ChatStream(a, []byte(`{"model":"`+live+`","messages":[]}`))
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if status == 400 && strings.Contains(string(body), "model_not_found") {
+		t.Fatalf("仍被本地误拒：%s", body)
+	}
+}
+
 // TestRefreshTokenReportsSessionDead 守门：Loomy 无 refresh 端点，
 // 必须返回 ErrSessionDead（而不是发出一个必然失败的请求）。
 func TestRefreshTokenReportsSessionDead(t *testing.T) {

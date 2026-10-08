@@ -34,6 +34,7 @@ type UsageEntry struct {
 }
 
 // CreditEntry 积分变动流水（按账号条目差分而来，非逐笔精确账）。
+// CreditEntry 单条积分流水（credit-*.jsonl 的一行）。
 type CreditEntry struct {
 	Ts      int64  `json:"ts"`             // Unix 秒
 	Ch      string `json:"ch"`             // 渠道 kind
@@ -265,6 +266,19 @@ func (l *Ledger) AppendUsage(e UsageEntry) {
 }
 
 // AppendCredit 记一条积分流水。
+// RecordCheckinEarn 签到发放的权威入账（issue #67）。
+// WorkBuddy 上游 daily-checkin 回执自带本次发放额（credit/today_credit 字段，
+// 见 ref/Buddy2api 同款实现）——这是权威值，比差分推算可靠。仍走 AppendCredit
+// 通道（Note 注明签到），调用方负责防重（code 已带渠道前缀，重复调用不会重放）。
+// amount<=0 静默跳过（如上游未回填金额）。返回是否写入。
+func (l *Ledger) RecordCheckinEarn(ch, uid string, amount int64, balance int64, note string) bool {
+	if amount <= 0 || l == nil {
+		return false
+	}
+	l.AppendCredit(CreditEntry{Ch: ch, UID: uid, Kind: "earn", Amount: amount, Balance: balance, Note: note})
+	return true
+}
+
 func (l *Ledger) AppendCredit(e CreditEntry) {
 	if e.Ts == 0 {
 		e.Ts = time.Now().Unix()

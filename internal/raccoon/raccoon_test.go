@@ -69,6 +69,58 @@ func TestKnownModel(t *testing.T) {
 	}
 }
 
+// TestKnownModelAcceptsLiveCatalog 回归（2026-10-05 实测）：
+//
+//	上游目录里有、静态表里没有的模型（如 sn-sensenova-6-8-flash）必须可调。
+//	旧实现只查静态表 ⇒ /v1/models 正常列出 9 个模型，但其中
+//	sn-sensenova-6-8-flash 调对话被本地 400 拒（上游实际 200 正常服务）——
+//	「面板列出却调不动」。修法：fetchCatalog 成功后把目录记进 Client，
+//	校验时与静态表取并集。
+func TestKnownModelAcceptsLiveCatalog(t *testing.T) {
+	c := New()
+	const live = "sn-sensenova-6-8-flash" // 不在 staticModels 里
+
+	if c.knownModel(live) {
+		t.Fatal("前提：该模型不应在静态表里")
+	}
+	if KnownModel(live) {
+		t.Fatal("前提：KnownModel 不应认它（静态表）")
+	}
+
+	// 假上游返回含该模型的目录。
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"code":0,"data":{"categories":[{"type":"chat","models":[
+			{"name":"SenseNova","model_name":"sn-sensenova-6-8-flash","billing_multiplier":0.5},
+			{"name":"Kimi","model_name":"sn-kimi-k3"}
+		]}]}}`))
+	}))
+	defer srv.Close()
+	c.Base = srv.URL
+
+	a := &auth.Auth{AccessToken: "dummy", ApiHost: srv.URL}
+	if _, err := c.FetchModels(a); err != nil {
+		t.Fatalf("FetchModels: %v", err)
+	}
+
+	// 拉过目录后，该模型应被接受。
+	if !c.knownModel(live) {
+		t.Fatalf("拉取动态目录后 %q 仍被判未知（面板列出却调不动）", live)
+	}
+	// 真调一次：不应再返回本地 400 model_not_found。
+	_, status, body, err := c.ChatStream(a, []byte(`{"model":"`+live+`","messages":[]}`))
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if status == 400 && strings.Contains(string(body), "model_not_found") {
+		t.Fatalf("仍被本地误拒：%s", body)
+	}
+
+	// 单调扩大：目录里没出现的旧模型不应被忘掉。
+	if !c.knownModel("sn-kimi-k3") {
+		t.Fatal("已知模型不应被遗忘")
+	}
+}
+
 func TestStaticModelsNonEmpty(t *testing.T) {
 	ms := StaticModels()
 	if len(ms) != len(staticModels) {

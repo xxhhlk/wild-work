@@ -71,7 +71,7 @@ body {
 .pa-left .btn { white-space: nowrap; align-self: flex-start; }
 .pa-right {
   display: grid;
-  grid-template-columns: repeat(4, auto);
+  grid-template-columns: repeat(5, auto);
   gap: 8px 12px;
 }
 .pa-right .btn { justify-self: stretch; white-space: nowrap; }
@@ -135,6 +135,15 @@ body {
 .cs-stale { color: var(--warn); font-size: 11px; }
 .cs-total { background: #eef4ff; border-color: #c7d9ff; }
 .cs-total .cs-title { color: var(--primary); }
+/* 渠道 chip 可点击筛选账号：整条作为按钮，选中态加边高亮 */
+.cs-chip.clickable { cursor: pointer; }
+.cs-chip.clickable:hover { border-color: var(--primary); }
+.cs-chip.clickable:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+.cs-chip.clickable.on { border-color: var(--primary); background: #eff6ff; }
+.cs-chip.cs-all { padding: 3px 10px; }
+.cs-chip.cs-all .cs-n { color: var(--primary); }
+/* 账号筛选后隐藏的卡片（applyAcctFilter 控制） */
+.acct-grid .acct-card.hidden { display: none; }
 
 /* 账号卡片网格 */
 .acct-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
@@ -298,6 +307,25 @@ body {
   line-height: 15px;
 }
 .fees-tab.active .fees-tab-n { color: var(--primary); background: #dbeafe; }
+/* 渠道积分余额角标：tab 内显示该渠道可用积分合计（与汇总条同源） */
+.fees-tab .fees-tab-bal {
+  font-size: 10.5px;
+  color: #15803d;
+  background: #dcfce7;
+  border: 1px solid #bbf7d0;
+  border-radius: 999px;
+  padding: 0 6px;
+  line-height: 15px;
+  font-variant-numeric: tabular-nums;
+}
+/* 模型名可点击复制（整段 code 作为按钮） */
+.fees code.fee-model-copy {
+  cursor: pointer;
+  border-radius: 3px;
+  padding: 0 2px;
+}
+.fees code.fee-model-copy:hover { background: #eff6ff; color: var(--primary); }
+.fees code.fee-model-copy:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
 .fees td.dim { color: var(--muted); font-size: 12px; }
 /* 倍率显示：Free 高亮 / 已定价 / 未知（带 tooltip） */
 .fees .rate-free {
@@ -453,7 +481,7 @@ body {
   background: var(--card); color: var(--muted); cursor: pointer;
 }
 
-/* raccoon 商汤小浣熊渠道色（取客户端 branding 的紫罗兰 #8E6BF2） */
+/* raccoon 小浣熊渠道色（取客户端 branding 的紫罗兰 #8E6BF2） */
 .btn.primary.alt.raccoon { background: #8e6bf2; border-color: #8e6bf2; }
 .btn.primary.alt.raccoon:hover { background: #7c56e8; }
 .badge.raccoon { background: #8e6bf2; }
@@ -490,8 +518,6 @@ body {
 .credit-na { color: var(--muted, #94a3b8); font-style: italic; }
 
 /* ---------- 用量与流水面板 ---------- */
-#usageSince { font-size: 11px; color: var(--muted); font-weight: 400; margin-left: 6px; }
-
 .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
 .seg-btn { border: 0; background: var(--card); padding: 5px 14px; font-size: 12px; cursor: pointer; color: var(--muted); }
 .seg-btn + .seg-btn { border-left: 1px solid var(--border); }
@@ -520,7 +546,6 @@ body {
 .main-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin-bottom: 14px; }
 .mtab { border: 0; background: transparent; padding: 10px 18px; font-size: 15px; font-weight: 600; cursor: pointer; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; }
 .mtab.active { color: var(--primary); border-bottom-color: var(--primary); }
-.mtab .ver { font-size: 11px; color: var(--muted); font-weight: 400; margin-left: 4px; }
 
 .pager { display: flex; align-items: center; gap: 12px; margin: 10px 0 4px; justify-content: center; }
 .pager .pg-info { font-size: 12px; color: var(--muted); min-width: 48px; text-align: center; }
@@ -542,4 +567,348 @@ body {
 
 @media (max-width: 640px) {
   .usage-cards { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* ---------- 运行统计面板（第三个主 tab，数据来自 /api/stats） ---------- */
+#mtabStats { font-size: 13px; line-height: 1.6; color: var(--text); }
+
+/* 区块卡片：白色圆角卡（观感对齐 .panel，边距收窄适配多区块纵排） */
+#mtabStats .st-panel,
+#mtabStats .st-block {
+  margin-top: 10px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
+  box-shadow: var(--shadow);
+}
+#mtabStats > .st-panel:first-child,
+#mtabStats > .st-block:first-child,
+#mtabStats > .st-rotation:first-child,
+#mtabStats > .st-expiry:first-child,
+#mtabStats > .st-abnormal:first-child { margin-top: 0; }
+#mtabStats .st-sec-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-start;
+  font-size: 13px;
+  font-weight: 600;
+  color: #52525b;
+}
+#mtabStats .st-sec-info {
+  /* 里程碑计数靠右（Token 多天行插在标题与它之间，用 margin-left:auto 推右） */
+  margin-left: auto;
+  padding-left: 12px;
+  font-size: 11px;
+  font-weight: 400;
+  color: #a1a1aa;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 更新角标紧贴里程碑左侧（auto 由里程碑吸收，角标不吃剩余空间） */
+#mtabStats #stUpdated { margin-left: 0; padding-left: 8px; }
+/* 拉取失败：数据停止更新的可见警示（陈旧数据无感知是运营面板大忌） */
+#mtabStats #stUpdated.st-stale { color: var(--danger); font-weight: 600; }
+#mtabStats .st-block-title { font-size: 13px; font-weight: 600; color: #52525b; margin-bottom: 6px; }
+#mtabStats .st-hint { font-weight: 400; color: #a1a1aa; margin-left: 8px; }
+
+/* 数值列等宽数字（纵向按位对齐，跨行可比） */
+#mtabStats .st-plat-accts,
+#mtabStats .st-plat-credits,
+#mtabStats .st-plat-in,
+#mtabStats .st-plat-out,
+#mtabStats .st-plat-tokens,
+#mtabStats .st-plat-exp,
+#mtabStats .st-plat-no,
+#mtabStats .st-sum-val,
+#mtabStats .st-token .st-tk-val,
+#mtabStats .st-idx,
+#mtabStats .st-mono,
+#mtabStats .st-ex-tag,
+#mtabStats .st-ex-date,
+#mtabStats .st-logbox { font-variant-numeric: tabular-nums; }
+
+/* 全局汇总横条：标签 + 等宽数值 + 小字注解横向排布，点号分隔，窄屏换行 */
+#mtabStats .st-sum {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 2px 0;
+  margin-top: 7px;
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #f7f8fa;
+  font-size: 11.5px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+#mtabStats .st-sum > .st-sum-item { white-space: nowrap; }
+#mtabStats .st-sum > .st-sum-item::after { content: "·"; color: #d4d8e0; margin: 0 9px; }
+#mtabStats .st-sum > .st-sum-item:last-child::after { content: ""; margin: 0; }
+#mtabStats .st-sum-val { margin-left: 5px; font-size: 13px; font-weight: 600; color: var(--text); }
+#mtabStats .st-sum-val.ok { color: var(--ok); }    /* 收入积分 */
+#mtabStats .st-sum-val.warn { color: var(--warn); }  /* 消耗积分 / Token */
+#mtabStats .st-sum-val.pur { color: #7c3aed; }     /* 总额度（资产） */
+#mtabStats .st-sum-val.risk { color: var(--danger); } /* 今日到期（今晚作废） */
+#mtabStats .st-sum-sub { font-size: 10px; color: #a1a1aa; }
+#mtabStats .st-sum-sub::before { content: "（"; }
+#mtabStats .st-sum-sub::after { content: "）"; }
+
+/* 平台表：grid 固定列宽 + 满高右边框做竖线。
+   中列按内容量收窄（固定 px）、末列弹性吸收剩余并左对齐——避免「数字浮在空白里」。
+   不要用 grid 的 auto 列：各列按各行内容独立解析，跨行会错位。 */
+#mtabStats .st-plat { margin-top: 8px; }
+#mtabStats .st-plat-row {
+  display: grid;
+  grid-template-columns: 28px 150px 52px 100px 80px 80px 112px 84px 84px 1fr;
+  font-size: 12px;
+  white-space: nowrap;
+  border-bottom: 1px solid rgba(23, 23, 23, 0.08);
+}
+#mtabStats .st-plat-row > span {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 0;
+  padding: 5px 10px;
+  overflow: hidden;
+  border-right: 1px solid rgba(23, 23, 23, 0.06);
+}
+/* 末列（7日内到期）：吸收剩余宽度、左对齐、不画右边框 */
+#mtabStats .st-plat-row > span:last-child { justify-content: flex-start; border-right: none; }
+#mtabStats .st-plat-row.st-plat-head > span { padding: 4px 10px; }
+#mtabStats .st-plat-row.st-plat-head .st-plat-slot,
+#mtabStats .st-plat-row.st-plat-head .st-plat-accts,
+#mtabStats .st-plat-row.st-plat-head .st-plat-credits,
+#mtabStats .st-plat-row.st-plat-head .st-plat-in,
+#mtabStats .st-plat-row.st-plat-head .st-plat-out,
+#mtabStats .st-plat-row.st-plat-head .st-plat-tokens,
+#mtabStats .st-plat-row.st-plat-head .st-plat-exp {
+  color: #a1a1aa;
+  font-size: 11.5px;
+  font-weight: 500;
+}
+#mtabStats .st-plat-row > .st-plat-no { justify-content: center; color: #a1a1aa; font-size: 11.5px; }
+/* 平台列左对齐（徽章靠左），其余列右对齐；选择器带 > span 提特异性防覆盖 */
+#mtabStats .st-plat-row > .st-plat-slot { justify-content: flex-start; }
+#mtabStats .st-plat-slot .badge { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+#mtabStats .st-plat-accts { color: #52525b; font-size: 11.5px; }
+#mtabStats .st-plat-credits,
+#mtabStats .st-plat-in,
+#mtabStats .st-plat-out,
+#mtabStats .st-plat-tokens,
+#mtabStats .st-plat-exp { font-size: 11.5px; }
+#mtabStats .st-plat-credits { color: var(--text); font-size: 12px; font-weight: 600; }
+#mtabStats .st-plat-in { color: var(--ok); }
+#mtabStats .st-plat-out { color: var(--warn); }
+#mtabStats .st-plat-tokens { color: #52525b; }
+#mtabStats .st-plat-exp { color: #52525b; }
+#mtabStats .st-plat-exp.st-risk { color: var(--danger); font-weight: 600; }
+/* 零值置灰（放各列配色之后，靠后覆盖） */
+#mtabStats .st-plat-zero { color: #c8ccd4; font-weight: 400; }
+#mtabStats .st-plat-row.st-plat-sum-row {
+  border-bottom: none;
+  border-top: 1px solid rgba(23, 23, 23, 0.08);
+  font-weight: 600;
+}
+#mtabStats .st-plat-row.st-plat-sum-row .st-plat-slot { color: #52525b; }
+
+/* Token 多天行（标题右侧，虚线分隔，数值蓝色等宽） */
+#mtabStats .st-token {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 2px 0;
+  margin-left: 14px;
+  padding-left: 12px;
+  border-left: 1px dashed var(--border);
+  min-width: 0;
+  font-size: 10.5px;
+  font-weight: 400;
+  color: var(--muted);
+  line-height: 1.5;
+}
+#mtabStats .st-token > .st-tk-item { white-space: nowrap; }
+#mtabStats .st-token > .st-tk-item::after { content: "·"; color: var(--border); margin: 0 6px; }
+#mtabStats .st-token > .st-tk-item:last-child::after { content: ""; margin: 0; }
+#mtabStats .st-token .st-tk-val { color: var(--primary); font-size: 11px; }
+
+/* 运行日志容器（4 行高度，自动吸底） */
+#mtabStats .st-logbox {
+  margin-top: 8px;
+  height: 88px;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  background: #f7f8fa;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 9px;
+  font-size: 11px;
+  line-height: 1.5;
+  user-select: text;
+  cursor: text;
+}
+#mtabStats .st-logline { margin-bottom: 2px; word-break: break-all; }
+#mtabStats .st-log-time { color: #a1a1aa; margin-right: 6px; }
+#mtabStats .st-log-info { color: var(--text); }
+#mtabStats .st-log-warn { color: var(--warn); }
+#mtabStats .st-log-err { color: var(--danger); }
+
+/* 列表/表格通用 */
+#mtabStats .st-scroll { max-height: 260px; overflow: auto; scrollbar-gutter: stable; }
+/* 请求日志/模型消耗限高：表头 + 4 行 */
+#mtabStats .st-scroll-4 { max-height: 141px; }
+/* 最近临期限高（与 st-scroll-4 同视觉预算） */
+#mtabStats .st-ex-scroll { max-height: 143px; }
+#mtabStats table.st-table { width: 100%; border-collapse: collapse; font-size: 12px; white-space: nowrap; }
+#mtabStats table.st-table th,
+#mtabStats table.st-table td { padding: 4px 8px; text-align: left; border-bottom: 1px solid rgba(23, 23, 23, 0.08); }
+#mtabStats table.st-table th { color: #a1a1aa; font-weight: 500; position: sticky; top: 0; background: var(--card); }
+#mtabStats table.st-table tr:hover td { background: #f7f8fa; }
+#mtabStats .st-mono { font-size: 11.5px; }
+#mtabStats .st-empty { color: #a1a1aa; text-align: center; padding: 10px 0; }
+#mtabStats .st-bad { color: var(--danger); font-weight: 600; }
+
+/* 模型消耗表：table-layout:fixed 防内容撑列；模型列定宽、末列弹性左对齐 */
+#mtabStats table.st-models { table-layout: fixed; }
+#mtabStats table.st-models th:nth-child(1) { width: 36px; }
+#mtabStats table.st-models th:nth-child(2) { width: 240px; }
+#mtabStats table.st-models th:nth-child(3) { width: 60px; }
+#mtabStats table.st-models th:nth-child(4) { width: 92px; }
+#mtabStats table.st-models th:nth-child(5) { width: 84px; }
+#mtabStats table.st-models th,
+#mtabStats table.st-models td { border-right: 1px solid rgba(23, 23, 23, 0.06); }
+#mtabStats table.st-models tr > *:last-child { border-right: none; }
+#mtabStats .st-idx { color: #a1a1aa; font-size: 11.5px; }
+#mtabStats table.st-models td:nth-child(2) { overflow: hidden; text-overflow: ellipsis; }
+#mtabStats table.st-models th:nth-child(n+3):not(:last-child),
+#mtabStats table.st-models td:nth-child(n+3):not(:last-child) { text-align: right; }
+#mtabStats table.st-models th:last-child,
+#mtabStats table.st-models td:last-child { text-align: left; }
+
+/* 最近临期（块级单元格 + 满高右边框竖线，末列弹性左对齐） */
+#mtabStats .st-ex-row {
+  display: grid;
+  grid-template-columns: 30px 110px 168px 88px 84px 1fr;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: nowrap;
+  border-bottom: 1px solid rgba(23, 23, 23, 0.08);
+}
+#mtabStats .st-ex-row > span {
+  min-width: 0;
+  padding: 5px 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-right: 1px solid rgba(23, 23, 23, 0.06);
+}
+#mtabStats .st-ex-row > span:last-child { border-right: none; }
+#mtabStats .st-ex-tag { color: #a1a1aa; font-size: 11.5px; }
+#mtabStats .st-ex-row.st-ex-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--card);
+  color: #a1a1aa;
+  font-weight: 500;
+  font-size: 11.5px;
+}
+#mtabStats .st-ex-row.st-ex-head > span { padding: 4px 10px; }
+#mtabStats .st-ex-name { overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
+#mtabStats .st-ex-plat-slot { overflow: hidden; }
+#mtabStats .st-ex-date { color: #52525b; font-size: 11.5px; }
+#mtabStats .st-ex-days { color: #52525b; }
+#mtabStats .st-ex-amt { color: #52525b; overflow: hidden; text-overflow: ellipsis; }
+#mtabStats .st-ex-row.st-risk { color: var(--danger); font-weight: 600; }
+#mtabStats .st-ex-row.st-risk .st-ex-tag,
+#mtabStats .st-ex-row.st-risk .st-ex-days,
+#mtabStats .st-ex-row.st-risk .st-ex-date,
+#mtabStats .st-ex-row.st-risk .st-ex-amt { color: var(--danger); }
+
+/* 使用中 / 接棒顺序 */
+#mtabStats .st-rot-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  padding: 4px 2px;
+  font-size: 12px;
+  border-bottom: 1px solid rgba(23, 23, 23, 0.06);
+  white-space: nowrap;
+}
+#mtabStats .st-rot-cur { color: #52525b; }
+#mtabStats .st-rot-cur b { color: var(--text); }
+#mtabStats .st-rot-none { color: #a1a1aa; }
+#mtabStats .st-rot-nexts { color: #a1a1aa; }
+#mtabStats .st-rot-next { margin-right: 6px; }
+
+/* 异常账号（无异常时整块隐藏；填充后 JS 补挂 st-block 卡片样式） */
+#mtabStats .st-ab-sums { margin-left: auto; display: inline-flex; gap: 6px; }
+#mtabStats .st-ab-sum {
+  padding: 1px 8px;
+  border-radius: 9px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.6;
+  border: 1px solid transparent;
+}
+#mtabStats .st-ab-scroll { max-height: 156px; overflow-y: auto; }
+#mtabStats .st-ab-row {
+  display: grid;
+  grid-template-columns: 30px 76px 110px 150px 1fr 96px 84px;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: nowrap;
+  border-bottom: 1px solid rgba(23, 23, 23, 0.08);
+}
+#mtabStats .st-ab-row > span {
+  min-width: 0;
+  padding: 5px 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-right: 1px solid rgba(23, 23, 23, 0.06);
+}
+#mtabStats .st-ab-row > span:last-child { border-right: none; }
+#mtabStats .st-ab-row.st-ab-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--card);
+  color: #a1a1aa;
+  font-weight: 500;
+  font-size: 11.5px;
+}
+#mtabStats .st-ab-row.st-ab-head > span { padding: 4px 10px; color: #a1a1aa; }
+#mtabStats .st-ab-tag {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 9px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.6;
+  border: 1px solid transparent;
+}
+#mtabStats .st-ab-idx { color: #a1a1aa; font-size: 11.5px; text-align: center; }
+#mtabStats .st-ab-name { font-weight: 500; }
+#mtabStats .st-ab-plat-slot { overflow: hidden; }
+#mtabStats .st-ab-reason { color: #52525b; }
+#mtabStats .st-ab-until { color: #52525b; font-size: 11.5px; }
+#mtabStats .st-ab-credit { color: #52525b; font-size: 11.5px; }
+/* 三级配色：停用=红（需人工）· 整号冷却=橙 · 错误累计=灰黄（预警） */
+#mtabStats .st-ab-disabled .st-ab-tag { color: #b91c1c; background: #fee2e2; border-color: #fecaca; }
+#mtabStats .st-ab-disabled .st-ab-tag-slot { border-right-color: rgba(185, 28, 28, 0.18); }
+#mtabStats .st-ab-sum.st-ab-disabled { color: #b91c1c; background: #fee2e2; border-color: #fecaca; }
+#mtabStats .st-ab-cool .st-ab-tag { color: #c2410c; background: #ffedd5; border-color: #fed7aa; }
+#mtabStats .st-ab-cool .st-ab-tag-slot { border-right-color: rgba(194, 65, 12, 0.18); }
+#mtabStats .st-ab-sum.st-ab-cool { color: #c2410c; background: #ffedd5; border-color: #fed7aa; }
+#mtabStats .st-ab-err .st-ab-tag { color: #a16207; background: #fef9c3; border-color: #fde68a; }
+#mtabStats .st-ab-err .st-ab-tag-slot { border-right-color: rgba(161, 98, 7, 0.18); }
+#mtabStats .st-ab-sum.st-ab-err { color: #a16207; background: #fef9c3; border-color: #fde68a; }
+
+@media (max-width: 640px) {
+  #mtabStats .st-plat-row { grid-template-columns: 24px 96px 40px 76px 60px 60px 84px 64px 64px 1fr; font-size: 11px; }
+  #mtabStats .st-ex-row { grid-template-columns: 24px 88px 120px 76px 68px 1fr; font-size: 11px; }
+  #mtabStats .st-ab-row { grid-template-columns: 24px 64px 88px 110px 1fr 76px 64px; font-size: 11px; }
 }

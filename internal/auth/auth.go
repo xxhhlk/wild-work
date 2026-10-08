@@ -451,7 +451,7 @@ func LoadMonkeyCodeDir(dir string) ([]*Auth, error) {
 	return loadPrefixed(dir, "monkeycode")
 }
 
-// LoadRaccoonDir 扫描商汤小浣熊凭证（raccoon-*.json）。
+// LoadRaccoonDir 扫描小浣熊凭证（raccoon-*.json）。
 //
 // 前缀不与 LoadQoderDir 的 `qoder*.json` 冲突（后者要求以 qoder 开头）。
 // 凭据不来自本工具的登录编排，而是由面板「从本机客户端导入」生成（见 app.ImportLocalCredentials）。
