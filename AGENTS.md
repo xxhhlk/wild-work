@@ -225,7 +225,7 @@ POST /api/quit                     # 退出程序
 > SSE 为**增量 delta**（`finish` 帧给全文，见 R25）。登录走 CDP 自动捕获 Cookie（R27/R28），
 > 支持多账号（独立 profile 逐个添加）。详见 `docs/智谱清言渠道接入备忘.md`。
 
-### 5.1 思考档位有效性对照表（2026-09-25）
+### 5.1 思考档位有效性对照表（2026-09-25；2026-10-10 补 traecode 换模型复测）
 
 「面板声明档位」= `reasoning.ListingForKind` 是否对该渠道放行（决定 `/v1/models` 与费率表是否显示档位选择器）；
 「实测是否生效」= 有**权威指标**（`reasoning_tokens`，而非思考字符数/块数）的实测证据。
@@ -241,7 +241,7 @@ POST /api/quit                     # 退出程序
 | raccoon | ❌ **不声明** | **主动剥离** `reasoning_effort` | ✅ **剥离即最深**（反向生效） | 无字段 rtok 2300+ vs `high` 142（~90% 降幅） |
 | qwenwork | ❌ | **不投影** | N/A（刻意不做，非缺口） | 官方客户端本身无思考控制 UI，抓包确认请求体不带该字段 |
 | traework | ❌ | 不投影 | ❌ **不生效**（结论不变，理由已更正）：字段**被 schema 接受但不改变思考量**；旧口径「未被反序列化」只对辅助端点 `llm_utils_chat` 成立 | 本地 docs/TraeWork-api.md §4.1–§4.5 |
-| traecode | ❌ | 同上 | ❌ 同上；客户端主链路（native RPC）实测亦不改变工作量（生成空档 p=0.700） | 同上 |
+| traecode | ❌ | 同上 | ❌ 同上；客户端主链路（native RPC）实测亦不改变工作量（生成空档 p=0.700）；**2026-10-10 换 4 个模型复测**（`deepseek-v4.1-flash` / `glm-5.3` / `Doubao-Seed-2.1-Pro` / `glm-5.2`，覆盖不同 ladder，n=6 交替）**仍无分离**（p 0.300~1.000） | 同上；§4.7 |
 | monkeycode | ❌ **不声明** | anthropic 面 `thinking.type`（两态）／responses 面 `reasoning.effort` | ⚠️ **按模型分型**：客户端按内置能力目录决定——`binary` 型 anthropic 面只开/关；`effort` 型（anthropic 面仅 kimi-k2.6）走 `adaptive` + `output_config.effort`（wild-work 目前会丢该档位）；responses 面 `none`/`low`/`high` 有效 | 评估文档 §3.13 |
 | oczen | ❌ | 不投影 | N/A | — |
 
