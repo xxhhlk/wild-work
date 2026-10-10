@@ -78,8 +78,14 @@ type accountSection struct {
 
 // ImportLocalCredentials 从本机已安装的官方客户端导入指定渠道凭据。
 //
-// 路径探测本身跨平台，但仅在 Windows 上验证过；其他平台不设平台门禁，
-// 按尽力而为处理（找不到客户端凭据时返回明确错误），由有对应设备的社区贡献者验证。
+// 跨平台口径（issue #75）：不在此处做整体 Windows 门禁——三个导入渠道的
+// 路径探测各自尽力而为、找不到客户端凭据时返回明确错误。
+//  - Raccoon 用 os.UserHomeDir() + BOX_AGENT_CONFIG_DIR，天然跨平台
+//    （macOS/Linux 同样有官方客户端）；
+//  - Loomy / MonkeyCode 的路径候选以 POSIX/Win 通用环境变量为主，
+//    客户端配置落在标准目录即可命中，非 Windows 上找不到时给出明确报错。
+//  注：真正仅 Windows 的是「浏览器授权登录」（raccoon 依赖 HKCU 的
+//  office-raccoon:// 协议注册，见 protocol_windows.go）。
 func (a *App) ImportLocalCredentials(channel string) (*ImportLocalResult, error) {
 	switch provider.Kind(strings.TrimSpace(channel)) {
 	case provider.Raccoon:

@@ -106,6 +106,7 @@ async function loadState() {
 async function loadFees() {
   try {
     const fees = await api("/api/fees");
+    lastFees = fees; // 供模型查找面板取全渠道模型（纯前端，不改后端）
     renderFees(fees);
   } catch (e) { /* 费率接口失败不阻塞 */ }
 }
@@ -115,11 +116,73 @@ async function refreshFees() {
   try {
     await api("/api/fees/refresh", {});
     const fees = await api("/api/fees");
+    lastFees = fees;
     renderFees(fees);
     toast("模型列表和费率已刷新");
   } catch (e) { toast(e.message); } finally {
     $("btnRefreshFees").disabled = false;
   }
+}
+
+// ---------- 模型查找（纯前端：从最近一次 /api/fees 结果里按关键字过滤） ----------
+// lastFees 最近一次费率接口响应（loadFees/refreshFees 填充）；查找面板读它取全渠道模型。
+let lastFees = null;
+const MODEL_SEARCH_MAX = 12; // 结果上限：超出只提示、不纵向滚动，保证对话框固定高度
+
+// collectAllModels 展平全渠道模型，附带裸名/完整 ID（完整 ID = 渠道/模型，即客户端该填的名字）。
+function collectAllModels() {
+  const out = [];
+  for (const ch of (lastFees && lastFees.channels) || []) {
+    for (const m of ch.models || []) {
+      const raw = m.model;
+      const short = raw.includes("/") ? raw.slice(raw.indexOf("/") + 1) : raw;
+      const full = raw.includes("/") ? raw : (ch.channel ? `${ch.channel}/${raw}` : raw);
+      out.push({ ch: ch.channel, m, short, full });
+    }
+  }
+  return out;
+}
+
+function openModelSearch() {
+  $("modelSearchOverlay").classList.remove("hidden");
+  const inp = $("modelSearchInput");
+  inp.value = "";
+  renderModelSearch("");
+  inp.focus();
+}
+function closeModelSearch() { $("modelSearchOverlay").classList.add("hidden"); }
+
+// renderModelSearch 按关键字过滤全渠道模型并渲染（固定高度、限量、超出提示）。
+// 关键字匹配完整 ID 或裸名（大小写不敏感）——两处都包含渠道名，故搜渠道亦可。
+function renderModelSearch(q) {
+  const kw = String(q || "").trim().toLowerCase();
+  const all = collectAllModels();
+  const hit = kw ? all.filter((x) => x.full.toLowerCase().includes(kw) || x.short.toLowerCase().includes(kw)) : all;
+  const shown = hit.slice(0, MODEL_SEARCH_MAX);
+  const box = $("modelSearchList");
+  if (!shown.length) {
+    box.innerHTML = `<div class="ms-empty">${all.length ? "无匹配模型" : "费率数据尚未加载，请点「刷新」后再试"}</div>`;
+  } else {
+    box.innerHTML = shown.map(({ ch, m, short, full }) => {
+      const caps = [m.supports_images ? "👁" : "", m.supports_reasoning ? "🧠" : ""].join("");
+      const ctx = (m.has_context && m.context_window) ? `(${fmtTokens(m.context_window)})` : "";
+      const rate = m.free ? "Free" : (m.priced ? `x${m.rate.toFixed(2)}` : "unknown");
+      return `<div class="ms-row" data-mid="${esc(full)}" role="button" tabindex="0" title="点击复制完整模型 ID：${esc(full)}">`
+        + `<span class="badge ${chClass(ch)}">${esc(chLabel(ch))}</span>`
+        + `<span class="ms-name">${esc(short)}</span>`
+        + `<span class="ms-tags">${ctx}${caps}</span>`
+        + `<span class="ms-rate">${esc(rate)}</span>`
+        + `</div>`;
+    }).join("");
+  }
+  // 底部提示：命中数 / 未显示数（结果超上限时明确告知，用户可细化关键字）。
+  const hidden = hit.length - shown.length;
+  $("modelSearchFoot").textContent = !all.length ? ""
+    : (hit.length === 0 ? "无匹配"
+      : (hidden > 0
+        ? (kw ? `命中 ${hit.length} 个，仅显示前 ${shown.length} 个，还有 ${hidden} 个未显示，请细化关键字`
+              : `共 ${hit.length} 个模型，仅显示前 ${shown.length} 个，输入关键字可缩小范围`)
+        : `共 ${hit.length} 个匹配`));
 }
 
 // ---------- 积分明细 tooltip ----------
@@ -144,6 +207,9 @@ async function showCreditDetail(e, uid) {
   if (!d) {
     try {
       d = await api("/api/account/resource_detail", { uid });
+      // 竞态守卫：等待接口期间鼠标已移开（hideCreditDetail 已排定关闭且未被
+      // tip hover/翻页取消）→ 不再弹出，避免 tooltip 残留在页面上。
+      if (detailTimer !== null) return;
       detailCache[uid] = d;
     } catch (err) { return; }
   }
@@ -177,7 +243,19 @@ function renderCreditDetail() {
   const d = detailCache[detailState.uid];
   if (!d || !d.items || !d.items.length) return;
 
-  const items = d.items;
+  const items = d.items.slice();
+  // 临期判定与后端 ExpiringWithin 同口径：北京时间墙钟 now + 阈值天数，到期日当天零点前即临期。
+  const expDays = state.expiring_days || 1;
+  const bjNow = Date.now() + new Date().getTimezoneOffset() * 60000 + 8 * 3600 * 1000;
+  const expDeadline = bjNow + expDays * 24 * 3600 * 1000;
+  // 排序：临期（可消耗、有剩余、窗口内到期）→ 可用 → 已用完/不可用/仅展示垫底；组内按到期日升序。
+  const expUtcOf = (it) => {
+    if (!it.expire_at) return Infinity;
+    const [ey, em, ed] = it.expire_at.split("-").map(Number);
+    return ey && em && ed ? Date.UTC(ey, em - 1, ed) : Infinity;
+  };
+  const groupOf = (it) => (it.usable && it.remain > 0) ? (expUtcOf(it) < expDeadline ? 0 : 1) : 2;
+  items.sort((a, b) => groupOf(a) - groupOf(b) || expUtcOf(a) - expUtcOf(b));
   const pages = Math.max(1, Math.ceil(items.length / DETAIL_PAGE_SIZE));
   const page = Math.min(Math.max(0, detailState.page), pages - 1);
   detailState.page = page;
@@ -203,7 +281,7 @@ function renderCreditDetail() {
   html += `</tr></thead><tbody>`;
   for (const it of slice) {
     // 不可用额度整行淡显 + 角标，与可用额度区分开（如 TraeWork 的官方客户端专用池）。
-    const cls = it.usable ? "" : ' class="detail-unusable"';
+    let cls = it.usable ? "" : ' class="detail-unusable"';
     let tag = "";
     if (!it.usable) {
       tag = '<span class="detail-tag" title="该额度仅供官方客户端使用，本工具无法消耗">不可用</span>';
@@ -211,8 +289,26 @@ function renderCreditDetail() {
       // 单位与积分不同（如 MonkeyCode 的每日 Token 额度）：展示但不计入合计。
       tag = '<span class="detail-tag" title="单位与积分不同，仅作展示，不计入合计">仅展示</span>';
     }
+    // 临期条目（可消耗且有剩余、窗口内到期，与后端 ExpiringWithin 余额口径一致）：
+    // 整行淡红底 + 到期日红字 + 临期红章；已用完（remain=0）不标临期，避免与汇总口径打架。
+    let expCell = "-", expCellCls = "";
+    if (it.usable && it.remain > 0 && it.expire_at) {
+      const [ey, em, ed] = it.expire_at.split("-").map(Number);
+      if (ey && em && ed) {
+        const expUtc = Date.UTC(ey, em - 1, ed) - 8 * 3600 * 1000;
+        if (expUtc < expDeadline) {
+          expCell = `${esc(it.expire_at)}<span class="detail-exp-tag" title="${expDays} 天内到期，优先消耗">临期</span>`;
+          expCellCls = ' class="detail-exp"';
+          cls = ' class="detail-exp-row"';
+        } else {
+          expCell = esc(it.expire_at);
+        }
+      } else {
+        expCell = esc(it.expire_at);
+      }
+    }
     html += `<tr${cls}><td>${esc(it.name)}${tag}</td><td>${it.total}</td><td>${it.used}</td><td>${it.remain}</td>`;
-    if (hasExpiry) html += `<td>${it.expire_at ? esc(it.expire_at) : "-"}</td>`;
+    if (hasExpiry) html += `<td${expCellCls}>${expCell}</td>`;
     html += `</tr>`;
   }
   html += `</tbody></table>`;
@@ -316,11 +412,11 @@ const noExplicitCheckin = (g) => NO_EXPLICIT_CHECKIN.has(g);
 // 导入型渠道：凭据由本机已登录的官方客户端提供，没有浏览器登录流程（见 internal/app/import_local.go）。
 const IMPORT_LOCAL_CHANNELS = new Set(["raccoon", "loomy", "monkeycode"]);
 const isImportLocal = (ch) => IMPORT_LOCAL_CHANNELS.has(ch);
-// 支持「浏览器授权登录」的渠道：登录期间临时把该渠道的自定义协议回调指向本工具，
-// 以便接住授权码并完成 token 兑换。
-// 小浣熊两个集合都命中 —— 弹窗里同时给「浏览器授权登录」与「从客户端导入」两个动作。
-const PROTOCOL_LOGIN_CHANNELS = new Set(["raccoon"]);
-const hasProtocolLogin = (ch) => PROTOCOL_LOGIN_CHANNELS.has(ch);
+// 支持「网页版自动登录」的渠道：后端拉起独立 profile 的浏览器，用户在网页里登录，
+// 后端经 CDP 捕获凭据（小浣熊：Cookie 里的 raccoon_refresh_token）。
+// 小浣熊两个集合都命中 —— 弹窗里同时给「网页版登录」与「从客户端导入」两个动作。
+const WEB_LOGIN_CHANNELS = new Set(["raccoon"]);
+const hasWebLogin = (ch) => WEB_LOGIN_CHANNELS.has(ch);
 // 无手动签到渠道的状态文案：国际版是「自动领日活奖励」，千问办公为「无签到」。
 const NO_CHECKIN_TAG = { workbuddyai: "自动领日活奖励", oczen: "不支持" };
 const noCheckinText = (g) => NO_CHECKIN_TAG[g] || "无签到";
@@ -757,7 +853,7 @@ let pendingAction = "login";
 const NO_CHECKIN_LOGIN_HINT = {
   workbuddyai: "（无需手动签到，定时自动对话保活并领取日活奖励）",
   qwenwork: "（每日积分服务端 00:00 自动发放；若浏览器已登录千问办公则全自动完成，否则需扫码一次）",
-  raccoon: "（凭据来自本机已登录的小浣熊客户端；access_token 约 2 小时，本工具会自动续期）",
+  raccoon: "（支持「网页版登录」与「从客户端导入」两种方式；access_token 约 1 小时，本工具会自动续期，上游刷新时会轮换 refresh_token）",
   loomy: "（凭据来自本机已登录的 Loomy 客户端；上游无续期接口，约 14 天后需重新登录并再次导入）",
   monkeycode: "（凭据来自本机已登录的 MonkeyCode 客户端；上游无续期接口，客户端重新登录后需再次导入）",
   glm: "（登录后请按下方指引复制 refresh_token 粘贴回来）",
@@ -771,12 +867,20 @@ function promptLogin(channel) {
   altBtn.classList.add("hidden");
   altBtn.onclick = null;
 
-  // 浏览器授权登录渠道：主按钮走浏览器授权 + 协议回调接管，次按钮回退到本机客户端导入。
-  if (hasProtocolLogin(channel)) {
+  // 网页版登录渠道：主按钮走「拉起浏览器 + 自动捕获凭据」，次按钮回退到本机客户端导入。
+  if (hasWebLogin(channel)) {
     pendingAction = "login";
     $("lcTitle").textContent = "添加 " + name + " 账号";
-    $("lcMsg").textContent = `点击「登录${name}」将打开浏览器授权页，登录完成后本工具会自动接管回调并保存账号。`
-      + `登录期间会把 ${name} 的协议注册临时指向本工具（结束即恢复），请勿在此期间启动${name}客户端，否则协议注册会被它覆盖。`
+    $("lcMsg").innerHTML = `点击「登录${name}」会打开一个<b>独立的浏览器窗口</b>（不影响你日常浏览器的登录态），`
+      + `请在其中正常登录（扫码 / 手机号 / 微信均可），登录完成后本工具会自动捕获凭据并保存账号。`
+      + `<div class="glm-warn" style="margin-top:10px">`
+      + `<div class="glm-warn-title">⚠️ 关于登录态互踢</div>`
+      + `本工具会用捕获到的凭据<b>自动续期</b>（上游刷新时会轮换 refresh_token）。`
+      + `若你把这个账号的凭据<b>同时</b>用在本工具和浏览器 / 官方客户端上，两边会争抢同一个 refresh_token，`
+      + `可能出现<b>其中一侧被挤下线</b>的情况（上游可能对同一账号限制单会话）。`
+      + `想两边同时用，请在本工具里点「登录${name}」<b>单独登录一次</b>（本流程新建独立会话），`
+      + `而不是从浏览器复制凭据粘进来。`
+      + `</div>`
       + `也可以改用「从客户端导入」：直接读取本机已登录客户端的凭据。`;
     $("btnLoginConfirm").textContent = "登录" + name;
     altBtn.textContent = "从客户端导入";
@@ -831,12 +935,17 @@ async function startLogin(channel) {
     const url = r.auth_url;
     if (!url) { toast("无法获取登录链接"); return; }
     $("loginTitle").textContent = `添加 ${chLabel(channel)} 账号`;
-    $("loginMsg").textContent = hasProtocolLogin(channel)
-      ? `请在浏览器新窗口中完成${chLabel(channel)}登录；完成后本工具会自动接管回调并保存账号（期间请勿启动${chLabel(channel)}客户端）。`
-      : "请在浏览器新窗口中完成登录…";
+    // 网页版登录：浏览器已由后端拉起（独立 profile），这里只需提示，不能再 window.open
+    // （否则会在用户日常浏览器里再开一个标签页，且那个标签页没有调试端口、捕获不到）。
+    if (hasWebLogin(channel)) {
+      $("loginMsg").textContent = `已为你打开一个独立的浏览器窗口，请在其中完成${chLabel(channel)}登录；`
+        + `登录完成后无需任何操作，本工具会自动捕获凭据并添加账号。`;
+    } else {
+      $("loginMsg").textContent = "请在浏览器新窗口中完成登录…";
+      window.open(url, "_blank", "noopener,noreferrer");
+    }
     $("loginOverlay").classList.remove("hidden");
     $("btnCopyUrl").dataset.url = url;
-    window.open(url, "_blank", "noopener,noreferrer");
     startLoginPoll();
   } catch (e) {
     toast(e.message);
@@ -1373,6 +1482,20 @@ function bind() {
   $("btnCopyUrl").onclick = copyUrl;
   $("btnCancelLogin").onclick = cancelLogin;
   $("btnRefreshFees").onclick = refreshFees;
+  // 模型查找面板（纯前端）：入口按钮 + 关闭 + 输入即过滤 + 结果点击复制完整 ID。
+  $("btnModelSearch").onclick = openModelSearch;
+  $("modelSearchOverlay").onclick = (e) => { if (e.target === $("modelSearchOverlay")) closeModelSearch(); };
+  $("modelSearchInput").oninput = (e) => renderModelSearch(e.target.value);
+  $("modelSearchInput").onkeydown = (e) => { if (e.key === "Escape") closeModelSearch(); };
+  $("modelSearchList").onclick = (e) => {
+    const row = e.target.closest(".ms-row");
+    if (row) copyText(row.dataset.mid, "模型 ID");
+  };
+  $("modelSearchList").onkeydown = (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    const row = e.target.closest(".ms-row");
+    if (row) { e.preventDefault(); copyText(row.dataset.mid, "模型 ID"); }
+  };
   $("chkAutostart").onchange = toggleAutostart;
   $("btnAdminLogout").onclick = () => logout();
   $("btnClearAdminPass").onclick = clearAdminPassword;

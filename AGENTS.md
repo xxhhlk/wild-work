@@ -75,6 +75,7 @@ Wild-Work 是 WorkBuddy（国内版+国际版）/TraeWork/Qoder 多渠道账号�
 | R46 | **Qoder 请求体与请求头按桌面版「实测抓包」逐字段对齐**（不再只参考 SDK 源码）。body：补顶层 `system` 数组（从 system 消息抽文本块，与 `messages[0]` 同构）、`task_id:"common"`、`source:1`、`version:"3"`、`is_retry:false`、`session_type:"app"`、`aliyun_user_type:""`、完整 `model_config`（`key/display_name/model/format/is_vl/is_reasoning/api_key/url/source/max_input_tokens`）、`business` 富对象（`product/version/type/id(=request_set_id)/name/begin_at/stage`）、`tools` 恒为数组、`chat_context.text` 与 `extra.originalContent` 为**字符串**；`parameters` **恒下发**且含 `max_tokens`（目录 `max_output_tokens`，实测目录无此字段 → 常量 32000）与 `context_length`（`context_config` 中标 `is_default` 的档，未知则不下发）。headers：`cosy-clienttype: 10`、`cosy-data-policy: disagree`、`cosy-version: 1.1.57`（签名 payload `cosyVersion` 必须同改）、补 `cosy-business-product/-type/-scene`、`cosy-machineos: x86_64_win32`、`cosy-machinehostname`、`accept-language`，去掉桌面端没有的 `cosy-clientip` | 依据 `_spy/http-bodies/*.json`（7 个真实请求体）+ `_spy/qoder-real-request.json`（27 个真实请求头）。**对齐后 legacy `agent_chat_generation` 立刻开始下发可见思考链**：探针 `reasoning_content` 1876（medium）/26145（xhigh）字，生产链路端到端 36845 字，`usage.completion_tokens_details.reasoning_tokens` 1435–11913 —— 这是「思考强度终于可见」的关键修复。回归护栏：`TestLiveProbeProductionPath`（走 `ChatStream` 全链路）。**唯一刻意保留的差异**：`accept-encoding` 固定 `identity`（桌面端是 `br,gzip,deflate`；Go 手动设置该头后不会自动解压，brotli 需额外依赖）。**版本同步要求**：`clientVersion` 同时出现在请求头与 `business.version`，改动必须成对 |
 | R47 | **冷却与粘性都必须按 (账号, 模型) 粒度**：`pool` 冷却分两层 —— `until` 账号级（token/session/余额/风控等与模型无关），`modelUntil` 模型级（`CooldownModel`）；`Pick(model)` / `PickExcluding(tried, model)` 同时排除在该模型上冷却的账号，`stickyKey(kind, model)` 按模型独立粘性。**粒度判定**：429 软限流按 `provider.IsModelScopedSoftRate(body)` 分流 —— body 含 `switch to the other models`（WorkBuddy 系 6004 频率限流原文）→ 模型级；否则保守走账号级（账号级最坏多冷却一个号，有号可轮换；误判成模型级会让同账号 N 个模型各白撞一次）。`ErrModelBlocked`（11102）改为兑现注释承诺的 (账号,模型) 负缓存。**必须保持账号级的**：`ErrHardCredit`（429+14018 / 402 —— 误按模型级会让 N 个模型各撞一次长硬冷却）、`ErrWafBlock` / `ErrAccountFault`、refresh 失败、5xx 计错。state 升 **v4**（新增 `model_until`）；因余额口径未变，`creditsStale` 判据改用 `creditsLayoutVersion`(=3)，v3 文件读入不再置 stale。`Status.ModelCooling` 单独暴露模型级冷却，且不写账号级 `reason`（合并展示会让人误以为整个账号被限流）。`ClearPenalty` / `ReenableIfCredits` 一并清 `modelUntil`。**面板链路要单独过一层**：`app.AccountView` 是与 `pool.Status` 平行的独立视图结构，`pool.Status` 新增字段必须同步映射过去 —— 漏了不编译报错、单测也照绿，只表现为前端标签永不显示（2026-09-28 第二实例注入实测抓到） | **2026-09-28 生产日志实证**：A 账号的 `deepseek-v4.1-flash` 自 02:57 撞 6004 起被限流，而同一账号的 `gpt-5.6-luna`（倍率 0.14）在 21:07 仍能成功；上游 6004 原文即 `alternatively, you can switch to the other models to continue using it`（当月 48 次）——「限流按模型独立」是上游自己声明的。此前账号级冷却导致日志出现 13 次「选中 A → 1 秒后 429 → 换 B」，A 每次轮换只得到 1 次请求机会。回归测试：`internal/server/handler_model_cooling_test.go`（4 例）+ `internal/pool/pool_test.go`（8 例）+ `internal/provider/provider_test.go`（判定表）+ `internal/app/account_model_cooling_test.go`（视图映射 / omitempty） |
 
+| R48 | **小浣熊登录改用「网页版 CDP 捕获」，废弃桌面协议回调**（2026-10-10，移植自上游 R44） | **背景**：原「浏览器授权登录」靠改写 HKCU 的 `office-raccoon://` 协议注册接住深链授权码，仅 Windows 可用、要求本机装官方客户端、且与客户端抢协议。**实测**：网页版登录成功后前端 JS 把凭据写进 Cookie `raccoon_refresh_token`（域 `.xiaohuanxiong.com`），与桌面端同一套（JWT 无平台声明）。**修法**：`internal/login_raccoon` 改为网页版流程（`web.go`）——拉起**独立 profile** 的 Edge/Chrome（复用 `internal/cdp`）打开 `office.xiaohuanxiong.com/home?loginModal=true` → CDP 轮询 Cookie → **判据是 JWT `owner_type==users`**（访客也下发 Cookie，见 R28 同款教训）→ 调 `/api/web/auth/v1/refresh` 换取并落盘凭据。**跨平台**（纯 HTTP + 系统浏览器，不再依赖注册表）；桌面协议登录代码（`protocol*.go`、`--raccoon-callback` 入口）**保留但不再调用**，仅作旧版注册表残留的启动自愈（`healRaccoonProtocol`）。**「从客户端导入」路径保留**。**已知限制（面板弹窗已告知）**：上游 refresh 轮换 refresh_token，同账号凭据共用（本工具 + 浏览器/客户端）会互踢。回归测试 `internal/app/raccoon_weblogin_test.go` |
 ## 2. 架构选型（依据）
 
 | 主题 | 选型 | 理由 |
@@ -180,27 +181,26 @@ POST /api/quit                     # 退出程序
 > 被 `scheduler.New` 补成默认 9:00/21:00，每天两次必然失败的签到调用与失败日志）。
 > QoderCN / QoderCOM 已实现签到（campaigns 主路径），保留手动按钮。
 > WorkBuddyAI 国际版：`DailyCheckin` 实现为「免费模型对话保活 + 签到探测」（对用户透明，无前端界面）；
-> token 有效期 365 天，故 KeepaliveHours 设为**显式空切片** `[]int{}`（传 nil 会被 `scheduler.New` 补成默认 22:00）。协议要点见 `internal/workbuddyai/constants.go` 包注释。
-> **商汤小浣熊（`raccoon/*`）**：官方托管网关 `https://xiaohuanxiong.com/api/web/llm/v2`（OpenAI 兼容，
-> 鉴权只认 `Authorization: Bearer <access_token>`）；凭据来自本机客户端
-> `%USERPROFILE%\.box-agent\config\auth.json`（明文 JSON，access ≈2h / refresh ≈30d，**refresh 会轮换：token 单次消费、会话可多份并存**）；
-> 积分：`GET /api/web/points/v1/balance`（**与推理网关不同前缀** —— 不在 `/api/web/llm/v2` 下，容易找漏）
-> → `available_points` + 四个池子（每日/奖励/充值/月度），`topup_frozen` 标记充值池冻结，
-> 由 `UserResourceDetail` 按池拆分并用 `ResourceItem.Usable` 表达冻结；费率取上游 `billing_multiplier`。
-> **思考**：不接档位且**主动剥离** `reasoning_effort` —— 实测上游默认档才是最深思考，
-> 下发任何档位（含 high）反而让思考量锐减约 90%（`internal/raccoon/client.go` 的
-> `forceUpstreamDeepThinking`）。详见 `本地 docs/raccoon渠道接入备忘.md` §13。
-> **流式**：走独立的 `StreamHTTP`（**无总超时**）+ `IdleReader` 空闲兜底 —— 本渠道思考最深、
-> 生成期最长，最易触发整请求总超时导致的流中断（见 §6 第 32 条）。
-> 详见 `本地 docs/raccoon渠道接入备忘.md`。
-> **Loomy（`loomy/*`）**：讯飞自有网关 `https://loomyad.xunfei.cn/api/v1`（OpenAI 兼容，SSE）；
-> 请求头必须带 `Authorization` + `token`（双写）+ **`traceparent`**（缺失会挂死到超时）+ `loomy-version`；
-> 凭据来自 `C:\Users\Public\Loomy\<sha256(用户)[:12]>\userData\auth-session.json`（session ≈14 天，**无 refresh 端点**）；
-> 档位来自上游 `/models` 的 `reasoning_efforts`（权威值，独占 `RealmLoomy` 面），
-> 客户端三档（low/medium/high，客户端 `loomy:thinking-level`）→ `reasoning_effort` + 三件套，
-> 投影时按该模型 ladder `reasoning.Caps.Clamp` 就近降级。
-> **流式**：同 raccoon，走独立的 `StreamHTTP`（**无总超时**）+ `IdleReader` 空闲兜底。
-> 详见 `本地 docs/loomy渠道接入备忘.md`。
+> token 有效期 365 天，故 KeepaliveHours 设为 nil。详见 `docs/workbuddy国际版渠道接入备忘.md`。
+> **MonkeyCode（`monkeycode/*`，平台托管模型）**：凭据由面板「从本机客户端导入」从官方客户端
+> （ohmyagent）的 settings.json 取得，一个账号 = `oma_` api_key + `omas_` signing_secret；
+> 按模型声明的 type 分流到 `{base}/messages`（Anthropic 形状）或 `{base}/responses`（Responses 形状），
+> 两路都是无状态 SSE；上游无目录/额度/刷新接口 → 模型表静态、额度恒 0、`RefreshToken` 空实现。
+> 协议对照参考：`codkeep/MonkeyCodeReverseEngineer`（Apache-2.0）。
+> **小浣熊（`raccoon/*`）**：两条添加路径 —— 面板登录按钮走**网页版自动登录**（拉起独立 profile 的
+> Edge/Chrome，登录后经 CDP 捕获 Cookie `raccoon_refresh_token`，见 internal/login_raccoon/web.go；
+> 跨平台，不再依赖 Windows 注册表，详见 R48），弹窗次按钮「从客户端导入」读本机
+> `.box-agent/config/auth.json`。凭据 access_token ≈1h + refresh_token ≈30d，保活每 4 小时一次
+> 以减少「请求先 401 再刷新」的往返；无签到端点。**注意互踢**：上游 refresh 轮换 refresh_token，
+> 同账号凭据共用（本工具 + 浏览器/客户端）会互踢，需各自单独登录（独立 `sid`）才能并存。
+> 上游默认档即最深思考，故不接档位面。
+> 接口结构整理：`xxhhlk/raccoon2api`（MIT）。
+> **Loomy（`loomy/*`）**：导入型渠道 —— 凭据由面板「从本机客户端导入」读
+> `C:\Users\Public\Loomy\<hash>\userData\auth-session.json`。上游**无 refresh 端点**，
+> session 约 14 天，到期需重新导入；故 `RefreshToken` 留空、定时任务全关（保活会被
+> 按「无 refresh token」跳过，但每天仍空跑一次并记失败）。鉴权失败是 **HTTP 200 +
+> 业务码 `100002`**（不是 401），业务码判定必须排在状态码判定之前。
+> 接口结构整理：`xxhhlk/loomy2api`（MIT）。
 > **OpenCodeZen（`oczen/*`，匿名免费）**：凭证固定字面量 `public`，无账号/无签到/无积分；
 > 免费档有三道闸门（规范 `ses_<12hex><14Base62>` 会话头 + `stream:true` 且 tools 含 `bash`/`read` +
 > OpenCode CLI 伪装头），缺一即 403 FreeTierError；面板固定一项「[OpenCodeZen] 匿名」、积分显示「不适用」，
@@ -533,12 +533,15 @@ python -c "b=open('dist/wild-work.exe','rb').read(); print('new:',b.count(b'2.3.
 ### 发版（tag 触发）
 
 push `v*` tag → GitHub Actions 构建五平台产物并创建正式 release。
-**release note 用仓库根目录的 `RELEASE-<tag>.md`（手写摘要，面向用户）**，
-而不是 `--generate-notes`（那只给 commit 链接列表）；文件缺失时回退自动生成，不阻塞发版。
+**release note 用仓库根目录的 `RELEASES.md`**（统一维护，按版本从旧到新排列——新版本说明
+**append 到文件末尾**；旧的分版本 `RELEASE-vX.Y.Z.md` 已并入该文件并删除）。
+release note 从 `RELEASES.md` 截取对应版本段落（`# wild-work vX.Y.Z` 起）作为手写摘要，
+而不是 `--generate-notes`（那只给 commit 链接列表）；文件/段落缺失时回退自动生成，不阻塞发版。
 
 ```bash
 # 发版前确认：版本常量已 bump（internal/app/app.go const Version）、
-# RELEASE-vX.Y.Z.md 已写好且与 tag 名一致、dist/wild-work.exe 已本地重建验证
+# RELEASES.md 末尾已追加对应版本段落（# wild-work vX.Y.Z）且与 tag 名一致、
+# dist/wild-work.exe 已本地重建验证
 git tag vX.Y.Z && git push origin vX.Y.Z
 ```
 

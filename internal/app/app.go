@@ -48,7 +48,7 @@ import (
 )
 
 // Version 版本号。
-const Version = "2.6.0"
+const Version = "2.6.3"
 
 const (
 	loginTimeout   = 5 * time.Minute
@@ -484,10 +484,10 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 	case provider.WorkBuddy, provider.WorkBuddyAI, provider.TraeWork, provider.Qoder, provider.QoderCN, provider.QoderCOM, provider.QwenWork:
 		// 这些渠道已有登录编排
 	case provider.Raccoon:
-		// 小浣熊：浏览器授权登录 —— 登录期间临时接管 office-raccoon 协议回调，
-		// 拿到网页授权码后自行兑换 token，随后恢复注册表（见 internal/login_raccoon）。
-		// 面板同时保留「从本机客户端导入」作为回退路径。
-	case provider.Loomy, provider.MonkeyCode:
+		// 小浣熊：网页版自动登录 —— 拉起独立 profile 的浏览器，用户在网页登录后
+		// 经 CDP 捕获 Cookie 里的 refresh_token 并换取凭据（见 internal/login_raccoon/web.go）。
+		// 面板同时保留「从本机客户端导入」作为替代路径。
+	case provider.Loomy:
 		// 导入型渠道：凭据来自本机已登录的官方客户端，上游没有可复现的 OAuth 流程。
 		return "", fmt.Errorf("%s 渠道无需登录：请在面板点「从本机客户端导入」（复用本机已登录的官方客户端凭据）", k)
 	case provider.Oczen:
@@ -522,7 +522,7 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 	case provider.QwenWork:
 		a.loginClient = loginqwenwork.NewClient()
 	case provider.Raccoon:
-		a.loginClient = loginraccoon.NewClient()
+		// 网页版登录靠 CDP，不用 HTTP client；置 nil 即可（pollLogin 里也不再用它）。
 	default:
 		a.loginClient = login.NewClient()
 	}
@@ -545,12 +545,8 @@ func (a *App) StartLoginFor(kind string) (string, error) {
 	case provider.QwenWork:
 		authURL, err = loginqwenwork.Start(a.loginClient, a.loginStateFP)
 	case provider.Raccoon:
-		// 协议回调接管要把「自身 exe 绝对路径」写进注册表命令行，故这里先取 os.Executable。
-		if exe, eerr := os.Executable(); eerr != nil {
-			err = fmt.Errorf("无法确定自身可执行文件路径：%w", eerr)
-		} else {
-			authURL, err = loginraccoon.Start(a.loginClient, a.loginStateFP, a.stateDir(), exe)
-		}
+		// 网页版登录：拉起独立 profile 的浏览器并返回登录页地址（跨平台，无需注册表/客户端）。
+		authURL, err = loginraccoon.Start()
 	default:
 		ep := login.EndpointsForRegion(a.cfg.Region)
 		authURL, err = login.Start(a.loginClient, a.loginStateFP, ep)
@@ -585,9 +581,9 @@ func (a *App) CancelLogin() error {
 	if kind == provider.QwenWork {
 		loginqwenwork.Shutdown()
 	}
-	// 小浣熊授权登录：取消时立刻恢复注册表（幂等；pollLogin 的 defer 还会再兜一次）
+	// 小浣熊网页版登录：取消时关闭浏览器（幂等；pollLogin 的 defer 还会再兜一次）
 	if kind == provider.Raccoon {
-		loginraccoon.Shutdown(a.loginStateFP, a.stateDir())
+		loginraccoon.Shutdown()
 	}
 	log.Printf("登录已取消")
 	return nil
@@ -599,10 +595,10 @@ func (a *App) pollLogin(ctx context.Context) {
 		if r := recover(); r != nil {
 			log.Printf("login poll panic: %v", r)
 		}
-		// 小浣熊授权登录：无论成功、失败、超时、取消还是 panic，
-		// 都必须把 office-raccoon 注册表恢复原状（Shutdown 幂等）。
+		// 小浣熊网页版登录：无论成功、失败、超时、取消还是 panic，
+		// 都必须关闭独立 profile 的浏览器（Shutdown 幂等）。
 		if a.loginKind == provider.Raccoon {
-			loginraccoon.Shutdown(a.loginStateFP, a.stateDir())
+			loginraccoon.Shutdown()
 		}
 		a.finishLogin()
 	}()
@@ -688,14 +684,14 @@ func (a *App) pollLogin(ctx context.Context) {
 			continue
 		}
 		if a.loginKind == provider.Raccoon {
-			r, err := loginraccoon.Poll(a.loginClient, a.loginStateFP, a.stateDir())
+			r, err := loginraccoon.Poll()
 			if err == nil {
 				a.completeRaccoonLogin(r)
 				return
 			}
 			if !errors.Is(err, loginraccoon.ErrPending) {
-				// 终态错误（回调不可用 / 授权码兑换失败）：立即结束轮询，
-				// 由 defer 恢复注册表；继续轮询只会重复报同一个错。
+				// 终态错误（未捕获到账号 / 换取令牌失败 / 已取消）：立即结束轮询，
+				// 由 defer 关闭浏览器；继续轮询只会重复报同一个错。
 				log.Printf("raccoon login poll failed: %v", err)
 				return
 			}
@@ -710,6 +706,45 @@ func (a *App) pollLogin(ctx context.Context) {
 			log.Printf("workbuddy login poll failed: %v", err)
 		}
 	}
+}
+
+// completeRaccoonLogin 小浣熊网页版登录成功：把捕获并换取的 token 落成本工具凭据。
+// 凭据形态与「从本机客户端导入」完全一致（两者拿到的是同一个上游账号）：
+// uid 取 access_token 的 JWT name claim，domain/apiHost 对齐 internal/raccoon 的调用前缀。
+// 小浣熊无签到活动，故不做首次签到；access_token 约 1h，靠 refresh_token 续期。
+func (a *App) completeRaccoonLogin(r loginraccoon.Result) {
+	uid := strings.TrimSpace(jwtClaim(r.AccessToken, "name"))
+	if uid == "" {
+		uid = "default"
+	}
+	expiresAt := r.ExpiresAt
+	if expiresAt <= 0 {
+		expiresAt = time.Now().Add(time.Hour).Unix() // 实测 access_token 寿命约 1h
+	}
+	log.Printf("raccoon 登录成功 uid=%s org=%s refresh_token=%t", uid, r.OfficeOrgName, r.RefreshToken != "")
+	doc := authDoc{
+		Auth: authSection{
+			AccessToken:  r.AccessToken,
+			RefreshToken: r.RefreshToken,
+			ExpiresAt:    expiresAt,
+			Domain:       "/api/web/llm/v2",
+			ApiHost:      raccoon.MainSite,
+		},
+		Account: accountSection{
+			UID:          uid,
+			EnterpriseID: r.OfficeIdentity,
+			Nickname:     uid,
+		},
+	}
+	fp, err := a.writeAuthFile("raccoon", uid, doc)
+	if err != nil {
+		log.Printf("raccoon 登录保存凭证失败 uid=%s err=%v", uid, err)
+		return
+	}
+	log.Printf("raccoon 登录凭证已保存 uid=%s file=%s", uid, filepath.Base(fp))
+	a.reloadAccounts()
+	a.finishLogin()
+	a.afterAccountAdded(provider.Raccoon)
 }
 
 // completeLogin 登录成功：写 auth 文件、重载账号池，异步签到。
@@ -1053,46 +1088,6 @@ func (a *App) completeQwenWorkLogin(r loginqwenwork.Result) {
 			}
 		}
 	})
-}
-
-// completeRaccoonLogin 授权登录成功：写 auth 文件、重载账号池。
-//
-// 凭据形态与「从本机客户端导入」完全一致（两者拿到的是同一个上游账号）：
-// uid 取 access_token 的 JWT name claim，domain/apiHost 对齐 internal/raccoon 的调用前缀。
-// 小浣熊无签到活动，故不做首次签到；access_token 约 2h，靠 refresh_token 续期。
-func (a *App) completeRaccoonLogin(r loginraccoon.Result) {
-	uid := strings.TrimSpace(jwtClaim(r.AccessToken, "name"))
-	if uid == "" {
-		uid = "default"
-	}
-	expiresAt := r.ExpiresAt
-	if expiresAt <= 0 {
-		expiresAt = time.Now().Add(2 * time.Hour).Unix() // 实测 access_token 寿命约 2h
-	}
-	log.Printf("raccoon 登录成功 uid=%s org=%s refresh_token=%t", uid, r.OfficeOrgName, r.RefreshToken != "")
-	doc := authDoc{
-		Auth: authSection{
-			AccessToken:  r.AccessToken,
-			RefreshToken: r.RefreshToken,
-			ExpiresAt:    expiresAt,
-			Domain:       "/api/web/llm/v2",
-			ApiHost:      raccoon.MainSite,
-		},
-		Account: accountSection{
-			UID:          uid,
-			EnterpriseID: r.OfficeIdentity,
-			Nickname:     uid,
-		},
-	}
-	fp, err := a.writeAuthFile("raccoon", uid, doc)
-	if err != nil {
-		log.Printf("raccoon 登录保存凭证失败 uid=%s err=%v", uid, err)
-		return
-	}
-	log.Printf("raccoon 登录凭证已保存 uid=%s file=%s", uid, filepath.Base(fp))
-	a.reloadAccounts()
-	a.finishLogin()
-	a.afterAccountAdded(provider.Raccoon)
 }
 
 // mustLoadQwenWork 重新扫描千问办公凭证目录（错误仅记日志）。
